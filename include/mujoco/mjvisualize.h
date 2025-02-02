@@ -347,6 +347,9 @@ struct mjvScene_ {                // abstract scene passed to OpenGL renderer
   int      stereo;                // stereoscopic rendering (mjtStereo)
   mjtByte  flags[mjNRNDFLAG];     // rendering flags (indexed by mjtRndFlag)
 
+  float debug_polygon_offset_factor;
+  float debug_polygon_offset_units;
+
   // framing
   int      framewidth;            // frame pixel width; 0: disable framing
   float    framergb[3];           // frame color

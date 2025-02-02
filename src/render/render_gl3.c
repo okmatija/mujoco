@@ -626,6 +626,7 @@ static void initGL3(const mjvScene* scn, const mjrContext* con) {
   }
   glEnable(GL_DEPTH_TEST);
   glDepthMask(GL_TRUE);
+  // matijak: This is what the cull button toggles
   if (scn->flags[mjRND_CULL_FACE]) {
     glEnable(GL_CULL_FACE);
   } else {
@@ -1210,12 +1211,16 @@ void mjr_render(mjrRect viewport, mjvScene* scn, const mjrContext* con) {
           glDisable(GL_LIGHTING);
           glColorMask(0, 0, 0, 0);
 
+          glEnable(GL_POLYGON_OFFSET_FILL);
+          glPolygonOffset(scn->debug_polygon_offset_factor, scn->debug_polygon_offset_units); // Adjust these values for best results
+
           // render all geoms to depth texture
           for (int j=0; j < ngeom; j++) {
             renderGeom(scn->geoms+j, mjrRND_SHADOWCAST, headpos, scn, con);
           }
 
           // restore OpenGL settings
+          glDisable(GL_POLYGON_OFFSET_FILL);
           glBindFramebuffer(GL_FRAMEBUFFER,
                             con->currentBuffer == mjFB_WINDOW ? 0 : con->offFBO);
           glDrawBuffer(drawbuffer);
@@ -1231,6 +1236,7 @@ void mjr_render(mjrRect viewport, mjvScene* scn, const mjrContext* con) {
 
           // compute camera-light mapping
           mjr_mulMat44(tempMatrix, lightProject, lightView);
+          // TODO(matijak): is this the offset bias?
           mjr_mulMat44(textureMatrix, biasMatrix, tempMatrix);
 
           // enable texture machinery
@@ -1447,6 +1453,19 @@ void mjr_render(mjrRect viewport, mjvScene* scn, const mjrContext* con) {
 
   // restore currentBuffer
   mjr_restoreBuffer(con);
+
+  /*
+  static int printed = 0;
+  if (printed == 0) {
+#define GL_MAJOR_VERSION 0x821B
+#define GL_MINOR_VERSION 0x821C
+  int major, minor;
+  glGetIntegerv(GL_MAJOR_VERSION, &major);
+  glGetIntegerv(GL_MINOR_VERSION, &minor);
+  printf("OpenGL Context Version: %d.%d\n", major, minor);
+  printed = 1;
+  }
+  */
 }
 
 

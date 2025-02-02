@@ -2826,6 +2826,9 @@ void mjv_updateScene(const mjModel* m, mjData* d, const mjvOption* opt,
   if (opt->flags[mjVIS_SKIN]) {
     mjv_updateActiveSkin(m, d, scn, opt);
   }
+
+  scn->debug_polygon_offset_factor = m->vis.debug.polygon_offset_factor;
+  scn->debug_polygon_offset_units = m->vis.debug.polygon_offset_units;
 }
 
 

@@ -104,6 +104,7 @@ void mjr_normalizeVec(float* v) {
 
 
 // construct orthogonal vector (for up-direction)
+// TODO(matijak): Use the new pixar method from https://graphics.pixar.com/library/OrthonormalB/paper.pdf
 void mjr_orthoVec(float* res, const float* v) {
   float other[3] = {-1, 0, 0};
 

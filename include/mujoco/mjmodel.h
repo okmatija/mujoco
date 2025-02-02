@@ -510,6 +510,11 @@ struct mjVisual_ {                // visualization options
     int   active;                 // is headlight active
   } headlight;
 
+  struct {
+    float polygon_offset_factor;
+    float polygon_offset_units;
+  } debug;
+
   struct {                        // mapping
     float stiffness;              // mouse perturbation stiffness (space->force)
     float stiffnessrot;           // mouse perturbation stiffness (space->torque)

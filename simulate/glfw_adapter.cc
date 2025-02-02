@@ -53,6 +53,11 @@ GlfwAdapter::GlfwAdapter() {
   Glfw().glfwWindowHint(GLFW_SAMPLES, 4);
   Glfw().glfwWindowHint(GLFW_VISIBLE, 1);
 
+  //Glfw().glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+  //Glfw().glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
+  //Glfw().glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
+
+
   // get video mode and save
   vidmode_ = *Glfw().glfwGetVideoMode(Glfw().glfwGetPrimaryMonitor());
 
@@ -107,6 +112,25 @@ GlfwAdapter::GlfwAdapter() {
 
   // make context current
   Glfw().glfwMakeContextCurrent(window_);
+
+
+  // Print the version numbers
+  //printf("OpenGL Version: %s\n", glGetString(GL_VERSION));
+  //printf("Renderer: %s\n", glGetString(GL_RENDERER));
+  //printf("Vendor: %s\n", glGetString(GL_VENDOR));
+  //printf("GLSL Version: %s\n", glGetString(GL_SHADING_LANGUAGE_VERSION));
+
+  /*
+  int profile;
+  glGetIntegerv(GL_CONTEXT_PROFILE_MASK, &profile);
+  if (profile & GL_CONTEXT_CORE_PROFILE_BIT)
+      printf("Core Profile\n");
+  else if (profile & GL_CONTEXT_COMPATIBILITY_PROFILE_BIT)
+      printf("Compatibility Profile\n");
+  else
+      printf("Unknown Profile\n");
+  */
+
 }
 
 GlfwAdapter::~GlfwAdapter() {

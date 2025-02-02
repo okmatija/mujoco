@@ -864,6 +864,9 @@ void MakeVisualizationSection(mj::Simulate* sim, const mjModel* m) {
 
   mjuiDef defVisualization[] = {
     {mjITEM_SECTION,   "Visualization", mjPRESERVE, nullptr, "AV"},
+    {mjITEM_SEPARATOR, "Debug",  1},
+    {mjITEM_EDITFLOAT, "glPO factor",     2, &(vis->debug.polygon_offset_factor),    "1"},
+    {mjITEM_EDITFLOAT, "glPO units",      2, &(vis->debug.polygon_offset_units),     "1"},
     {mjITEM_SEPARATOR, "Headlight",  1},
     {mjITEM_RADIO,     "Active",          5, &(vis->headlight.active),     "Off\nOn"},
     {mjITEM_EDITFLOAT, "Ambient",         2, &(vis->headlight.ambient),    "3"},
