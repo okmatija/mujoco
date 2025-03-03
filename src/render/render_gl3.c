@@ -1209,10 +1209,14 @@ void mjr_render(mjrRect viewport, mjvScene* scn, const mjrContext* con) {
           glDisable(GL_LIGHTING);
           glColorMask(0, 0, 0, 0);
           int cull_face = glIsEnabled(GL_CULL_FACE);
-          glDisable(GL_CULL_FACE);  // all faces cast shadows
+          if (scn->debug_shadow_cull_face) {
+            glCullFace(GL_FRONT);
+          } else {
+            glDisable(GL_CULL_FACE);  // all faces cast shadows
+          }
           glEnable(GL_POLYGON_OFFSET_FILL);
-          float kOffsetFactor = -1.5f;
-          float kOffsetUnits = -4.0f;
+          float kOffsetFactor = scn->debug_polygon_offset_factor;
+          float kOffsetUnits = scn->debug_polygon_offset_units;
           glPolygonOffset(kOffsetFactor, kOffsetUnits);  // prevents "shadow acne"
 
           // render all geoms to depth texture
@@ -1225,7 +1229,9 @@ void mjr_render(mjrRect viewport, mjvScene* scn, const mjrContext* con) {
                             con->currentBuffer == mjFB_WINDOW ? 0 : con->offFBO);
           glDrawBuffer(drawbuffer);
           glViewport(viewport.left, viewport.bottom, viewport.width, viewport.height);
-          if (cull_face) {
+          if (scn->debug_shadow_cull_face) {
+            glCullFace(GL_BACK);
+          } else if (cull_face) {
             glEnable(GL_CULL_FACE);
           }
           glDisable(GL_POLYGON_OFFSET_FILL);

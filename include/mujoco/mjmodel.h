@@ -509,6 +509,12 @@ struct mjVisual_ {                // visualization options
     float specular[3];            // specular rgb (alpha=1)
     int   active;                 // is headlight active
   } headlight;
+  
+  struct {
+    float polygon_offset_factor;
+    float polygon_offset_units;
+    int shadow_cull_face;
+  } debug;
 
   struct {                        // mapping
     float stiffness;              // mouse perturbation stiffness (space->force)

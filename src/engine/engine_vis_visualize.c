@@ -2828,6 +2828,11 @@ void mjv_updateScene(const mjModel* m, mjData* d, const mjvOption* opt,
   if (opt->flags[mjVIS_SKIN]) {
     mjv_updateActiveSkin(m, d, scn, opt);
   }
+  
+  // This should probably be done in an mjr_XXX function since its specific to the renderer
+  scn->debug_polygon_offset_factor = m->vis.debug.polygon_offset_factor;
+  scn->debug_polygon_offset_units = m->vis.debug.polygon_offset_units;
+  scn->debug_shadow_cull_face = m->vis.debug.shadow_cull_face;
 }
 
 
