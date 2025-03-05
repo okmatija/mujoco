@@ -1,0 +1,95 @@
+import subprocess
+
+debug_glTexImage2D_commands = False
+configs = [
+    # Use explicitly sized internal format parameters 
+    {"internal": "GL_DEPTH_COMPONENT16", "format": "GL_DEPTH_COMPONENT", "type": "GL_UNSIGNED_SHORT"},
+    {"internal": "GL_DEPTH_COMPONENT24", "format": "GL_DEPTH_COMPONENT", "type": "GL_UNSIGNED_INT"},
+    {"internal": "GL_DEPTH_COMPONENT32", "format": "GL_DEPTH_COMPONENT", "type": "GL_UNSIGNED_INT"},
+    {"internal": "GL_DEPTH_COMPONENT32F", "format": "GL_DEPTH_COMPONENT", "type": "GL_FLOAT"},
+    {"internal": "GL_DEPTH24_STENCIL8", "format": "GL_DEPTH_STENCIL", "type": "GL_UNSIGNED_INT_24_8"},
+    {"internal": "GL_DEPTH32F_STENCIL8", "format": "GL_DEPTH_STENCIL", "type": "GL_FLOAT_32_UNSIGNED_INT_24_8_REV"},
+
+    # Use unsized/"base" internal formats
+    {"internal": "GL_DEPTH_COMPONENT", "format": "GL_DEPTH_COMPONENT", "type": "GL_UNSIGNED_SHORT"},
+    {"internal": "GL_DEPTH_COMPONENT", "format": "GL_DEPTH_COMPONENT", "type": "GL_UNSIGNED_INT"},
+    {"internal": "GL_DEPTH_COMPONENT", "format": "GL_DEPTH_COMPONENT", "type": "GL_UNSIGNED_INT"},
+    {"internal": "GL_DEPTH_COMPONENT", "format": "GL_DEPTH_COMPONENT", "type": "GL_FLOAT"},
+]
+
+scenes = [
+    ["../../mujoco_tests/mink-main/examples/kuka_iiwa_14/scene.xml", "kuka_iiwa_14"],
+    ["../../mujoco_tests/mink-main/examples/stanford_tidybot/scene.xml", "stanford_tidybot"],
+    ["../../mujoco_tests/mink-main/examples/unitree_h1/scene.xml", "unitree_h1"],
+    ["../../mujoco_tests/mink-main/examples/apptronik_apollo/scene.xml", "apptronik_apollo"], # Note: Robot falls through the floor
+    ["../../mujoco_tests/mink-main/examples/unitree_go1/scene.xml", "unitree_go1"],
+    ["../../mujoco_tests/mink-main/examples/universal_robots_ur5e/scene.xml", "universal_robots_ur5e"],
+    ["../../mujoco_tests/mink-main/examples/boston_dynamics_spot/scene.xml", "boston_dynamics_spot"],
+    ["../../mujoco_tests/mink-main/examples/aloha/scene.xml", "aloha"],
+    ["../../mujoco_tests/mink-main/examples/unitree_g1/scene.xml", "unitree_g1"],
+    ["../../mujoco_tests/mink-main/examples/ufactory_xarm7/scene.xml", "ufactory_xarm7"],
+    # This scene doesn't load: "Error: mesh volume is too small: base_link_2 . Try setting inertia to shell"
+    # ["../../mujoco_tests/mink-main/examples/hello_robot_stretch_3/scene.xml", "hello_robot_stretch_3"],
+]
+
+results = []
+
+def print_results():
+    print("\n--- Test Summary ---")
+    for cfg, status, scene in results:
+        print(f"{status}\t with internal={cfg['internal']}\t format={cfg['format']}\t type={cfg['type']}\t scene was {scene}")
+
+for cfg in configs:
+    # Generate the #include file
+    description = f"Testing {cfg['internal']}   {cfg['format']}   {cfg['type']}..."
+    line1 = f"glTexImage2D(GL_TEXTURE_2D, 0, {cfg['internal']}, con->shadowSize, con->shadowSize, 0, {cfg['format']}, {cfg['type']}, NULL);"
+    line2 = f'printf("{description}\\n");'
+    with open("../src/render/test_config.inc", "w") as f:
+        f.write(line1 + "\n")
+        f.write(line2 + "\n")
+
+    if debug_glTexImage2D_commands:
+        print(line1)
+        continue
+        
+    # Compile the program
+    try:
+        subprocess.run("make simulate", shell=True, check=True)
+    except subprocess.CalledProcessError as e:
+        print(f"Command execution for {cfg['internal']} failed: {e}")
+        
+    for path, name in scenes:
+        try:
+            subprocess.run(f'./bin/simulate "{path}"', shell=True, check=True)
+        except subprocess.CalledProcessError as e:
+            print(f"Command execution for {cfg['internal']} failed: {e}")
+        
+        user_input = input(
+            "Did it work?\n"
+            "(p)ass. Try next scene\n"
+            "(f)ail. Try next scene\n"
+            "(P)ASS. Skip all following scenes\n"
+            "(F)AIL. Skip all following scenes\n"
+             ).strip()
+        if user_input:
+            match user_input[0]:
+                case 'p': 
+                    results.append((cfg, "Passed", name))
+                case 'P': 
+                    results.append((cfg, "Passed", name))
+                    break
+                case 'f':
+                    results.append((cfg, "FAILED", name))
+                case 'F':
+                    results.append((cfg, "FAILED", name))
+                    break
+                case 'q':
+                    print_results()
+                    print("Aborted.\n")
+                    quit()
+
+print_results()
+    
+
+
+

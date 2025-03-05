@@ -37,3 +37,6 @@ MUJOCO_LOG.TXT
 
 # Clang cache
 .cache/
+
+# Added by Matija for testing flickering fix
+test_config.inc

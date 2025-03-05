@@ -837,6 +837,8 @@ int mjGLAD_GL_ARB_framebuffer_object = 0;
 int mjGLAD_GL_ARB_seamless_cube_map = 0;
 int mjGLAD_GL_ARB_vertex_buffer_object = 0;
 int mjGLAD_GL_KHR_debug = 0;
+int mjGLAD_GL_ARB_depth_texture = 0;
+int mjGLAD_GL_EXT_packed_depth_stencil = 0;
 PFNGLCLIPCONTROLPROC mjGlad_glClipControl = NULL;
 PFNGLISRENDERBUFFERPROC mjGlad_glIsRenderbuffer = NULL;
 PFNGLBINDRENDERBUFFERPROC mjGlad_glBindRenderbuffer = NULL;
@@ -1434,6 +1436,19 @@ static int mjGlad_find_extensionsGL(void) {
   mjGLAD_GL_ARB_seamless_cube_map = mjGlad_has_ext("GL_ARB_seamless_cube_map");
   mjGLAD_GL_ARB_vertex_buffer_object = mjGlad_has_ext("GL_ARB_vertex_buffer_object");
   mjGLAD_GL_KHR_debug = mjGlad_has_ext("GL_KHR_debug");
+  mjGLAD_GL_ARB_depth_texture = mjGlad_has_ext("GL_ARB_depth_texture");
+  mjGLAD_GL_EXT_packed_depth_stencil = mjGlad_has_ext("GL_EXT_packed_depth_stencil");
+
+  printf("mjGLAD_GL_ARB_clip_control = %d\n", mjGLAD_GL_ARB_clip_control);
+  printf("mjGLAD_GL_ARB_depth_buffer_float = %d\n", mjGLAD_GL_ARB_depth_buffer_float);
+  printf("mjGLAD_GL_ARB_framebuffer_object = %d\n", mjGLAD_GL_ARB_framebuffer_object);
+  printf("mjGLAD_GL_ARB_seamless_cube_map = %d\n", mjGLAD_GL_ARB_seamless_cube_map);
+  printf("mjGLAD_GL_ARB_vertex_buffer_object = %d\n", mjGLAD_GL_ARB_vertex_buffer_object);
+  printf("mjGLAD_GL_KHR_debug = %d\n", mjGLAD_GL_KHR_debug);
+  printf("mjGLAD_GL_ARB_depth_texture = %d\n", mjGLAD_GL_ARB_depth_texture);
+  printf("mjGLAD_GL_EXT_packed_depth_stencil = %d\n", mjGLAD_GL_EXT_packed_depth_stencil);
+  printf("\n\n");
+
   mjGlad_free_exts();
   return 1;
 }
