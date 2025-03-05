@@ -1038,6 +1038,10 @@ static void makeBuiltin(const mjModel* m, mjrContext* con) {
 
 // make depth texture and FBO for shadow mapping
 static void makeShadow(const mjModel* m, mjrContext* con) {
+  printf("glGetString(GL_VERSION)  is '%s'\n", (char*)glGetString(GL_VERSION));
+  printf("glGetString(GL_RENDERER) is '%s'\n", (char*)glGetString(GL_RENDERER));
+  printf("glGetString(GL_VENDOR)   is '%s'\n", glGetString(GL_VENDOR));
+
   // return if size is 0
   if (!con->shadowSize) {
     return;
