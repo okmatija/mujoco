@@ -3,6 +3,9 @@ import time
 
 debug_glTexImage2D_commands = False
 
+# TODO Collect a note when the run starts
+# TODO Remove requirement to press Return
+
 configs = [
     # Use explicitly sized internal format parameters 
     {"internal": "GL_DEPTH_COMPONENT16", "format": "GL_DEPTH_COMPONENT", "type": "GL_UNSIGNED_SHORT"},
@@ -77,9 +80,11 @@ def print_results():
 for cfg in configs:
     # Generate the include file
     description = f"Testing {cfg['internal']}   {cfg['format']}   {cfg['type']}..."
-    line1 = f"glTexImage2D(GL_TEXTURE_2D, 0, {cfg['internal']}, con->shadowSize, con->shadowSize, 0, {cfg['format']}, {cfg['type']}, NULL);"
+    line0 = f"GLint wanted_internal_format = {cfg['internal']};"
+    line1 = f"glTexImage2D(GL_TEXTURE_2D, 0, wanted_internal_format, con->shadowSize, con->shadowSize, 0, {cfg['format']}, {cfg['type']}, NULL);"
     line2 = f'printf("{description}\\n");'
     with open("../src/render/test_config.inc", "w") as f:
+        f.write(line0 + "\n")
         f.write(line1 + "\n")
         f.write(line2 + "\n")
     

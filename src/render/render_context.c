@@ -14,6 +14,7 @@
 
 #include "render/render_context.h"
 
+#include <assert.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -1041,6 +1042,7 @@ static void makeShadow(const mjModel* m, mjrContext* con) {
   printf("glGetString(GL_VERSION)  is '%s'\n", (char*)glGetString(GL_VERSION));
   printf("glGetString(GL_RENDERER) is '%s'\n", (char*)glGetString(GL_RENDERER));
   printf("glGetString(GL_VENDOR)   is '%s'\n", glGetString(GL_VENDOR));
+  // printf("glGetString(GL_EXTENSIONS) is '%s'\n", glGetString(GL_EXTENSIONS));
 
   // return if size is 0
   if (!con->shadowSize) {
@@ -1061,6 +1063,24 @@ static void makeShadow(const mjModel* m, mjrContext* con) {
   glBindTexture(GL_TEXTURE_2D, con->shadowTex);
   
   #include "render/test_config.inc"
+
+  // glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT16, con->shadowSize, con->shadowSize, 0, GL_DEPTH_COMPONENT, GL_UNSIGNED_SHORT, NULL);
+  // glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT24, con->shadowSize, con->shadowSize, 0, GL_DEPTH_COMPONENT, GL_UNSIGNED_INT, NULL);
+  // glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT32, con->shadowSize, con->shadowSize, 0, GL_DEPTH_COMPONENT, GL_UNSIGNED_INT, NULL);
+  // glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT32F, con->shadowSize, con->shadowSize, 0, GL_DEPTH_COMPONENT, GL_FLOAT, NULL);
+  // glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH24_STENCIL8, con->shadowSize, con->shadowSize, 0, GL_DEPTH_STENCIL, GL_UNSIGNED_INT_24_8, NULL);
+  // glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH32F_STENCIL8, con->shadowSize, con->shadowSize, 0, GL_DEPTH_STENCIL, GL_FLOAT_32_UNSIGNED_INT_24_8_REV, NULL);
+  // glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT, con->shadowSize, con->shadowSize, 0, GL_DEPTH_COMPONENT, GL_UNSIGNED_SHORT, NULL);
+  // glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT, con->shadowSize, con->shadowSize, 0, GL_DEPTH_COMPONENT, GL_UNSIGNED_INT, NULL);
+  // glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT, con->shadowSize, con->shadowSize, 0, GL_DEPTH_COMPONENT, GL_FLOAT, NULL);
+
+  GLint got_internal_format; glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_INTERNAL_FORMAT, &got_internal_format);
+  GLint got_depth_size; glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_DEPTH_SIZE, &got_depth_size);
+
+  printf("got_internal_format = 0x%X\n", got_internal_format);
+  printf("got_depth_size = %d\n", got_depth_size);
+
+  assert(wanted_internal_format == got_internal_format);
 
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
