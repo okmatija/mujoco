@@ -6,19 +6,28 @@ debug_glTexImage2D_commands = False
 # TODO Collect a note when the run starts
 # TODO Remove requirement to press Return
 
+# TODO This should just be a list of glTexImage2D lines
+#
+#   glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT16, con->shadowSize, con->shadowSize, 0, GL_DEPTH_COMPONENT, GL_UNSIGNED_SHORT, NULL);
+#   glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT24, con->shadowSize, con->shadowSize, 0, GL_DEPTH_COMPONENT, GL_UNSIGNED_INT, NULL);
+#   glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT32, con->shadowSize, con->shadowSize, 0, GL_DEPTH_COMPONENT, GL_UNSIGNED_INT, NULL);
+#   glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT32F, con->shadowSize, con->shadowSize, 0, GL_DEPTH_COMPONENT, GL_FLOAT, NULL);
+#   glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH24_STENCIL8, con->shadowSize, con->shadowSize, 0, GL_DEPTH_STENCIL, GL_UNSIGNED_INT_24_8, NULL);
+#   glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH32F_STENCIL8, con->shadowSize, con->shadowSize, 0, GL_DEPTH_STENCIL, GL_FLOAT_32_UNSIGNED_INT_24_8_REV, NULL);
+#   glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT, con->shadowSize, con->shadowSize, 0, GL_DEPTH_COMPONENT, GL_FLOAT, NULL);
+#
 configs = [
-    # Use explicitly sized internal format parameters 
-    {"internal": "GL_DEPTH_COMPONENT16", "format": "GL_DEPTH_COMPONENT", "type": "GL_UNSIGNED_SHORT"},
-    {"internal": "GL_DEPTH_COMPONENT24", "format": "GL_DEPTH_COMPONENT", "type": "GL_UNSIGNED_INT"},
-    {"internal": "GL_DEPTH_COMPONENT32", "format": "GL_DEPTH_COMPONENT", "type": "GL_UNSIGNED_INT"},
-    {"internal": "GL_DEPTH_COMPONENT32F", "format": "GL_DEPTH_COMPONENT", "type": "GL_FLOAT"},
-    {"internal": "GL_DEPTH24_STENCIL8", "format": "GL_DEPTH_STENCIL", "type": "GL_UNSIGNED_INT_24_8"},
-    {"internal": "GL_DEPTH32F_STENCIL8", "format": "GL_DEPTH_STENCIL", "type": "GL_FLOAT_32_UNSIGNED_INT_24_8_REV"},
-
-    # Use unsized/"base" internal formats
-    {"internal": "GL_DEPTH_COMPONENT", "format": "GL_DEPTH_COMPONENT", "type": "GL_UNSIGNED_SHORT"},
-    {"internal": "GL_DEPTH_COMPONENT", "format": "GL_DEPTH_COMPONENT", "type": "GL_UNSIGNED_INT"},
     {"internal": "GL_DEPTH_COMPONENT", "format": "GL_DEPTH_COMPONENT", "type": "GL_FLOAT"},
+    {"internal": "GL_DEPTH_COMPONENT32", "format": "GL_DEPTH_COMPONENT", "type": "GL_UNSIGNED_INT"},
+    {"internal": "GL_DEPTH_COMPONENT16", "format": "GL_DEPTH_COMPONENT", "type": "GL_UNSIGNED_SHORT"},
+
+    # {"internal": "GL_DEPTH_COMPONENT24", "format": "GL_DEPTH_COMPONENT", "type": "GL_UNSIGNED_INT"},
+    # {"internal": "GL_DEPTH_COMPONENT32F", "format": "GL_DEPTH_COMPONENT", "type": "GL_FLOAT"},
+    # {"internal": "GL_DEPTH24_STENCIL8", "format": "GL_DEPTH_STENCIL", "type": "GL_UNSIGNED_INT_24_8"},
+    # {"internal": "GL_DEPTH32F_STENCIL8", "format": "GL_DEPTH_STENCIL", "type": "GL_FLOAT_32_UNSIGNED_INT_24_8_REV"},
+    # No need to test these options, internal_type alone determines the representation of depth value on the GPU
+    # {"internal": "GL_DEPTH_COMPONENT", "format": "GL_DEPTH_COMPONENT", "type": "GL_UNSIGNED_SHORT"},
+    # {"internal": "GL_DEPTH_COMPONENT", "format": "GL_DEPTH_COMPONENT", "type": "GL_UNSIGNED_INT"},
 ]
 
 scenes = [
@@ -80,7 +89,7 @@ def print_results():
 for cfg in configs:
     # Generate the include file
     description = f"Testing {cfg['internal']}   {cfg['format']}   {cfg['type']}..."
-    line0 = f"GLint wanted_internal_format = {cfg['internal']};"
+    line0 = f"wanted_internal_format = {cfg['internal']};"
     line1 = f"glTexImage2D(GL_TEXTURE_2D, 0, wanted_internal_format, con->shadowSize, con->shadowSize, 0, {cfg['format']}, {cfg['type']}, NULL);"
     line2 = f'printf("{description}\\n");'
     with open("../src/render/test_config.inc", "w") as f:

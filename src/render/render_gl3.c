@@ -718,14 +718,9 @@ static void setView(int view, mjrRect viewport, const mjvScene* scn, const mjrCo
   // prepare projection
   glMatrixMode(GL_PROJECTION);
   glLoadIdentity();
-  if (mjGLAD_GL_ARB_clip_control) {
-    // reverse Z rendering mapping [znear, zfar] -> [1, 0] (ndc)
-    glTranslatef(0.0f, 0.0f, 0.5f);
-    glScalef(1.0f, 1.0f, -0.5f);
-  } else {
-    // reverse Z rendering mapping without shift [znear, zfar] -> [1, -1] (ndc)
-    glScalef(1.0f, 1.0f, -1.0f);
-  }
+  // reverse Z rendering mapping [znear, zfar] -> [1, 0] (ndc)
+  glTranslatef(0.0f, 0.0f, 0.5f);
+  glScalef(1.0f, 1.0f, -0.5f);
 
   // set projection, orthographic or perspective
   if (cam.orthographic) {
@@ -1174,15 +1169,10 @@ void mjr_render(mjrRect viewport, mjvScene* scn, const mjrContext* con) {
           // set projection: from light viewpoint
           glMatrixMode(GL_PROJECTION);
           glLoadIdentity();
-          if (mjGLAD_GL_ARB_clip_control) {
-            // reverse Z rendering mapping [znear, zfar] -> [1, 0] (ndc)
-            glTranslatef(0.0f, 0.0f, 0.5f);
-            glScalef(1.0f, 1.0f, -0.5f);
-          }
-          else {
-            // reverse Z rendering mapping without shift [znear, zfar] -> [1, -1] (ndc)
-            glScalef(1.0f, 1.0f, -1.0f);
-          }
+          // reverse Z rendering mapping [znear, zfar] -> [1, 0] (ndc)
+          glTranslatef(0.0f, 0.0f, 0.5f);
+          glScalef(1.0f, 1.0f, -0.5f);
+
           if (thislight->directional) {
             glOrtho(-con->shadowClip, con->shadowClip,
                     -con->shadowClip, con->shadowClip,
