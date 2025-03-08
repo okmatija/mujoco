@@ -1430,7 +1430,7 @@ static void mjGlad_load_GL_KHR_debug(GLADloadproc load) {
 }
 static int mjGlad_find_extensionsGL(void) {
   if (!mjGlad_get_exts()) return 0;
-  // mjGLAD_GL_ARB_clip_control = mjGlad_has_ext("GL_ARB_clip_control");
+  mjGLAD_GL_ARB_clip_control = mjGlad_has_ext("GL_ARB_clip_control");
   mjGLAD_GL_ARB_depth_buffer_float = mjGlad_has_ext("GL_ARB_depth_buffer_float");
   mjGLAD_GL_ARB_framebuffer_object = mjGlad_has_ext("GL_ARB_framebuffer_object");
   mjGLAD_GL_ARB_seamless_cube_map = mjGlad_has_ext("GL_ARB_seamless_cube_map");
@@ -1440,14 +1440,14 @@ static int mjGlad_find_extensionsGL(void) {
   mjGLAD_GL_EXT_packed_depth_stencil = mjGlad_has_ext("GL_EXT_packed_depth_stencil");
 
   printf("mjGLAD_GL_ARB_clip_control = %d\n", mjGLAD_GL_ARB_clip_control);
-  // printf("mjGLAD_GL_ARB_depth_buffer_float = %d\n", mjGLAD_GL_ARB_depth_buffer_float);
-  // printf("mjGLAD_GL_ARB_framebuffer_object = %d\n", mjGLAD_GL_ARB_framebuffer_object);
-  // printf("mjGLAD_GL_ARB_seamless_cube_map = %d\n", mjGLAD_GL_ARB_seamless_cube_map);
-  // printf("mjGLAD_GL_ARB_vertex_buffer_object = %d\n", mjGLAD_GL_ARB_vertex_buffer_object);
-  // printf("mjGLAD_GL_KHR_debug = %d\n", mjGLAD_GL_KHR_debug);
-  // printf("mjGLAD_GL_ARB_depth_texture = %d\n", mjGLAD_GL_ARB_depth_texture);
-  // printf("mjGLAD_GL_EXT_packed_depth_stencil = %d\n", mjGLAD_GL_EXT_packed_depth_stencil);
-  // printf("\n\n");
+  printf("mjGLAD_GL_ARB_depth_buffer_float = %d\n", mjGLAD_GL_ARB_depth_buffer_float);
+  printf("mjGLAD_GL_ARB_framebuffer_object = %d\n", mjGLAD_GL_ARB_framebuffer_object);
+  printf("mjGLAD_GL_ARB_seamless_cube_map = %d\n", mjGLAD_GL_ARB_seamless_cube_map);
+  printf("mjGLAD_GL_ARB_vertex_buffer_object = %d\n", mjGLAD_GL_ARB_vertex_buffer_object);
+  printf("mjGLAD_GL_KHR_debug = %d\n", mjGLAD_GL_KHR_debug);
+  printf("mjGLAD_GL_ARB_depth_texture = %d\n", mjGLAD_GL_ARB_depth_texture);
+  printf("mjGLAD_GL_EXT_packed_depth_stencil = %d\n", mjGLAD_GL_EXT_packed_depth_stencil);
+  printf("\n\n");
 
   mjGlad_free_exts();
   return 1;
