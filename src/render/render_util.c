@@ -15,6 +15,7 @@
 #include "render/render_util.h"
 
 #include <math.h>
+#include <stdio.h>
 #include <string.h>
 
 #include <mujoco/mujoco.h>
@@ -284,4 +285,44 @@ int mjr_findRect(int x, int y, int nrect, const mjrRect* rect) {
 
   // not found
   return -1;
+}
+
+void mjr_check_error(const char *function, const char *file, int line) {
+  GLenum errorCode;
+  int got_error = 0;
+
+  while ((errorCode = glGetError()) != GL_NO_ERROR) {
+    got_error = 1;
+    switch (errorCode) {
+    case GL_INVALID_ENUM:
+      printf("INVALID_ENUM");
+      break;
+    case GL_INVALID_VALUE:
+      printf("INVALID_VALUE");
+      break;
+    case GL_INVALID_OPERATION:
+      printf("INVALID_OPERATION");
+      break;
+    case GL_STACK_OVERFLOW:
+      printf("STACK_OVERFLOW");
+      break;
+    case GL_STACK_UNDERFLOW:
+      printf("STACK_UNDERFLOW");
+      break;
+    case GL_OUT_OF_MEMORY:
+      printf("OUT_OF_MEMORY");
+      break;
+    case GL_INVALID_FRAMEBUFFER_OPERATION:
+      printf("INVALID_FRAMEBUFFER_OPERATION");
+      break;
+    default:
+      printf("Unknown error %d", errorCode);
+    }
+    printf(" encountered error at '%s' (%s:%d)\n", function, file, line);
+  }
+  
+  if (got_error) {
+    printf("Got OpenGL error. Exiting...");
+    exit(1);
+  }
 }

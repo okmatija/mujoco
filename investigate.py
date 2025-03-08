@@ -148,7 +148,7 @@ for cfg in configs:
         
     for path, name in scenes:
         try:
-            subprocess.run(f'./bin/simulate "{path}"', shell=True, check=True)
+            subprocess.run(f'MUJOCO_GL_DEBUG=1 ./bin/simulate "{path}"', shell=True, check=True)
         except:
             print("Failed to run simulate target")
             quit()

@@ -1061,13 +1061,18 @@ static void makeShadow(const mjModel* m, mjrContext* con) {
   glActiveTexture(GL_TEXTURE1);
   glEnable(GL_TEXTURE_2D);
   glBindTexture(GL_TEXTURE_2D, con->shadowTex);
+
+  GCE();
   
   GLint got_internal_format;
   GLint got_depth_size;
   GLint wanted_internal_format;
   #include "render/test_config.inc"
+  GCE();
   glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_INTERNAL_FORMAT, &got_internal_format);
+  GCE();
   glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_DEPTH_SIZE, &got_depth_size);
+  GCE();
   printf("got_internal_format = 0x%X   got_depth_size = %d\n", got_internal_format, got_depth_size);
 
   assert(wanted_internal_format == got_internal_format);
@@ -1083,6 +1088,8 @@ static void makeShadow(const mjModel* m, mjrContext* con) {
   glTexGeni(GL_T, GL_TEXTURE_GEN_MODE, GL_EYE_LINEAR);
   glTexGeni(GL_R, GL_TEXTURE_GEN_MODE, GL_EYE_LINEAR);
   glTexGeni(GL_Q, GL_TEXTURE_GEN_MODE, GL_EYE_LINEAR);
+  
+  GCE();
 
   // attach to FBO
   glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, con->shadowTex, 0);
@@ -1096,6 +1103,8 @@ static void makeShadow(const mjModel* m, mjrContext* con) {
   }
 
   glDisable(GL_TEXTURE_2D);
+
+  GCE();
 }
 
 
@@ -1571,6 +1580,7 @@ void mjr_makeContext_offSize(const mjModel* m, mjrContext* con, int fontscale,
   if (glDebugEnabled() && mjGLAD_GL_KHR_debug) {
     glEnable(GL_DEBUG_OUTPUT);
     glDebugMessageCallback(debugCallback, 0);
+    printf("Enabling opengl debug!\n");
   }
 
   // determine samples, stereo and doublebuffer if window available

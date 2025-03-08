@@ -800,6 +800,9 @@ static void adjustLight(const mjvLight* thislight, int n) {
 
 // render
 void mjr_render(mjrRect viewport, mjvScene* scn, const mjrContext* con) {
+  
+  GCE();  // Check for errors that occured last frame
+  
   int stereo, nt, ngeom = scn->ngeom, nlight = mjMIN(mjMAXLIGHT, scn->nlight);
   unsigned int drawbuffer;
   mjvGLCamera cam;

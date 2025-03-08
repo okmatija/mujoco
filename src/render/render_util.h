@@ -70,4 +70,9 @@ MJAPI int mjr_findRect(int x, int y, int nrect, const mjrRect* rect);
 #if defined(__cplusplus)
 }
 #endif
+
+void mjr_check_error(const char *function, const char *file, int line);
+
+#define GCE() mjr_check_error(__FUNCTION__, __FILE__, __LINE__) 
+
 #endif  // THIRD_PARTY_MUJOCO_SRC_RENDER_RENDER_UTIL_
