@@ -15,6 +15,7 @@
 #include "render/render_context.h"
 
 #include <assert.h>
+#include <ctype.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -1035,30 +1036,35 @@ static void makeBuiltin(const mjModel* m, mjrContext* con) {
   glEndList();
 }
 
-void test_depth_format(GLint internal_format, GLenum format, GLenum type, mjrContext* con) {
+void test_depth_format(GLint want_internal_format, GLenum format, GLenum type, mjrContext* con) {
   GLuint tex;
   glGenTextures(1, &tex); GCE();
   glBindTexture(GL_TEXTURE_2D, tex); GCE();
-  glTexImage2D(GL_TEXTURE_2D, 0, internal_format, con->shadowSize, con->shadowSize, 0, format, type, NULL); GCE();
+  glTexImage2D(GL_TEXTURE_2D, 0, want_internal_format, con->shadowSize, con->shadowSize, 0, format, type, NULL); GCE();
   
   GLint got_internal_format, got_depth_size;
   glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_INTERNAL_FORMAT, &got_internal_format); GCE();
   glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_DEPTH_SIZE, &got_depth_size); GCE();
-  assert(internal_format == got_internal_format);
 
-  char* internal_format_name = mjGladPrintName((unsigned)internal_format);
-  printf("Internal format: '%s' has depth size %d", internal_format_name, got_depth_size);
+  const char* got_internal_format_name = mjGladPrintName((unsigned)got_internal_format);
+  const char* want_internal_format_name = mjGladPrintName((unsigned)want_internal_format);
+  printf("Wanted %s internal format. Got %s with depth size %d", want_internal_format_name, got_internal_format_name, got_depth_size);
 
-  char* s = internal_format_name;
+  const char* s = want_internal_format_name;
   while (*s) {
       if (isdigit(*s)) break;
       s++;
   }
-  int wanted_depth_size = (int)strtol(s, NULL, 10);
+  int want_depth_size = (int)strtol(s, NULL, 10);
 
-  // Skip 0 since we get that for an unsized internal format
-  if (wanted_depth_size != 0 && wanted_depth_size != got_depth_size) {
-    printf(" !!! Unexpected depth size !!!");
+  int unexpected_depth_size = want_depth_size != got_depth_size && want_depth_size != 0; // 0 means unsized internal format
+  int unexpected_internal_format = want_internal_format != got_internal_format;
+  if (unexpected_depth_size && unexpected_internal_format) {
+    printf(" !!! Different internal format and depth size !!!");
+  } else if (unexpected_internal_format) {
+    printf(" !!! Different internal format !!!");
+  } else if (unexpected_depth_size) {
+    printf(" !!! Different depth size !!!");
   }
   printf("\n");
 

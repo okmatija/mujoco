@@ -2513,8 +2513,8 @@ GLDefine gl_defines[] = {
     { 0x82E7, "GL_DISPLAY_LIST" },
 };
 
-char* mjGladPrintName(unsigned value) {
-  char* result;
+const char* mjGladPrintName(unsigned value) {
+  const char* result;
   int found = 0;
 
   size_t n = sizeof(gl_defines) / sizeof(gl_defines[0]);

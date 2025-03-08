@@ -115,7 +115,7 @@ GLAPI int mjGladLoadGL(void);
 
 GLAPI int mjGladLoadGLUnsafe(void) MJGLAD_NOEXCEPT;
 
-GLAPI char* mjGladPrintName(unsigned value) MJGLAD_NOEXCEPT;
+GLAPI const char* mjGladPrintName(unsigned value) MJGLAD_NOEXCEPT;
 
 typedef unsigned int GLenum;
 typedef unsigned char GLboolean;
