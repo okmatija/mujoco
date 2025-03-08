@@ -287,7 +287,7 @@ int mjr_findRect(int x, int y, int nrect, const mjrRect* rect) {
   return -1;
 }
 
-void mjr_check_error(const char *function, const char *file, int line) {
+void mjr_check_error(const char *file, int line) {
   GLenum errorCode;
   int got_error = 0;
 
@@ -318,7 +318,7 @@ void mjr_check_error(const char *function, const char *file, int line) {
     default:
       printf("Unknown error %d", errorCode);
     }
-    printf(" encountered error at '%s' (%s:%d)\n", function, file, line);
+    printf(" encountered error at (%s:%d)\n", file, line);
   }
   
   if (got_error) {
