@@ -2,6 +2,7 @@ import subprocess
 import time
 import platform
 import sys
+import os
 
 debug_glTexImage2D_commands = False
 
@@ -141,14 +142,23 @@ for cfg in configs:
         
     # Compile the program
     try:
-        subprocess.run("make simulate", shell=True, check=True)
+        if platform.system() == "Windows":
+            # Only works from Native Tools Command Prompt
+            subprocess.run("msbuild Mujoco.sln /t:simulate /p:Configuration=Release", shell=True, check=True)
+        else:
+            subprocess.run("make simulate", shell=True, check=True)
     except:
         print("Failed to build simulate target")
         quit()
         
     for path, name in scenes:
+        env = os.environ.copy()
+        env["MUJOCO_GL_DEBUG"] = "1"  # Set MUJOCO_GL_DEBUG=1 for all platforms
         try:
-            subprocess.run(f'MUJOCO_GL_DEBUG=1 ./bin/simulate "{path}"', shell=True, check=True)
+            if platform.system() == "Windows":
+                subprocess.run(f'bin\Release\simulate.exe "{path}"', shell=True, check=True, env=env)
+            else:
+                subprocess.run(f'./bin/simulate "{path}"', shell=True, check=True, env=env)
         except:
             print("Failed to run simulate target")
             quit()

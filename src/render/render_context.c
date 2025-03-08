@@ -1035,7 +1035,35 @@ static void makeBuiltin(const mjModel* m, mjrContext* con) {
   glEndList();
 }
 
+void test_depth_format(GLint internal_format, GLenum format, GLenum type, mjrContext* con) {
+  GLuint tex;
+  glGenTextures(1, &tex); GCE();
+  glBindTexture(GL_TEXTURE_2D, tex); GCE();
+  glTexImage2D(GL_TEXTURE_2D, 0, internal_format, con->shadowSize, con->shadowSize, 0, format, type, NULL); GCE();
+  
+  GLint got_internal_format, got_depth_size;
+  glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_INTERNAL_FORMAT, &got_internal_format); GCE();
+  glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_DEPTH_SIZE, &got_depth_size); GCE();
+  assert(internal_format == got_internal_format);
 
+  char* internal_format_name = mjGladPrintName((unsigned)internal_format);
+  printf("Internal format: '%s' has depth size %d", internal_format_name, got_depth_size);
+
+  char* s = internal_format_name;
+  while (*s) {
+      if (isdigit(*s)) break;
+      s++;
+  }
+  int wanted_depth_size = (int)strtol(s, NULL, 10);
+
+  // Skip 0 since we get that for an unsized internal format
+  if (wanted_depth_size != 0 && wanted_depth_size != got_depth_size) {
+    printf(" !!! Unexpected depth size !!!");
+  }
+  printf("\n");
+
+  glDeleteTextures(1, &tex); GCE();
+}
 
 // make depth texture and FBO for shadow mapping
 static void makeShadow(const mjModel* m, mjrContext* con) {
@@ -1048,6 +1076,14 @@ static void makeShadow(const mjModel* m, mjrContext* con) {
   if (!con->shadowSize) {
     return;
   }
+
+  test_depth_format(GL_DEPTH_COMPONENT,    GL_DEPTH_COMPONENT, GL_FLOAT, con);
+  test_depth_format(GL_DEPTH_COMPONENT16,  GL_DEPTH_COMPONENT, GL_UNSIGNED_SHORT, con);
+  test_depth_format(GL_DEPTH_COMPONENT24,  GL_DEPTH_COMPONENT, GL_UNSIGNED_INT, con);
+  test_depth_format(GL_DEPTH_COMPONENT32,  GL_DEPTH_COMPONENT, GL_UNSIGNED_INT, con);
+  test_depth_format(GL_DEPTH_COMPONENT32F, GL_DEPTH_COMPONENT, GL_FLOAT, con);
+  test_depth_format(GL_DEPTH24_STENCIL8,   GL_DEPTH_STENCIL,   GL_UNSIGNED_INT_24_8, con);
+  test_depth_format(GL_DEPTH32F_STENCIL8,  GL_DEPTH_STENCIL,   GL_FLOAT_32_UNSIGNED_INT_24_8_REV, con);
 
   // create FBO
   glGenFramebuffers(1, &con->shadowFBO);
