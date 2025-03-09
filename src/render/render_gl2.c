@@ -119,11 +119,19 @@ static void warnAboutARBDepthBuffer(void) {
 
 
 
-static inline void flipDepthIfRequired(float* depth, mjrRect viewport, const mjrContext* con) {
+// TODO Improve the comments and add a golden test
+static inline void flipAndMaybeScaleDepthIfRequired(float* depth, mjrRect viewport, const mjrContext* con) {
   if (con->readDepthMap == mjDEPTH_ZERONEAR) {
-    int npixel = viewport.width * viewport.height;
-    for (int i = 0; i < npixel; i++) {
-      depth[i] = 1.0 - depth[i];  // Reverse the reversed Z buffer
+    if (!mjGLAD_GL_ARB_clip_control) {
+      int npixel = viewport.width * viewport.height;
+      for (int i = 0; i < npixel; i++) {
+        depth[i] = 2 * depth[i] - 1.0;  // [0.5, 1.0] -> [0, 1] = [zfar, znear]
+      }
+    } else {
+      int npixel = viewport.width * viewport.height;
+      for (int i = 0; i < npixel; i++) {
+        depth[i] = 1.0 - depth[i];  // Reverse the reversed Z buffer
+      }
     }
   } else if (!mjGLAD_GL_ARB_clip_control) {
     warnAboutARBClipControl();
@@ -157,7 +165,7 @@ void mjr_readPixels(unsigned char* rgb, float* depth,
     if (depth) {
       glReadPixels(viewport.left, viewport.bottom, viewport.width, viewport.height,
                    GL_DEPTH_COMPONENT, GL_FLOAT, depth);
-      flipDepthIfRequired(depth, viewport, con);
+      flipAndMaybeScaleDepthIfRequired(depth, viewport, con);
     }
   }
 
