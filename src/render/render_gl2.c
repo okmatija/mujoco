@@ -210,7 +210,7 @@ void mjr_readPixels(unsigned char* rgb, float* depth,
     if (depth) {
       glReadPixels(viewport.left, viewport.bottom, viewport.width, viewport.height,
                    GL_DEPTH_COMPONENT, GL_FLOAT, depth);
-      flipDepthIfRequired(depth, viewport, con);
+      flipAndMaybeScaleDepthIfRequired(depth, viewport, con);
     }
 
     // restore currentBuffer
