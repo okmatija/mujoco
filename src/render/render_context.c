@@ -1534,6 +1534,12 @@ void mjr_makeContext_offSize(const mjModel* m, mjrContext* con, int fontscale,
     if (!mjGladLoadGL()) {
       mju_error("gladLoadGL error");
     }
+    if (glDebugEnabled()) {
+      printf("GL_VENDOR is '%s'\n", glGetString(GL_VENDOR));
+      printf("GL_VERSION is '%s'\n", glGetString(GL_VERSION));
+      printf("GL_RENDERER is '%s'\n", glGetString(GL_RENDERER));
+      printf("GL_EXTENSIONS is '%s'\n", glGetString(GL_EXTENSIONS));
+    }
     if (!mjGLAD_GL_VERSION_1_5) {
       mju_error("OpenGL version 1.5 or higher required");
     }
