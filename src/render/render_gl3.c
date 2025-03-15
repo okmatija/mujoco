@@ -736,12 +736,34 @@ static void setView(int view, mjrRect viewport, const mjvScene* scn, const mjrCo
             cam.frustum_near,
             cam.frustum_far);
   } else {
+#if 0
     glFrustum(cam.frustum_center - halfwidth,
               cam.frustum_center + halfwidth,
               cam.frustum_bottom,
               cam.frustum_top,
               cam.frustum_near,
               cam.frustum_far);
+#else
+    double left = (double)cam.frustum_center - halfwidth;
+    double right = (double)cam.frustum_center + halfwidth;
+    double bottom = cam.frustum_bottom;
+    double top = cam.frustum_top;
+    double near = cam.frustum_near;
+    
+    double A = (right + left) / (right - left);
+    double B = (top + bottom) / (top - bottom);
+    double C = -1.;
+    double D = -2. * near;
+    
+    double frustumMatrix[16] = {
+      near / halfwidth, 0., 0., 0.,
+      0., 2. * near / (top - bottom), 0., 0.,
+      A, B, C, -1.,
+      0., 0., D, 0.
+    };
+    
+    glMultMatrixd(frustumMatrix);
+#endif
   }
 
   // save projection matrix if requested
@@ -1189,7 +1211,7 @@ void mjr_render(mjrRect viewport, mjvScene* scn, const mjrContext* con) {
                     cam.frustum_near, cam.frustum_far);
           } else {
             mjr_perspective(mju_min(2*thislight->cutoff*con->shadowScale, 160), 1,
-                            cam.frustum_near, cam.frustum_far);
+                            cam.frustum_near, INFINITY);
           }
           glGetFloatv(GL_PROJECTION_MATRIX, lightProject);
 

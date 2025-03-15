@@ -192,7 +192,23 @@ void mjr_perspective(float fovy, float aspect, float znear, float zfar) {
   w = h * (double)aspect;
 
   // make symmetric frustrum
-  glFrustum(-w, w, -h, h, (double)znear, (double)zfar);
+  if (zfar == INFINITY) {
+    double A = 0.;
+    double B = 0.;
+    double C = -1.;
+    double D = -2. * (double)znear;
+    
+    double frustumMatrix[16] = {
+      (double)znear/w, 0., 0., 0.,
+      0., (double)znear/h, 0., 0.,
+      A, B, C, -1.,
+      0., 0., D, 0.
+    };
+    
+    glMultMatrixd(frustumMatrix);
+  } else {
+    glFrustum(-w, w, -h, h, (double)znear, (double)zfar);
+  }
 }
 
 
