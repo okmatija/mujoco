@@ -296,7 +296,7 @@ static void renderGeom(const mjvGeom* geom, int mode, const float* headpos,
     glTranslatef(geom->pos[0], geom->pos[1], geom->pos[2]);
     glMultMatrixf(mat);
   }
-
+  
   // render geom
   switch (geom->type) {
   case mjGEOM_PLANE:                              // plane
@@ -1211,8 +1211,12 @@ void mjr_render(mjrRect viewport, mjvScene* scn, const mjrContext* con) {
           int cull_face = glIsEnabled(GL_CULL_FACE);
           glDisable(GL_CULL_FACE);  // all faces cast shadows
           glEnable(GL_POLYGON_OFFSET_FILL);
-          float kOffsetFactor = -1.5f;
-          float kOffsetUnits = -4.0f;
+          float kOffsetFactor = -16.f;
+          float kOffsetUnits = -512.f;
+          if (mjGLAD_GL_ARB_clip_control) {
+            kOffsetFactor = -1.5f;
+            kOffsetUnits = -4.0f;
+          }
           glPolygonOffset(kOffsetFactor, kOffsetUnits);  // prevents "shadow acne"
 
           // render all geoms to depth texture
