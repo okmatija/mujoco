@@ -52,18 +52,17 @@ configs = [
 ]
 
 scenes = [
+    ["../../mujoco_tests/mujoco_menagerie/apptronik_apollo/scene.xml", "apptronik_apollo"],
+    ["../../mujoco_tests/mujoco_menagerie/ufactory_lite6/scene.xml", "ufactory_lite6"],
     ["../../mujoco_tests/mink/examples/kuka_iiwa_14/scene.xml", "kuka_iiwa_14"],
     ["../../mujoco_tests/mink/examples/ufactory_xarm7/scene.xml", "ufactory_xarm7"],
+    ["../../mujoco_tests/mujoco_menagerie/flybody/scene.xml", "flybody"],
 
     # This scene doesn't load: "Error: mesh volume is too small: base_link_2 . Try setting inertia to shell"
     # ["../../mujoco_tests/mink/examples/hello_robot_stretch_3/scene.xml", "hello_robot_stretch_3"],
     ["../../mujoco_tests/mujoco_menagerie/unitree_g1/scene.xml", "unitree_g1"],  # FIXME: Lights does not move with robot?
-    ["../../mujoco_tests/mujoco_menagerie/umi_gripper/scene.xml", "umi_gripper"],  # NOTE: Seems to have no lights
-    ["../../mujoco_tests/mujoco_menagerie/ufactory_lite6/scene.xml", "ufactory_lite6"],
+    ["../../mujoco_tests/mujoco_menagerie/umi_gripper/scene.xml", "umi_gripper"],  # NOTE: The lights don't create shadows in the scene even on linux nvidia
     ["../../mujoco_tests/mujoco_menagerie/shadow_dexee/scene.xml", "shadow_dexee"],  # NOTE: mujoco.pid is not found.
-    ["../../mujoco_tests/mujoco_menagerie/franka_emika_panda/scene.xml", "franka_emika_panda"],
-    ["../../mujoco_tests/mujoco_menagerie/apptronik_apollo/scene.xml", "apptronik_apollo"],  # NOTE: Only ankles collide with floor? Also quite dark
-    ["../../mujoco_tests/mujoco_menagerie/flybody/scene.xml", "flybody"],
     
     ["../../mujoco_tests/mink/examples/stanford_tidybot/scene.xml", "stanford_tidybot"],
     ["../../mujoco_tests/mink/examples/unitree_h1/scene.xml", "unitree_h1"],
@@ -74,6 +73,7 @@ scenes = [
     ["../../mujoco_tests/mink/examples/aloha/scene.xml", "aloha"],
     ["../../mujoco_tests/mink/examples/unitree_g1/scene.xml", "unitree_g1"],
     
+    ["../../mujoco_tests/mujoco_menagerie/franka_emika_panda/scene.xml", "franka_emika_panda"],
     ["../../mujoco_tests/mujoco_menagerie/agility_cassie/scene.xml", "agility_cassie"],
     ["../../mujoco_tests/mujoco_menagerie/agilex_piper/scene.xml", "agilex_piper"],
     ["../../mujoco_tests/mujoco_menagerie/aloha/scene.xml", "aloha"],
