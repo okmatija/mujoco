@@ -1055,8 +1055,8 @@ static void makeShadow(const mjModel* m, mjrContext* con) {
   glActiveTexture(GL_TEXTURE1);
   glEnable(GL_TEXTURE_2D);
   glBindTexture(GL_TEXTURE_2D, con->shadowTex);
-  glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT,
-               con->shadowSize, con->shadowSize, 0, GL_DEPTH_COMPONENT, GL_FLOAT, NULL);
+  glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH24_STENCIL8,
+               con->shadowSize, con->shadowSize, 0, GL_DEPTH_STENCIL, GL_UNSIGNED_INT_24_8, NULL);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
@@ -1578,6 +1578,23 @@ void mjr_makeContext_offSize(const mjModel* m, mjrContext* con, int fontscale,
     } else {
       con->windowSamples = 0;
     }
+    
+    // get default frame buffer information
+    GLint r_bits, g_bits, b_bits, a_bits;
+    glGetIntegerv(GL_RED_BITS, &r_bits);
+    glGetIntegerv(GL_GREEN_BITS, &g_bits);
+    glGetIntegerv(GL_BLUE_BITS, &b_bits);
+    glGetIntegerv(GL_ALPHA_BITS, &a_bits);
+    
+    // Get depth and stencil buffer information
+    GLint d_bits, s_bits;
+    glGetIntegerv(GL_DEPTH_BITS, &d_bits);
+    glGetIntegerv(GL_STENCIL_BITS, &s_bits);
+    
+    printf("Default Framebuffer Format:\n");
+    printf("  Color Buffer: R%d G%d B%d A%d\n", r_bits, g_bits, b_bits, a_bits);
+    printf("  Depth Buffer: %d bits\n", d_bits);
+    printf("  Stencil Buffer: %d bits\n", s_bits);
   }
 
   // set pixel (un)packing
