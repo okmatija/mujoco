@@ -27,6 +27,7 @@
 #include <type_traits>
 #include <utility>
 
+#include "dear_imgui/imgui.h"
 #include "lodepng.h"
 #include <mujoco/mjdata.h>
 #include <mujoco/mjui.h>
@@ -35,6 +36,9 @@
 #include <mujoco/mujoco.h>
 #include "platform_ui_adapter.h"
 #include "array_safety.h"
+#include "dear_imgui/backends/imgui_impl_opengl2.h"
+#include "dear_imgui/backends/imgui_impl_glfw.h"
+
 
 // When launched via an App Bundle on macOS, the working directory is the path to the App Bundle's
 // resource directory. This causes files to be saved into the bundle, which is not the desired
@@ -2596,8 +2600,16 @@ void Simulate::Render() {
     pending_.ui_update_equality = false;
   }
 
+  ImGui_ImplOpenGL2_NewFrame();
+  ImGui_ImplGlfw_NewFrame();
+  ImGui::NewFrame();
+
   // render scene
   mjr_render(rect, &this->scn, &this->platform_ui->mjr_context());
+
+  ImGui::ShowDemoWindow();
+  ImGui::Render();
+  ImGui_ImplOpenGL2_RenderDrawData(ImGui::GetDrawData());
 
   // show last loading error
   if (this->load_error[0]) {
@@ -2775,6 +2787,8 @@ void Simulate::RenderLoop() {
 
   // make empty context
   this->platform_ui->RefreshMjrContext(nullptr, fontscale);
+
+  ImGui_ImplOpenGL2_Init();
 
   // init state and uis
   std::memset(&this->uistate, 0, sizeof(mjuiState));

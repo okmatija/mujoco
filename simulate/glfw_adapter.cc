@@ -22,6 +22,9 @@
 #include <mujoco/mujoco.h>
 #include "glfw_dispatch.h"
 
+#include "dear_imgui/backends/imgui_impl_glfw.h"
+
+
 #ifdef __APPLE__
 #include "glfw_corevideo.h"
 #endif
@@ -63,6 +66,8 @@ GlfwAdapter::GlfwAdapter() {
   if (!window_) {
     mju_error("could not create window");
   }
+
+  ImGui_ImplGlfw_InitForOpenGL(window_, true);
 
   // save window position and size
   Glfw().glfwGetWindowPos(window_, &window_pos_.first, &window_pos_.second);

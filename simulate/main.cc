@@ -32,6 +32,7 @@
 #include "glfw_adapter.h"
 #include "simulate.h"
 #include "array_safety.h"
+#include "dear_imgui/imgui.h"
 
 #define MUJOCO_PLUGIN_DIR "mujoco_plugin"
 
@@ -526,6 +527,8 @@ int main(int argc, char** argv) {
 
   mjvPerturb pert;
   mjv_defaultPerturb(&pert);
+
+  ImGui::CreateContext();
 
   // simulate object encapsulates the UI
   auto sim = std::make_unique<mj::Simulate>(
