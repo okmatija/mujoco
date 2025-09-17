@@ -117,6 +117,13 @@ target_include_directories(
   platform_ui_adapter PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}
                              $<TARGET_PROPERTY:glfw,INTERFACE_INCLUDE_DIRECTORIES>
 )
+
+target_include_directories(platform_ui_adapter PUBLIC
+  ${CMAKE_CURRENT_SOURCE_DIR}
+  ${PROJECT_SOURCE_DIR}/dear_imgui
+  ${PROJECT_SOURCE_DIR}/dear_imgui/backends
+)
+
 target_link_libraries(platform_ui_adapter PUBLIC mujoco::mujoco)
 if(SIMULATE_GLFW_DYNAMIC_SYMBOLS)
   target_compile_definitions(platform_ui_adapter PUBLIC mjGLFW_DYNAMIC_SYMBOLS)
@@ -167,6 +174,10 @@ if(SIMULATE_BUILD_EXECUTABLE)
   )
 
   add_executable(simulate main.cc array_safety.h ${SIMULATE_RESOURCE_FILES} ${IMGUI_SOURCES})
+  # Suppress implicit-fallthrough warning for dear_imgui sources
+  foreach(imgui_src ${IMGUI_SOURCES})
+    set_source_files_properties(${imgui_src} PROPERTIES COMPILE_FLAGS "-Wno-error=implicit-fallthrough")
+  endforeach()
   message(STATUS "PROJECT_SOURCE_DIR: ${PROJECT_SOURCE_DIR}")
   target_include_directories(simulate PUBLIC
     ${PROJECT_SOURCE_DIR}
@@ -192,6 +203,9 @@ if(SIMULATE_BUILD_EXECUTABLE)
     glfw
     Threads::Threads
     lodepng
+    $<$<PLATFORM_ID:Linux>:GL>
+    $<$<PLATFORM_ID:Darwin>:OpenGL>
+    $<$<PLATFORM_ID:Windows>:opengl32>
   )
 
   if (MUJOCO_WITH_USD)
