@@ -67,7 +67,7 @@ GlfwAdapter::GlfwAdapter() {
     mju_error("could not create window");
   }
 
-  ImGui_ImplGlfw_InitForOpenGL(window_, true);
+  ImGui_ImplGlfw_InitForOpenGL(window_, false);
 
   // save window position and size
   Glfw().glfwGetWindowPos(window_, &window_pos_.first, &window_pos_.second);
@@ -82,18 +82,22 @@ GlfwAdapter::GlfwAdapter() {
   Glfw().glfwSetKeyCallback(
       window_, +[](GLFWwindow* window, int key, int scancode, int act, int mods) {
         GlfwAdapterFromWindow(window).OnKey(key, scancode, act);
+        ImGui_ImplGlfw_KeyCallback(window, key, scancode, act, mods);
       });
   Glfw().glfwSetMouseButtonCallback(
       window_, +[](GLFWwindow* window, int button, int act, int mods) {
         GlfwAdapterFromWindow(window).OnMouseButton(button, act);
+        ImGui_ImplGlfw_MouseButtonCallback(window, button, act, mods);
       });
   Glfw().glfwSetCursorPosCallback(
       window_, +[](GLFWwindow* window, double x, double y) {
         GlfwAdapterFromWindow(window).OnMouseMove(x, y);
+        ImGui_ImplGlfw_CursorPosCallback(window, x, y);
       });
   Glfw().glfwSetScrollCallback(
       window_, +[](GLFWwindow* window, double xoffset, double yoffset) {
         GlfwAdapterFromWindow(window).OnScroll(xoffset, yoffset);
+        ImGui_ImplGlfw_ScrollCallback(window, xoffset, yoffset);
       });
   Glfw().glfwSetWindowRefreshCallback(
       window_, +[](GLFWwindow* window) {
@@ -104,10 +108,12 @@ GlfwAdapter::GlfwAdapter() {
         }
 #endif
         GlfwAdapterFromWindow(window).OnWindowRefresh();
+        ImGui_ImplGlfw_WindowFocusCallback(window, 1);
       });
   Glfw().glfwSetWindowSizeCallback(
       window_, +[](GLFWwindow* window, int width, int height) {
         GlfwAdapterFromWindow(window).OnWindowResize(width, height);
+        ImGui_ImplGlfw_WindowFocusCallback(window, 1);
       });
 
   // make context current
