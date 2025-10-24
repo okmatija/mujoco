@@ -1,7 +1,7 @@
 from unittest.mock import mock_open, patch
 import unittest
-from helpers import common
-from helpers import constants
+from wasm.codegen.helpers import common
+from wasm.codegen.helpers import constants
 
 patch = unittest.mock.patch
 uppercase_first_letter = common.uppercase_first_letter

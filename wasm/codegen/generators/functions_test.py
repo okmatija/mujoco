@@ -1,8 +1,8 @@
 import unittest
 
-from introspect import ast_nodes
+from python.mujoco.introspect import ast_nodes
 
-from generators import functions
+from wasm.codegen.generators import functions
 
 
 class FunctionsGeneratorTest(unittest.TestCase):

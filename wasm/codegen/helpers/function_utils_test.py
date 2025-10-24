@@ -1,10 +1,10 @@
 from typing import TypeAlias
 
 import unittest
-from introspect import ast_nodes
+from python.mujoco.introspect import ast_nodes
 
-from helpers import constants
-from helpers import function_utils
+from wasm.codegen.helpers import constants
+from wasm.codegen.helpers import function_utils
 
 
 PrimitiveTypes: TypeAlias = constants.PRIMITIVE_TYPES

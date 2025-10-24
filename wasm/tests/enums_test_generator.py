@@ -3,8 +3,8 @@
 import os
 import textwrap
 
-from introspect import enums as introspect_enums
-from codegen.helpers import common
+from python.mujoco.introspect import enums as introspect_enums
+from wasm.codegen.helpers import common
 
 write_to_file = common.write_to_file
 
