@@ -87,9 +87,9 @@ void mjr_makeFilamentContext(const mjModel* m, mjrContext* con,
   g_filament_context = new mujoco::FilamentContext(config, m, con);
 }
 
-void mjr_defaultContext(mjrContext* con) { memset(con, 0, sizeof(mjrContext)); }
+MJAPI void mjr_defaultContext(mjrContext* con) { memset(con, 0, sizeof(mjrContext)); }
 
-void mjr_makeContext(const mjModel* m, mjrContext* con, int fontscale) {
+MJAPI void mjr_makeContext(const mjModel* m, mjrContext* con, int fontscale) {
   mjr_freeContext(con);
   mjrFilamentConfig cfg;
   mjr_defaultFilamentConfig(&cfg);
@@ -97,7 +97,7 @@ void mjr_makeContext(const mjModel* m, mjrContext* con, int fontscale) {
   mjr_makeFilamentContext(m, con, &cfg);
 }
 
-void mjr_freeContext(mjrContext* con) {
+MJAPI void mjr_freeContext(mjrContext* con) {
   // mjr_freeContext may be called multiple times.
   if (g_filament_context) {
     delete g_filament_context;
@@ -106,38 +106,38 @@ void mjr_freeContext(mjrContext* con) {
   mjr_defaultContext(con);
 }
 
-void mjr_render(mjrRect viewport, mjvScene* scn, const mjrContext* con) {
+MJAPI void mjr_render(mjrRect viewport, mjvScene* scn, const mjrContext* con) {
   CheckFilamentContext();
   g_filament_context->Render(viewport, scn, con);
 }
 
-void mjr_uploadMesh(const mjModel* m, const mjrContext* con, int meshid) {
+MJAPI void mjr_uploadMesh(const mjModel* m, const mjrContext* con, int meshid) {
   CheckFilamentContext();
   g_filament_context->UploadMesh(m, meshid);
 }
 
-void mjr_uploadTexture(const mjModel* m, const mjrContext* con, int texid) {
+MJAPI void mjr_uploadTexture(const mjModel* m, const mjrContext* con, int texid) {
   CheckFilamentContext();
   g_filament_context->UploadTexture(m, texid);
 }
 
-void mjr_uploadHField(const mjModel* m, const mjrContext* con, int hfieldid) {
+MJAPI void mjr_uploadHField(const mjModel* m, const mjrContext* con, int hfieldid) {
   CheckFilamentContext();
   g_filament_context->UploadHeightField(m, hfieldid);
 }
 
-void mjr_setBuffer(int framebuffer, mjrContext* con) {
+MJAPI void mjr_setBuffer(int framebuffer, mjrContext* con) {
   CheckFilamentContext();
   g_filament_context->SetFrameBuffer(framebuffer);
 }
 
-void mjr_readPixels(unsigned char* rgb, float* depth, mjrRect viewport,
+MJAPI void mjr_readPixels(unsigned char* rgb, float* depth, mjrRect viewport,
                     const mjrContext* con) {
   CheckFilamentContext();
   g_filament_context->ReadPixels(viewport, rgb, depth);
 }
 
-void mjr_uploadFont(unsigned char* pixels, int width, int height, int bpp,
+MJAPI void mjr_uploadFont(unsigned char* pixels, int width, int height, int bpp,
                     int id, const mjrContext* con) {
   CheckFilamentContext();
   if (bpp != 4) {
