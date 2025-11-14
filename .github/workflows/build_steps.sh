@@ -282,7 +282,7 @@ dev_studio_print_usage() {
 }
 
 
-# Configure and build Studio in Relaese mode for local development.
+# Configure and build Studio in Release mode for local development.
 # Optionally pass "build" as an argument to skip configuration.
 # Optionally pass extra cmake arguments by first doing `export CMAKE_ARGS="..."`
 dev_studio() {
@@ -361,4 +361,3 @@ set -xe
 
 # Execute the requested function.
 "${func}" "$@"
-

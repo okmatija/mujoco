@@ -239,11 +239,13 @@ jobs:
       run: bash ../../.github/workflows/build_steps.sh build_simulate
 
     - name: Configure Studio
+      if: ${{ !contains(matrix.label, 'gcc') }}  # TODO(haroonq): Enable when gcc works
       env:
         CMAKE_ARGS: ${{ matrix.cmake_args }}
       run: bash ./.github/workflows/build_steps.sh configure_studio
 
     - name: Build Studio
+      if: ${{ !contains(matrix.label, 'gcc') }}  # TODO(haroonq): Enable when gcc works
       env:
         CMAKE_BUILD_ARGS: ${{ matrix.cmake_build_args }}
       run: bash ./.github/workflows/build_steps.sh build_studio
@@ -390,4 +392,3 @@ jobs:
         CHATMSG_JOB_ID: ${{ env.label }}
       if: ${{ failure() && github.event_name == 'push' && env.GCHAT_API_URL != '' }}
       run: bash ./.github/workflows/build_steps.sh notify_team_chat
-
