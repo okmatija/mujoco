@@ -16,6 +16,7 @@
 
 #if defined(_MSC_VER) && !defined(_USE_MATH_DEFINES)
 #define _USE_MATH_DEFINES
+#include <math.h>
 #endif
 #include <cmath>
 #include <cstddef>

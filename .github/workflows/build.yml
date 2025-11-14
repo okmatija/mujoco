@@ -149,7 +149,7 @@ jobs:
       if: ${{ !contains(matrix.label, 'gcc') }}  # TODO(haroonq): Enable when gcc works
       env:
         CMAKE_ARGS: ${{ matrix.cmake_args }}
-      run: bash ./.github/workflows/build_steps.sh configure_studio
+      run: bash ./.github/workflows/build_steps.sh configure_studio ${{ matrix.os }}
 
     - name: Build Studio
       if: ${{ !contains(matrix.label, 'gcc') }}  # TODO(haroonq): Enable when gcc works

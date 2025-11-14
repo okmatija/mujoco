@@ -147,12 +147,16 @@ build_simulate() {
 
 configure_studio() {
     echo "Configuring Studio..."
+    MUJOCO_USE_FILAMENT=ON
+    if [[ "$1" == *"macos"* ]]; then
+        MUJOCO_USE_FILAMENT=OFF
+    fi
     cmake -B build \
         -DCMAKE_BUILD_TYPE:STRING=Release \
         -DCMAKE_INTERPROCEDURAL_OPTIMIZATION:BOOL=OFF \
         -DUSE_STATIC_LIBCXX=OFF \
         -DMUJOCO_BUILD_STUDIO=ON \
-        -DMUJOCO_USE_FILAMENT=ON \
+        -DMUJOCO_USE_FILAMENT=${MUJOCO_USE_FILAMENT} \
         -DMUJOCO_BUILD_SIMULATE=OFF \
         -DMUJOCO_BUILD_EXAMPLES=OFF \
         ${CMAKE_ARGS}
