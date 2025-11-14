@@ -145,12 +145,16 @@ build_simulate() {
 }
 
 
+# TODO(haroonq): Fix Filament compliation on MacOS
+# TODO(haroonq): Fix Filament compliation on GCC <= 12 (maybe)
 configure_studio() {
     echo "Configuring Studio..."
+
     MUJOCO_USE_FILAMENT=ON
     if [[ "$1" == *"macos"* ]]; then
         MUJOCO_USE_FILAMENT=OFF
     fi
+
     cmake -B build \
         -DCMAKE_BUILD_TYPE:STRING=Release \
         -DCMAKE_INTERPROCEDURAL_OPTIMIZATION:BOOL=OFF \
