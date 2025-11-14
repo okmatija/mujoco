@@ -13,6 +13,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# TODO(matijak): Make all cmake commands run from the top-level directory, and
+# consider making the builds parallel.
+
 
 prepare_linux() {
     echo "Preparing Linux..."
@@ -142,6 +145,26 @@ build_simulate() {
 }
 
 
+configure_studio() {
+    echo "Configuring Studio..."
+    cmake -B build \
+        -DCMAKE_BUILD_TYPE:STRING=Release \
+        -DCMAKE_INTERPROCEDURAL_OPTIMIZATION:BOOL=OFF \
+        -DUSE_STATIC_LIBCXX=OFF \
+        -DMUJOCO_BUILD_STUDIO=ON \
+        -DMUJOCO_USE_FILAMENT=ON \
+        -DMUJOCO_BUILD_SIMULATE=OFF \
+        -DMUJOCO_BUILD_EXAMPLES=OFF \
+        ${CMAKE_ARGS}
+}
+
+
+build_studio() {
+    echo "Building Studio..."
+    cmake --build build --config=Release --target mujoco_studio --parallel
+}
+
+
 make_python_sdist() {
     echo "Making Python sdist..."
     source ${TMPDIR}/venv/bin/activate &&
@@ -232,6 +255,85 @@ EOF
 }
 
 
+studio_only() {
+    prepare_linux
+    configure_studio
+    build_studio
+}
+
+
+wasm_bindings_only() {
+    prepare_linux
+    npm_ci
+    setup_emsdk
+    build_test_wasm
+}
+
+
+### Convenience functions for local development ###
+
+dev_studio_print_usage() {
+    set +xe
+    echo "Use the following command to run mujoco_studio"
+    echo ""
+    echo " cd $(git rev-parse --show-toplevel)/build/bin && ./mujoco_studio "
+    echo ""
+    set -xe
+}
+
+
+# Configure and build Studio in Relaese mode for local development.
+# Optionally pass "build" as an argument to skip configuration.
+# Optionally pass extra cmake arguments by first doing `export CMAKE_ARGS="..."`
+dev_studio() {
+    cd $(git rev-parse --show-toplevel)
+
+    if [[ "$1" != "build" ]]; then
+        echo "Configuring MuJoCo Studio..."
+        cmake -B build \
+            ${CMAKE_ARGS} \
+            -DUSE_STATIC_LIBCXX=OFF \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DMUJOCO_BUILD_STUDIO=ON \
+            -DMUJOCO_USE_FILAMENT=ON \
+            -DMUJOCO_BUILD_SIMULATE=OFF \
+            -DMUJOCO_BUILD_EXAMPLES=OFF
+    fi
+
+    echo "Build MuJoCo Studio..."
+    cmake --build build --config=Release --target mujoco_studio --parallel
+
+    dev_studio_print_usage
+}
+
+
+# Configure and build Studio in Debug mode for local development
+# Optionally pass "build" as an argument to skip configuration.
+# Optionally run `export CMAKE_ARGS="..."` before calling this function
+dev_studio_debug() {
+    cd $(git rev-parse --show-toplevel)
+
+    if [[ "$1" != "build" ]]; then
+        echo "Configuring MuJoCo Studio for debugging..."
+        cmake -B build \
+            ${CMAKE_ARGS} \
+            -DUSE_STATIC_LIBCXX=OFF \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_CXX_FLAGS="-O0 -g3" \
+            -DCMAKE_C_FLAGS="-O0 -g3" \
+            -DMUJOCO_BUILD_STUDIO=ON \
+            -DMUJOCO_USE_FILAMENT=ON \
+            -DMUJOCO_BUILD_SIMULATE=OFF \
+            -DMUJOCO_BUILD_EXAMPLES=OFF
+    fi
+
+    echo "Build MuJoCo Studio for debugging..."
+    cmake --build build --config=Debug --target mujoco_studio --parallel
+
+    dev_studio_print_usage
+}
+
+
 # Discover functions defined in this script by finding identifiers followed by
 # "()" and capturing the identifier as a valid function name.
 VALID_FUNCTIONS=()
@@ -245,12 +347,18 @@ if [[ ! " ${VALID_FUNCTIONS[*]} " =~ " ${1} " ]]; then
     exit 1
 fi
 
+# The first parameter is the function name to be executed.
+func="$1"
 
-# Set options to print the commands being run, and cause the script to exit with
+# Shift the positional parameters so "$@" excludes the function name.
+shift
+
+# This line prints the commands being run, and causes the script to exit with
 # an error code if any command fails. Note we do this just before executing
 # the requested function to avoid cluttering the output with the above command
-# discovery code.
+# discovery code and preamble.
 set -xe
 
 # Execute the requested function.
-"$1"
+"${func}" "$@"
+
