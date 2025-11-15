@@ -147,6 +147,7 @@ build_simulate() {
 
 # TODO(haroonq): Fix Filament compliation on MacOS
 # TODO(haroonq): Fix Filament compliation on GCC <= 12 (maybe)
+# TODO(matijak): Fix Filament compliation on Windows with shared libs on
 configure_studio() {
     echo "Configuring Studio..."
     # TODO(matijak): DO NOT SUBMIT Use the env variable to set this.
@@ -164,6 +165,7 @@ configure_studio() {
         -DMUJOCO_USE_FILAMENT=${MUJOCO_USE_FILAMENT} \
         -DMUJOCO_BUILD_SIMULATE=OFF \
         -DMUJOCO_BUILD_EXAMPLES=OFF \
+        -DBUILD_SHARED_LIBS=OFF \
         ${CMAKE_ARGS}
     echo "Configuring Studio... DONE"
 }
