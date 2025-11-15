@@ -180,15 +180,17 @@ jobs:
             label: "windows-2025-ninja-studio"
             cmake_args: >-
               -G Ninja
-              -DCMAKE_C_COMPILER:STRING=cl.exe
-              -DCMAKE_CXX_COMPILER:STRING=cl.exe
-              -DCMAKE_SYSTEM_VERSION="10.0.26100.0"
+              -DCMAKE_SYSTEM_VERSION=10.0.26100.0
 
     name: "${{ matrix.label }}"
     runs-on: ${{ matrix.os }}
 
     steps:
     - uses: actions/checkout@v3
+
+    - name: Prepare Windows (setup MSVC)
+      if: ${{ runner.os == 'Windows' }}
+      uses: ilammy/msvc-dev-cmd@v1
 
     - name: Prepare Linux
       if: ${{ runner.os == 'Linux' }}
