@@ -266,21 +266,6 @@ EOF
 }
 
 
-studio_only() {
-    prepare_linux
-    configure_studio
-    build_studio
-}
-
-
-wasm_bindings_only() {
-    prepare_linux
-    npm_ci
-    setup_emsdk
-    build_test_wasm
-}
-
-
 ### Convenience functions for local development ###
 
 dev_studio_print_usage() {

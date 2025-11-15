@@ -188,10 +188,16 @@ jobs:
     steps:
     - uses: actions/checkout@v3
 
-    - name: Prepare, Configure and Build MuJoCo Studio
+    - name: Prepare Linux
+      if: ${{ runner.os == 'Linux' }}
+      run: bash ./.github/workflows/build_steps.sh prepare_linux
+
+    - name: Configure and Build MuJoCo Studio
       env:
         CMAKE_ARGS: ${{ matrix.cmake_args }}
-      run: bash ./.github/workflows/build_steps.sh studio_only
+      run: |
+        bash ./.github/workflows/build_steps.sh configure_only
+        bash ./.github/workflows/build_steps.sh build_studio
 
     - name: Notify team chat
       shell: bash
@@ -225,10 +231,17 @@ jobs:
       with:
         node-version: '20'
 
+    - name: Prepare Linux
+      if: ${{ runner.os == 'Linux' }}
+      run: bash ./.github/workflows/build_steps.sh prepare_linux
+
     - name: Prepare, Build and Test WASM bindings
       env:
         CMAKE_ARGS: ${{ env.cmake_args }}
-      run: bash ./.github/workflows/build_steps.sh wasm_bindings_only
+      run: |
+        bash ./.github/workflows/build_steps.sh npm_ci
+        bash ./.github/workflows/build_steps.sh setup_emsdk
+        bash ./.github/workflows/build_steps.sh build_test_wasm
 
     - name: Notify team chat
       shell: bash
