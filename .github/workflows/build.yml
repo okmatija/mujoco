@@ -196,12 +196,14 @@ jobs:
       if: ${{ runner.os == 'Linux' }}
       run: bash ./.github/workflows/build_steps.sh prepare_linux
 
-    - name: Configure and Build MuJoCo Studio
+    # Separate configure and build steps to allow comparing Ninja/MSBuild configure/build times.
+    - name: Configure Studio
       env:
         CMAKE_ARGS: ${{ matrix.cmake_args }}
-      run: |
-        bash ./.github/workflows/build_steps.sh configure_studio ${{ matrix.os }}
-        bash ./.github/workflows/build_steps.sh build_studio
+      run: bash ./.github/workflows/build_steps.sh configure_studio ${{ matrix.os }}
+
+    - name: Build Studio
+      run: bash ./.github/workflows/build_steps.sh build_studio
 
     - name: Notify team chat
       shell: bash
@@ -239,6 +241,7 @@ jobs:
       if: ${{ runner.os == 'Linux' }}
       run: bash ./.github/workflows/build_steps.sh prepare_linux
 
+    # For convenience run multiple build_steps functions in a single step.
     - name: Prepare, Build and Test WASM bindings
       env:
         CMAKE_ARGS: ${{ env.cmake_args }}
