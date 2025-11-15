@@ -286,13 +286,15 @@ dev_studio() {
 
     if [[ "$1" != "build" ]]; then
         echo "Configuring MuJoCo Studio..."
+        # Note: CMAKE_ARGS are added at the end to allow overriding the earlier
+        # commands, its not at the very end in case its empty
         cmake -B build \
-            ${CMAKE_ARGS} \
             -DUSE_STATIC_LIBCXX=OFF \
             -DCMAKE_BUILD_TYPE=Release \
             -DMUJOCO_BUILD_STUDIO=ON \
             -DMUJOCO_USE_FILAMENT=ON \
             -DMUJOCO_BUILD_SIMULATE=OFF \
+            ${CMAKE_ARGS} \
             -DMUJOCO_BUILD_EXAMPLES=OFF
     fi
 
@@ -311,8 +313,9 @@ dev_studio_debug() {
 
     if [[ "$1" != "build" ]]; then
         echo "Configuring MuJoCo Studio for debugging..."
+        # Note: CMAKE_ARGS are added at the end to allow overriding the earlier
+        # commands, its not at the very end in case its empty
         cmake -B build \
-            ${CMAKE_ARGS} \
             -DUSE_STATIC_LIBCXX=OFF \
             -DCMAKE_BUILD_TYPE=Debug \
             -DCMAKE_CXX_FLAGS="-O0 -g3" \
@@ -320,6 +323,7 @@ dev_studio_debug() {
             -DMUJOCO_BUILD_STUDIO=ON \
             -DMUJOCO_USE_FILAMENT=ON \
             -DMUJOCO_BUILD_SIMULATE=OFF \
+            ${CMAKE_ARGS} \
             -DMUJOCO_BUILD_EXAMPLES=OFF
     fi
 
