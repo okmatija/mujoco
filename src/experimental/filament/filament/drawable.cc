@@ -16,8 +16,10 @@
 
 #if defined(_MSC_VER) && !defined(_USE_MATH_DEFINES)
 #define _USE_MATH_DEFINES
-#endif
+#include <math.h>
+#else
 #include <cmath>
+#endif
 #include <cstdint>
 #include <utility>
 

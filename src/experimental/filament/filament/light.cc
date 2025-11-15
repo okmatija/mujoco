@@ -16,8 +16,10 @@
 
 #if defined(_MSC_VER) && !defined(_USE_MATH_DEFINES)
 #define _USE_MATH_DEFINES
-#endif
+#include <math.h>
+#else
 #include <cmath>  // IWYU pragma: keep
+#endif
 
 #include <filament/Engine.h>
 #include <filament/LightManager.h>
