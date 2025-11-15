@@ -18,15 +18,15 @@ set(MUJOCO_FILAMENT_TARGET_NAME mujoco_filament)
 
 add_library(${MUJOCO_FILAMENT_TARGET_NAME} STATIC)
 
-if(BUILD_SHARED_LIB)
-    target_compile_definitions(${MUJOCO_FILAMENT_TARGET_NAME} PRIVATE MUJOCO_DLL_EXPORTS)
-else()
-    target_compile_definitions(${MUJOCO_FILAMENT_TARGET_NAME} PRIVATE MJ_STATIC)
-endif()
+# if(BUILD_SHARED_LIB)
+#     target_compile_definitions(${MUJOCO_FILAMENT_TARGET_NAME} PRIVATE MUJOCO_DLL_EXPORTS)
+# else()
+#     target_compile_definitions(${MUJOCO_FILAMENT_TARGET_NAME} PRIVATE MJ_STATIC)
+# endif()
 
 target_sources(${MUJOCO_FILAMENT_TARGET_NAME}
     PUBLIC
-        stubs.cc
+        # stubs.cc
         render_context_filament.h
         render_context_filament.cc
         filament/buffer_util.cc
