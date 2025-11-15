@@ -2129,7 +2129,7 @@ mjSpec* mj_parseUSDStage(const pxr::UsdStageRefPtr stage) {
   return spec;
 }
 
-MJAPI mjSpec* mj_parseUSD(const char* identifier, const mjVFS* vfs, char* error,
+mjSpec* mj_parseUSD(const char* identifier, const mjVFS* vfs, char* error,
                           int error_sz) {
   auto stage = pxr::UsdStage::Open(identifier);
   return mj_parseUSDStage(stage);
