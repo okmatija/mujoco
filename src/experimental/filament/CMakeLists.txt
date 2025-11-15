@@ -20,7 +20,6 @@ add_library(${MUJOCO_FILAMENT_TARGET_NAME} STATIC)
 
 target_sources(${MUJOCO_FILAMENT_TARGET_NAME}
     PUBLIC
-        stubs.h
         stubs.cc
         render_context_filament.h
         render_context_filament.cc
