@@ -16,6 +16,7 @@
 
 extern "C" {
 
+#if !defined(_MSC_VER)
 void mjr_setAux(int index, const mjrContext* con) {
   mju_error("mjr_setAux not implemented.");
 }
@@ -78,5 +79,6 @@ int mjr_findRect(int x, int y, int nrect, const mjrRect* rect) {
   mju_error("mjr_findRect not implemented.");
   return 0;
 }
+#endif
 
 }  // extern "C"
