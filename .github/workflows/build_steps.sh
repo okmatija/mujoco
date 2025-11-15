@@ -149,7 +149,8 @@ build_simulate() {
 # TODO(haroonq): Fix Filament compliation on GCC <= 12 (maybe)
 configure_studio() {
     echo "Configuring Studio..."
-
+    # TODO(matijak): DO NOT SUBMIT Use the env variable to set this.
+    # TODO(matijak): DO NOT SUBMIT Put the functions in a separate file, and make buid_steps read that file to call them from CI. It should ignore dev_ prefix functions.
     MUJOCO_USE_FILAMENT=ON
     if [[ "$1" == *"macos"* ]]; then
         MUJOCO_USE_FILAMENT=OFF
@@ -164,12 +165,14 @@ configure_studio() {
         -DMUJOCO_BUILD_SIMULATE=OFF \
         -DMUJOCO_BUILD_EXAMPLES=OFF \
         ${CMAKE_ARGS}
+    echo "Configuring Studio... DONE"
 }
 
 
 build_studio() {
     echo "Building Studio..."
     cmake --build build --config=Release --target mujoco_studio --parallel
+    echo "Building Studio... DONE"
 }
 
 
