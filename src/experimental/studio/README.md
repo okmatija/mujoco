@@ -40,6 +40,10 @@ Vulkan can be used by providing `-DMUJOCO_USE_FILAMENT=ON` and
 See the options in the top-level [CMakeLists.txt](../../../CMakeLists.txt) file
 for more details.
 
+## Known Bugs
+
+* MuJoCo Studio does not yet work using Wayland on Linux, use X11 instead.
+
 ## Future Work
 
 1. **Stability and Robustness**. We need user feedback to find and fix bugs.
