@@ -12,69 +12,71 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include "experimental/filament/stubs.h"
+
 #include <mujoco/mujoco.h>
 
 extern "C" {
 
-MJAPI void mjr_setAux(int index, const mjrContext* con) {
+void mjr_setAux(int index, const mjrContext* con) {
   mju_error("mjr_setAux not implemented.");
 }
-MJAPI void mjr_restoreBuffer(const mjrContext* con) {
+void mjr_restoreBuffer(const mjrContext* con) {
   mju_error("mjr_restoreBuffer not implemented.");
 }
-MJAPI void mjr_rectangle(mjrRect viewport, float r, float g, float b, float a) {
+void mjr_rectangle(mjrRect viewport, float r, float g, float b, float a) {
   mju_error("mjr_rectangle not implemented.");
 }
-MJAPI void mjr_blitAux(int index, mjrRect src, int left, int bottom,
+void mjr_blitAux(int index, mjrRect src, int left, int bottom,
                  const mjrContext* con) {
   mju_error("mjr_blitAux not implemented.");
 }
-MJAPI void mjr_changeFont(int fontscale, mjrContext* con) {
+void mjr_changeFont(int fontscale, mjrContext* con) {
   mju_error("mjr_changeFont not implemented.");
 }
-MJAPI void mjr_addAux(int index, int width, int height, int samples,
+void mjr_addAux(int index, int width, int height, int samples,
                 mjrContext* con) {
   mju_error("mjr_addAux not implemented.");
 }
-MJAPI void mjr_resizeOffscreen(int width, int height, mjrContext* con) {
+void mjr_resizeOffscreen(int width, int height, mjrContext* con) {
   mju_error("mjr_resizeOffscreen not implemented.");
 }
-MJAPI void mjr_drawPixels(const unsigned char* rgb, const float* depth,
+void mjr_drawPixels(const unsigned char* rgb, const float* depth,
                     mjrRect viewport, const mjrContext* con) {
   mju_error("mjr_drawPixels not implemented.");
 }
-MJAPI void mjr_blitBuffer(mjrRect src, mjrRect dst, int flg_color, int flg_depth,
+void mjr_blitBuffer(mjrRect src, mjrRect dst, int flg_color, int flg_depth,
                     const mjrContext* con) {
   mju_error("mjr_blitBuffer not implemented.");
 }
-MJAPI void mjr_text(int font, const char* txt, const mjrContext* con, float x,
+void mjr_text(int font, const char* txt, const mjrContext* con, float x,
               float y, float r, float g, float b) {
   mju_error("mjr_text not implemented.");
 }
-MJAPI void mjr_overlay(int font, int gridpos, mjrRect viewport, const char* overlay,
+void mjr_overlay(int font, int gridpos, mjrRect viewport, const char* overlay,
                  const char* overlay2, const mjrContext* con) {
   mju_error("mjr_overlay not implemented.");
 }
-MJAPI void mjr_label(mjrRect viewport, int font, const char* txt, float r, float g,
+void mjr_label(mjrRect viewport, int font, const char* txt, float r, float g,
                float b, float a, float rt, float gt, float bt,
                const mjrContext* con) {
   mju_error("mjr_label not implemented.");
 }
-MJAPI void mjr_figure(mjrRect viewport, mjvFigure* fig, const mjrContext* con) {
+void mjr_figure(mjrRect viewport, mjvFigure* fig, const mjrContext* con) {
   mju_error("mjr_figure not implemented.");
 }
-MJAPI void mjr_finish() {
+void mjr_finish() {
   mju_error("mjr_finish not implemented.");
 }
-MJAPI int mjr_getError() {
+int mjr_getError() {
   mju_error("mjr_getError not implemented.");
   return 0;
 }
-MJAPI mjrRect mjr_maxViewport(const mjrContext* con) {
+mjrRect mjr_maxViewport(const mjrContext* con) {
   mju_error("mjr_maxViewport not implemented.");
   return mjrRect{};
 }
-MJAPI int mjr_findRect(int x, int y, int nrect, const mjrRect* rect) {
+int mjr_findRect(int x, int y, int nrect, const mjrRect* rect) {
   mju_error("mjr_findRect not implemented.");
   return 0;
 }
