@@ -120,6 +120,7 @@ jobs:
             label: "macos-15-arm64"
             cmake_args: >-
               -G Ninja
+              -DCMAKE_CXX_FLAGS="-Wno-deprecated-declarations"
               -DMUJOCO_HARDEN:BOOL=ON
             tmpdir: "/tmp"
           - os: macos-15-large
@@ -189,6 +190,7 @@ jobs:
             label: "macos-15-arm64"
             cmake_args: >-
               -G Ninja
+              -DCMAKE_CXX_FLAGS="-Wno-deprecated-declarations"
               -DMUJOCO_HARDEN:BOOL=ON
 
     name: "${{ matrix.label }}"
@@ -217,7 +219,7 @@ jobs:
     - name: Configure Studio with Filament rendering
       env:
         CMAKE_ARGS: ${{ matrix.cmake_args }}
-      run: bash ./.github/workflows/build_steps.sh configure_studio ${{ matrix.os }}
+      run: bash ./.github/workflows/build_steps.sh configure_studio
 
     - name: Build Studio with Filament rendering
       run: bash ./.github/workflows/build_steps.sh build_studio

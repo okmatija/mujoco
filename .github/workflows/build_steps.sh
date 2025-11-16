@@ -359,12 +359,6 @@ if [[ ! " ${VALID_FUNCTIONS[*]} " =~ " ${1} " ]]; then
     exit 1
 fi
 
-# The first parameter is the function name to be executed.
-func="$1"
-
-# Shift the positional parameters so "$@" excludes the function name.
-shift
-
 # This line prints the commands being run, and causes the script to exit with
 # an error code if any command fails. Note we do this just before executing
 # the requested function to avoid cluttering the output with the above command
@@ -372,4 +366,4 @@ shift
 set -xe
 
 # Execute the requested function.
-"${func}" "$@"
+"$@"

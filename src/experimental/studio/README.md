@@ -8,11 +8,18 @@ still WIP, see the [Future Work](#future-work) section for details.
 ## Usage
 
 Configure and build MuJoCo Studio by running this command from the top-level
-directory. Then follow the printed instructions to run the executable.
+directory.
 
 ```
-bash .github/workflows/build_steps.sh dev_studio
+cmake -B build -DUSE_STATIC_LIBCXX=OFF -DMUJOCO_BUILD_STUDIO=ON
 ```
+
+Next build MuJoCo Studio using:
+
+```
+cmake --build build --config=Release --target mujoco_studio --parallel
+```
+
 ## Development
 
 The command above the section is intended to get you up and running quickly. You
@@ -27,15 +34,17 @@ to work with the cmake files we provide. If you use Visual Studio follow these
 [instructions](https://learn.microsoft.com/en-us/cpp/build/cmake-projects-in-visual-studio?view=msvc-170).
 
 
-## Configuration
+## Filament Rendering
 
-By default Studio uses Filament for rendering, the OpenGL renderer used in
-simulate can be used instead by passing the `-DMUJOCO_USE_FILAMENT=OFF` option
-in the cmake configuration step.
+Studio uses legacy OpenGL rendering by default. There is an option to use
+Filament instead by passing `-DMUJOCO_USE_FILAMENT=ON` during the cmake
+configuration step. The Filament renderer has multiple rendering backends,
+on Linux OpenGL is the default but Vulkan can be used by also providing
+the `-DMUJOCO_USE_FILAMENT_VULKAN=ON` option.
 
-The Filament renderer has multiple backends, on Linux OpenGL is the default but
-Vulkan can be used by providing `-DMUJOCO_USE_FILAMENT=ON` and
-`-DMUJOCO_USE_FILAMENT_VULKAN=ON`
+Note that you will need to run the application from the folder containing
+the executable so that the expected materials/assets can be found. Also note
+that currently Filament rendering is only supported on Linux.
 
 See the options in the top-level [CMakeLists.txt](../../../CMakeLists.txt) file
 for more details.
