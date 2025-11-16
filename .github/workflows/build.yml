@@ -120,7 +120,7 @@ jobs:
             label: "macos-15-arm64"
             cmake_args: >-
               -G Ninja
-              -DCMAKE_CXX_FLAGS="-Wno-deprecated-declarations"
+              -DCMAKE_CXX_FLAGS="-Wno-error=deprecated-declarations"
               -DMUJOCO_HARDEN:BOOL=ON
             tmpdir: "/tmp"
           - os: macos-15-large
@@ -190,7 +190,7 @@ jobs:
             label: "macos-15-arm64"
             cmake_args: >-
               -G Ninja
-              -DCMAKE_CXX_FLAGS="-Wno-deprecated-declarations"
+              -DCMAKE_CXX_FLAGS="-Wno-error=deprecated-declarations"
               -DMUJOCO_HARDEN:BOOL=ON
 
     name: "${{ matrix.label }}"
