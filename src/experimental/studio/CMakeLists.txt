@@ -63,13 +63,18 @@ target_link_libraries(${MUJOCO_STUDIO_TARGET_NAME}
 
 # Filament backend requires additional files to be copied into an "assets" folder.
 if(MUJOCO_USE_FILAMENT)
+    if(WIN32)
+        # Copy to work around lack of symlink permissions on Windows.
+        set(COPY_COMMAND copy_directory)
+    else()
+        set(COPY_COMMAND create_symlink)
+    endif()
     add_custom_command(
         TARGET ${MUJOCO_STUDIO_TARGET_NAME}
         POST_BUILD
-        COMMAND ${CMAKE_COMMAND}
-            -E create_symlink
-                ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/../src/experimental/filament/assets
-                ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/assets
+        COMMAND ${CMAKE_COMMAND} -E ${COPY_COMMAND}
+            ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/../src/experimental/filament/assets
+            ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/assets
         COMMENT "Copying Filament assets to build directory"
     )
 endif()
