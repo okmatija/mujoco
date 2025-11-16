@@ -6,6 +6,10 @@
 # We set CMAKE_INTERPROCEDURAL_OPTIMIZATION=OFF here to reduce build time.
 # It is highly recommended that this is set to ON for production builds.
 
+# TODO(matijak): Consider removing macOS x86_64
+# TODO(matijak): Consider switching Windows to Ninja builds only, this configures slightly faster and would bring windows in line with other OSes, also 
+# TODO(matijak): Remove the dev commands and just inline steps in the README
+
 name: build
 
 on:
@@ -124,6 +128,7 @@ jobs:
               -G Ninja
               -DMUJOCO_HARDEN:BOOL=ON
             tmpdir: "/tmp"
+          # TODO(matijak): Always configure using ninja so that this matrix simplifies, we can have one MSBuild job elsewhere
           - os: windows-2025
             label: "windows-2025"
             cmake_args: >-
@@ -145,6 +150,7 @@ jobs:
       if: ${{ runner.os == 'macOS' }}
       run: brew install ninja
 
+    # TODO(haroonq): Fix Filament on MacOS and (maybe) for GCC<=12
     - name: Configure Studio
       if: ${{ matrix.label != 'macos-15-x86_64' &&
               matrix.label != 'ubuntu-22.04-gcc-10' &&
@@ -161,9 +167,7 @@ jobs:
               matrix.label != 'ubuntu-22.04-gcc-12' }}
       run: bash ./.github/workflows/build_steps.sh build_studio
 
-
-  # This job quickly determines if MuJoCo Studio is broken by testing it on a two platforms.
-  # On Windows we use Ninja here and MSBuild in the full matrix job above, Ninja is faster.
+  # This job quickly determines if MuJoCo Studio is broken.
   studio:
     strategy:
       fail-fast: false
@@ -181,6 +185,11 @@ jobs:
             cmake_args: >-
               -G Ninja
               -DCMAKE_SYSTEM_VERSION=10.0.26100.0
+          - os: macos-15
+            label: "macos-15-arm64"
+            cmake_args: >-
+              -G Ninja
+              -DMUJOCO_HARDEN:BOOL=ON
 
     name: "${{ matrix.label }}"
     runs-on: ${{ matrix.os }}
@@ -197,12 +206,20 @@ jobs:
       run: bash ./.github/workflows/build_steps.sh prepare_linux
 
     # Separate configure and build steps to allow comparing Ninja/MSBuild configure/build times.
-    - name: Configure Studio
+    - name: Configure Studio with legacy OpenGL rendering
+      env:
+        CMAKE_ARGS: ${{ matrix.cmake_args }}
+      run: bash ./.github/workflows/build_steps.sh configure_studio_legacy_opengl
+
+    - name: Build Studio with legacy OpenGL rendering
+      run: bash ./.github/workflows/build_steps.sh build_studio
+
+    - name: Configure Studio with Filament rendering
       env:
         CMAKE_ARGS: ${{ matrix.cmake_args }}
       run: bash ./.github/workflows/build_steps.sh configure_studio ${{ matrix.os }}
 
-    - name: Build Studio
+    - name: Build Studio with Filament rendering
       run: bash ./.github/workflows/build_steps.sh build_studio
 
     - name: Notify team chat

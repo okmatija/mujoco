@@ -147,3 +147,20 @@ void mjr_uploadFont(unsigned char* pixels, int width, int height, int bpp,
 }
 
 }  // extern "C"
+
+#include "stubs.cc"
+
+/*
+ 
+        cmake -B build \
+            -DUSE_STATIC_LIBCXX=OFF \
+            -DCMAKE_BUILD_TYPE:STRING=Debug \
+            -DMUJOCO_BUILD_STUDIO=ON \
+            -DMUJOCO_USE_FILAMENT=ON \
+            -DMUJOCO_BUILD_SIMULATE=OFF \
+            -DMUJOCO_BUILD_EXAMPLES=OFF
+
+
+    cmake --build build --config=Debug --target mujoco_studio --parallel
+
+*/

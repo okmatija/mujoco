@@ -145,28 +145,38 @@ build_simulate() {
 }
 
 
-# TODO(haroonq): Fix Filament compliation on MacOS
-# TODO(haroonq): Fix Filament compliation on GCC <= 12 (maybe)
-# TODO(matijak): Fix Filament compliation on Windows with shared libs on
-configure_studio() {
-    echo "Configuring Studio..."
-    # TODO(matijak): DO NOT SUBMIT Use the env variable to set this.
-    # TODO(matijak): DO NOT SUBMIT Put the functions in a separate file, and make buid_steps read that file to call them from CI. It should ignore dev_ prefix functions.
-    MUJOCO_USE_FILAMENT=ON
-    if [[ "$1" == *"macos"* ]]; then
-        MUJOCO_USE_FILAMENT=OFF
-    fi
-
+_configure_studio() {
+    # Invoke cmake will all options OFF assuming that the caller will enable
+    # what is needed by exporting _CONFIGURE_STUDIO_CMAKE_ARGS="..." first
     cmake -B build \
         -DCMAKE_BUILD_TYPE:STRING=Release \
         -DCMAKE_INTERPROCEDURAL_OPTIMIZATION:BOOL=OFF \
         -DUSE_STATIC_LIBCXX=OFF \
-        -DMUJOCO_BUILD_STUDIO=ON \
-        -DMUJOCO_USE_FILAMENT=${MUJOCO_USE_FILAMENT} \
-        -DMUJOCO_BUILD_SIMULATE=OFF \
-        -DMUJOCO_BUILD_EXAMPLES=OFF \
         -DBUILD_SHARED_LIBS=OFF \
-        ${CMAKE_ARGS}
+        -DMUJOCO_BUILD_EXAMPLES=OFF \
+        -DMUJOCO_BUILD_SIMULATE=OFF \
+        -DMUJOCO_BUILD_STUDIO=OFF \
+        -DMUJOCO_BUILD_TESTS=OFF \
+        -DMUJOCO_TEST_PYTHON_UTIL=OFF \
+        -DMUJOCO_WITH_USD=OFF \
+        -DMUJOCO_USE_FILAMENT=OFF \
+        -DMUJOCO_USE_FILAMENT_VULKAN=OFF \
+        ${_CONFIGURE_STUDIO_CMAKE_ARGS}
+}
+
+
+configure_studio_legacy_opengl() {
+    echo "Configuring Studio (legacy OpenGL)..."
+    export _CONFIGURE_STUDIO_CMAKE_ARGS="-DMUJOCO_BUILD_STUDIO=ON ${CMAKE_ARGS}"
+    _configure_studio
+    echo "Configuring Studio (legacy OpenGL)... DONE"
+}
+
+
+configure_studio() {
+    echo "Configuring Studio..."
+    export _CONFIGURE_STUDIO_CMAKE_ARGS="-DMUJOCO_BUILD_STUDIO=ON -DMUJOCO_USE_FILAMENT=ON ${CMAKE_ARGS}"
+    _configure_studio
     echo "Configuring Studio... DONE"
 }
 
@@ -292,12 +302,12 @@ dev_studio() {
         # commands, its not at the very end in case its empty
         cmake -B build \
             -DUSE_STATIC_LIBCXX=OFF \
-            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_BUILD_TYPE:STRING=Release \
             -DMUJOCO_BUILD_STUDIO=ON \
             -DMUJOCO_USE_FILAMENT=ON \
             -DMUJOCO_BUILD_SIMULATE=OFF \
-            ${CMAKE_ARGS} \
-            -DMUJOCO_BUILD_EXAMPLES=OFF
+            -DMUJOCO_BUILD_EXAMPLES=OFF \
+            ${CMAKE_ARGS}
     fi
 
     echo "Build MuJoCo Studio..."
@@ -319,14 +329,14 @@ dev_studio_debug() {
         # commands, its not at the very end in case its empty
         cmake -B build \
             -DUSE_STATIC_LIBCXX=OFF \
-            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_BUILD_TYPE:STRING=Debug \
             -DCMAKE_CXX_FLAGS="-O0 -g3" \
             -DCMAKE_C_FLAGS="-O0 -g3" \
             -DMUJOCO_BUILD_STUDIO=ON \
             -DMUJOCO_USE_FILAMENT=ON \
             -DMUJOCO_BUILD_SIMULATE=OFF \
-            ${CMAKE_ARGS} \
-            -DMUJOCO_BUILD_EXAMPLES=OFF
+            -DMUJOCO_BUILD_EXAMPLES=OFF \
+            ${CMAKE_ARGS}
     fi
 
     echo "Build MuJoCo Studio for debugging..."
