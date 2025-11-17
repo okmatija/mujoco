@@ -20,6 +20,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
+#include <numbers>
 #include <vector>
 
 #include <mujoco/experimental/usd/mjcPhysics/tokens.h>
@@ -2155,7 +2156,7 @@ class ModelWriter {
         2 * znear *
         (use_intrinsic ? 1.0f / cam_intrinsic[1] *
                              (cam_sensorsize[1] / 2.f - cam_intrinsic[3])
-                       : mju_tan((fovy / 2) * (M_PI / 180.0)));
+                       : mju_tan((fovy / 2) * (std::numbers::pi / 180.0)));
     float horizontal_aperture =
         use_intrinsic ? 2 * znear / cam_intrinsic[0] *
                             (cam_sensorsize[0] / 2.f - cam_intrinsic[2])

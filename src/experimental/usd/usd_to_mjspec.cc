@@ -18,6 +18,7 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <numbers>
 #include <string>
 #include <vector>
 
@@ -1837,8 +1838,8 @@ void ParseUsdPhysicsJoint(mjSpec* spec, const pxr::UsdPrim& prim, mjsBody* body,
         mj_joint->range[0] = lower;
         mj_joint->range[1] = upper;
       } else {
-        mj_joint->range[0] = lower * M_PI / 180.0;
-        mj_joint->range[1] = upper * M_PI / 180.0;
+        mj_joint->range[0] = lower * std::numbers::pi / 180.0;
+        mj_joint->range[1] = upper * std::numbers::pi / 180.0;
       }
     }
   } else if (prim.IsA<pxr::UsdPhysicsPrismaticJoint>()) {
