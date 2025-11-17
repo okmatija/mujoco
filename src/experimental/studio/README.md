@@ -8,46 +8,47 @@ still WIP, see the [Future Work](#future-work) section for details.
 ## Usage
 
 Configure and build MuJoCo Studio by running this command from the top-level
-directory.
+directory. Then follow the printed instructions to run the executable.
 
 ```
-cmake -B build -DUSE_STATIC_LIBCXX=OFF -DMUJOCO_BUILD_STUDIO=ON
+bash build.sh
 ```
 
-Next build MuJoCo Studio using:
-
-```
-cmake --build build --config=Release --target mujoco_studio --parallel
-```
+> [!NOTE] The [`build.sh`](build.sh) script works on windows in a gitbash shell,
+> and uses the Ninja build system on all platforms.
 
 ## Development
 
-The command above the section is intended to get you up and running quickly. You
-can see the cmake invocation by reading the `dev_studio` function implementation
-in the [build_steps.sh](../../../.github/workflows/build_steps.sh) file. There
-is also a `dev_studio_debug` command to conveniently build an executable with
-debug information.
+The [`build.sh`](build.sh) script is intended to get you up and running quickly.
+If you intend to develop the application you may prefer to work from an IDE:
 
-If you intend to develop the application you will may want to work from an IDE.
-If use [Clion](https://www.jetbrains.com/clion/) you should be able to set it up
-to work with the cmake files we provide. If you use Visual Studio follow these
-[instructions](https://learn.microsoft.com/en-us/cpp/build/cmake-projects-in-visual-studio?view=msvc-170).
+* [Clion](https://www.jetbrains.com/clion/). You should be able to set this up
+  to work with the cmake files we provide.
 
+* [VSCode](https://code.visualstudio.com/). We have found that Microsoft's
+  [CMake Tools](https://marketplace.visualstudio.com/items?itemName=ms-vscode.cmake-tools)
+  extension works well.
+
+* [Visual Studio](https://visualstudio.microsoft.com/). Follow these
+  [instructions](https://learn.microsoft.com/en-us/cpp/build/cmake-projects-in-visual-studio?view=msvc-170).
 
 ## Filament Rendering
 
-Studio uses legacy OpenGL rendering by default. There is an option to use
-Filament instead by passing `-DMUJOCO_USE_FILAMENT=ON` during the cmake
+Studio uses legacy OpenGL rendering by default but there is an option to use
+Physically Based Rendering via [Filament](https://google.github.io/filament/Filament.md.html).
+To enable Filament you need to `-DMUJOCO_USE_FILAMENT=ON` during the cmake
 configuration step. The Filament renderer has multiple rendering backends,
 on Linux OpenGL is the default but Vulkan can be used by also providing
 the `-DMUJOCO_USE_FILAMENT_VULKAN=ON` option.
 
-Note that you will need to run the application from the folder containing
-the executable so that the expected materials/assets can be found. Also note
-that currently Filament rendering is only supported on Linux.
+Also note that you will need to run the application from the folder containing
+the executable so that the expected materials/assets can be found.
 
-See the options in the top-level [CMakeLists.txt](../../../CMakeLists.txt) file
-for more details.
+> [!WARNING] Filament rendering currently supported on Linux. We are actively
+> working on bugs and build issues we've encountered on MacOS and Windows.
+> Contributions improving support on those platforms are very welcome, your
+> fixes may need to be applied in the upstream [Filament](https://github.com/google/filament)
+> GitHub repository.
 
 ## Known Bugs
 
