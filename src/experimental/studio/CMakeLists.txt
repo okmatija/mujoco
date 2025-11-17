@@ -47,6 +47,13 @@ target_compile_definitions(${MUJOCO_STUDIO_TARGET_NAME}
         -D${MUJOCO_STUDIO_RENDER_CONFIG}
 )
 
+if (WIN32)
+    target_compile_definitions(${MUJOCO_STUDIO_TARGET_NAME}
+        PRIVATE
+        -D_USE_MATH_DEFINES
+    )
+endif()
+
 include(third_party_deps/dear_imgui)
 include(third_party_deps/implot)
 target_link_libraries(${MUJOCO_STUDIO_TARGET_NAME}

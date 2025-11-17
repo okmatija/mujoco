@@ -14,12 +14,7 @@
 
 #include "experimental/filament/filament/drawable.h"
 
-#if defined(_MSC_VER) && !defined(_USE_MATH_DEFINES)
-#define _USE_MATH_DEFINES
-#include <math.h>
-#else
 #include <cmath>
-#endif
 #include <cstdint>
 #include <utility>
 
