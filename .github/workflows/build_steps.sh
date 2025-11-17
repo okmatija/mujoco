@@ -147,7 +147,7 @@ build_simulate() {
 
 _configure_studio() {
     # Invoke cmake will all options OFF assuming that the caller will enable
-    # what is needed by exporting _CONFIGURE_STUDIO_CMAKE_ARGS="..." first
+    # needed options by running `export _CONFIGURE_STUDIO_CMAKE_ARGS=...` first
     cmake -B build \
         -DCMAKE_BUILD_TYPE:STRING=Release \
         -DCMAKE_INTERPROCEDURAL_OPTIMIZATION:BOOL=OFF \
@@ -278,74 +278,6 @@ EOF
 }
 
 
-### Convenience functions for local development ###
-
-dev_studio_print_usage() {
-    set +xe
-    echo "Use the following command to run mujoco_studio"
-    echo ""
-    echo " cd $(git rev-parse --show-toplevel)/build/bin && ./mujoco_studio "
-    echo ""
-    set -xe
-}
-
-
-# Configure and build Studio in Release mode for local development.
-# Optionally pass "build" as an argument to skip configuration.
-# Optionally pass extra cmake arguments by first doing `export CMAKE_ARGS="..."`
-dev_studio() {
-    cd $(git rev-parse --show-toplevel)
-
-    if [[ "$1" != "build" ]]; then
-        echo "Configuring MuJoCo Studio..."
-        # Note: CMAKE_ARGS are added at the end to allow overriding the earlier
-        # commands, its not at the very end in case its empty
-        cmake -B build \
-            -DUSE_STATIC_LIBCXX=OFF \
-            -DCMAKE_BUILD_TYPE:STRING=Release \
-            -DMUJOCO_BUILD_STUDIO=ON \
-            -DMUJOCO_USE_FILAMENT=ON \
-            -DMUJOCO_BUILD_SIMULATE=OFF \
-            -DMUJOCO_BUILD_EXAMPLES=OFF \
-            ${CMAKE_ARGS}
-    fi
-
-    echo "Build MuJoCo Studio..."
-    cmake --build build --config=Release --target mujoco_studio --parallel
-
-    dev_studio_print_usage
-}
-
-
-# Configure and build Studio in Debug mode for local development
-# Optionally pass "build" as an argument to skip configuration.
-# Optionally run `export CMAKE_ARGS="..."` before calling this function
-dev_studio_debug() {
-    cd $(git rev-parse --show-toplevel)
-
-    if [[ "$1" != "build" ]]; then
-        echo "Configuring MuJoCo Studio for debugging..."
-        # Note: CMAKE_ARGS are added at the end to allow overriding the earlier
-        # commands, its not at the very end in case its empty
-        cmake -B build \
-            -DUSE_STATIC_LIBCXX=OFF \
-            -DCMAKE_BUILD_TYPE:STRING=Debug \
-            -DCMAKE_CXX_FLAGS="-O0 -g3" \
-            -DCMAKE_C_FLAGS="-O0 -g3" \
-            -DMUJOCO_BUILD_STUDIO=ON \
-            -DMUJOCO_USE_FILAMENT=ON \
-            -DMUJOCO_BUILD_SIMULATE=OFF \
-            -DMUJOCO_BUILD_EXAMPLES=OFF \
-            ${CMAKE_ARGS}
-    fi
-
-    echo "Build MuJoCo Studio for debugging..."
-    cmake --build build --config=Debug --target mujoco_studio --parallel
-
-    dev_studio_print_usage
-}
-
-
 # Discover functions defined in this script by finding identifiers followed by
 # "()" and capturing the identifier as a valid function name.
 VALID_FUNCTIONS=()
@@ -359,11 +291,11 @@ if [[ ! " ${VALID_FUNCTIONS[*]} " =~ " ${1} " ]]; then
     exit 1
 fi
 
-# This line prints the commands being run, and causes the script to exit with
+# Set options to print the commands being run, and cause the script to exit with
 # an error code if any command fails. Note we do this just before executing
 # the requested function to avoid cluttering the output with the above command
-# discovery code and preamble.
+# discovery code.
 set -xe
 
 # Execute the requested function.
-"$@"
+"$1"
