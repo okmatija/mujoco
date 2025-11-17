@@ -17,6 +17,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <numbers>
 
 #include <filament/Box.h>
 #include <filament/Engine.h>
@@ -310,7 +311,7 @@ class TubeBuilder {
   }
 
   void GenerateVertices(VertexType* ptr, size_t num) const {
-    const float delta_angle = 2.f * M_PI / (float)num_slices_;
+    const float delta_angle = 2.f * std::numbers::pi / (float)num_slices_;
     const float delta_stack = 2.f / static_cast<float>(num_stacks_);
 
     int idx = 0;
@@ -370,7 +371,7 @@ class ConeBuilder {
   }
   void GenerateVertices(VertexType* ptr, std::size_t num) const {
     // pole: use triangles
-    const float delta_angle = 2.0 * M_PI / static_cast<float>(num_slices_);
+    const float delta_angle = 2.0 * std::numbers::pi / static_cast<float>(num_slices_);
     const float delta_radius = 1.0f / static_cast<float>(num_stacks_);
 
     int idx = 0;
@@ -460,7 +461,7 @@ class DiskBuilder {
   }
 
   void GenerateVertices(VertexType* ptr, std::size_t num) const {
-    const float delta_angle = 2.0 * M_PI / static_cast<float>(num_slices_);
+    const float delta_angle = 2.0 * std::numbers::pi / static_cast<float>(num_slices_);
 
     int idx = 0;
     ptr[idx++] = VertexType(float3{0, 0, 0}, orientation_);
@@ -514,8 +515,8 @@ class SphereBuilder {
   }
 
   void GenerateVertices(VertexType* ptr, size_t num) const {
-    const float lat_angle_delta = M_PI / static_cast<float>(num_stacks_ + 1);
-    const float lon_angle_delta = 2.0 * M_PI / static_cast<float>(num_slices_);
+    const float lat_angle_delta = std::numbers::pi / static_cast<float>(num_stacks_ + 1);
+    const float lon_angle_delta = 2.0 * std::numbers::pi / static_cast<float>(num_slices_);
 
     // Add the north and south poles.
     int idx = 0;
@@ -621,8 +622,8 @@ class DomeBuilder {
   }
 
     void GenerateVertices(VertexType* ptr, size_t num) const {
-    const float lat_angle_delta = 0.5 * M_PI / static_cast<float>(num_stacks_);
-    const float lon_angle_delta = 2.0 * M_PI / static_cast<float>(num_slices_);
+    const float lat_angle_delta = 0.5 * std::numbers::pi / static_cast<float>(num_stacks_);
+    const float lon_angle_delta = 2.0 * std::numbers::pi / static_cast<float>(num_slices_);
 
     // Add the pole.
     int idx = 0;
