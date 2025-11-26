@@ -6,14 +6,14 @@ and the default renderer has been switched to Filament. The application is
 still WIP, see the [Future Work](#future-work) section for details.
 
 
-<div style="text-align: center;">
-
-|                | Linux X11 | Linux Wayland | MacOS | Windows |
-| :------------- | :-------: | :-----------: | :---: | :-----: |
-| Classic OpenGL |    ✅     |      ❌       |  ❌   |   ✅    |
-| Filament       |    ✅     |      ❌       |  ❌   |   ❌    |
-
-</div>
+> [!CAUTION]
+> Studio is a work in progress, the current state of platform support is
+> summarized in this table, which is updated as things develop:
+>
+> | Renderer       | Linux X11 | Linux Wayland | MacOS | Windows |
+> | :------------- | :-------: | :-----------: | :---: | :-----: |
+> | Classic OpenGL |    ✅     |      ❌       |  ❌   |   ✅    |
+> | Filament       |    ✅     |      ❌       |  ❌   |   ❌    |
 
 
 ## Usage
