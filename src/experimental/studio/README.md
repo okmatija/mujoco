@@ -6,10 +6,15 @@ and the default renderer has been switched to Filament. The application is
 still WIP, see the [Future Work](#future-work) section for details.
 
 
+<div style="text-align: center;">
+
 |                | Linux X11 | Linux Wayland | MacOS | Windows |
-| :------------- | :-------- | :------------ | :---- | :------ |
-| Classic OpenGL | ✅        | ✅            | ✅    | ✅      |
-| Filament  | ✅         | ❌             | ❌     | ❌       |
+| :------------- | :-------: | :-----------: | :---: | :-----: |
+| Classic OpenGL |    ✅     |      ❌       |  ❌   |   ✅    |
+| Filament       |    ✅     |      ❌       |  ❌   |   ❌    |
+
+</div>
+
 
 ## Usage
 
