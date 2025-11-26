@@ -7,13 +7,19 @@ still WIP, see the [Future Work](#future-work) section for details.
 
 
 > [!CAUTION]
-> Studio is a work in progress, the current state of platform support is
-> summarized in this table, which is updated as things develop:
+> Studio is a work in progress, the current state of platform support summarized
+> in this table. Note that Studio currently [compiles](../../../.github/workflows/build.yml)
+> on all platforms but the crosses indicated crashes at runtime.
 >
 > | Renderer       | Linux X11 | Linux Wayland | MacOS | Windows |
 > | :------------- | :-------: | :-----------: | :---: | :-----: |
-> | Classic OpenGL |    ✅     |      ❌       |  ❌   |   ✅    |
 > | Filament       |    ✅     |      ❌       |  ❌   |   ❌    |
+> | Classic OpenGL |    ✅     |      ❌       |  ❌   |   ✅    |
+>
+> We are actively working to support all the above platforms very soon, if you
+> beat us too it contributions are very welcome! Note that your fixes may need
+> to be applied in the upstream [Filament](https://github.com/google/filament)
+> repository.
 
 
 ## Usage
