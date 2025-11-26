@@ -5,6 +5,12 @@ application. The UI has been reimplemented using [Dear ImGui](https://github.com
 and the default renderer has been switched to Filament. The application is
 still WIP, see the [Future Work](#future-work) section for details.
 
+
+|                | Linux X11 | Linux Wayland | MacOS | Windows |
+| :------------- | :-------- | :------------ | :---- | :------ |
+| Classic OpenGL | ✅        | ✅            | ✅    | ✅      |
+| Filament  | ✅         | ❌             | ❌     | ❌       |
+
 ## Usage
 
 Configure and build MuJoCo Studio by running this command from the top-level
