@@ -14,7 +14,7 @@ still WIP, see the [Future Work](#future-work) section for details.
 > | Filament       |    ✅     |      ❌       |  ❌   |   ❌    |
 > | Classic OpenGL |    ✅     |      ❌       |  ❌   |   ✅    |
 >
- Note that Studio currently [compiles](../../../.github/workflows/build.yml)
+> Note that Studio currently [compiles](../../../.github/workflows/build.yml)
 > on all platforms but the crosses indicated crashes at runtime. We are actively
 > working to support all the above platforms very soon, if you beat us too it
 > contributions are very welcome! Note that your fixes may need to be applied in
