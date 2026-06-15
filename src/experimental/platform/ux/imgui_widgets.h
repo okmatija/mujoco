@@ -592,6 +592,34 @@ inline bool ImGui_IconCheckbox(const char* icon_label, bool* down,
   return toggled;
 }
 
+// A square icon button for an icon rail, for a one-shot action (not a toggle).
+// `label` should be a stable "icon###Name" so it keeps an addressable id while
+// only the icon glyph shows. Returns true when clicked.
+inline bool ImGui_RailButton(const char* label, const ImVec2& size) {
+  return ImGui::Button(label, size);
+}
+
+// A rail icon button that reflects a toggle state (`active`, e.g. whether the
+// window it opens is showing). When active it rests in the "active" colour and
+// keeps that colour on hover (no hover change). When inactive it uses the normal
+// button colours, so it shows the normal hover highlight. Returns true when
+// clicked (the caller flips its own state).
+inline bool ImGui_RailCheckbox(const char* label, bool active,
+                               const ImVec2& size) {
+  int n = 0;
+  if (active) {
+    const ImVec4 c = ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive);
+    ImGui::PushStyleColor(ImGuiCol_Button, c);
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, c);
+    n = 2;
+  }
+  const bool clicked = ImGui::Button(label, size);
+  if (n > 0) {
+    ImGui::PopStyleColor(n);
+  }
+  return clicked;
+}
+
 // Stateful button that displays the given color when active, and shows a
 // semi-transparent hover color (controlled by hover_alpha) when inactive.
 inline bool ImGui_ColorButton(const char* label, bool active, ImColor color,

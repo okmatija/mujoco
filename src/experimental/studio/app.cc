@@ -1125,28 +1125,28 @@ void App::ToolRailGui(const ImVec4& workspace_rect) {
     // Lay out square icon buttons in a 2-column grid. `active` highlights the
     // button when its window/panel is open; returns true when clicked.
     int slot = 0;
-    auto icon_button = [&](const char* icon, const char* title,
-                           bool active) -> bool {
+    // `toggle` buttons reflect whether their window is showing via the rail
+    // checkbox colours (see ImGui_RailCheckbox); one-shot buttons (toggle=false,
+    // e.g. Reload/Reset) render as plain rail buttons. Both lay out in the grid,
+    // record their center for the capture cursor, and show a tooltip.
+    auto icon_button = [&](const char* icon, const char* title, bool active,
+                           bool toggle = true) -> bool {
       if (slot % kColumns != 0) {
         ImGui::SameLine();
       }
       ++slot;
-      if (active) {
-        ImGui::PushStyleColor(ImGuiCol_Button,
-                              ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
-      }
       // Explicit ### id so the test engine can reference the button as
       // "//ToolRail/<title>" (the visible label stays the icon glyph).
       const std::string label = std::string(icon) + "###" + title;
-      const bool clicked = ImGui::Button(label.c_str(), ImVec2(button, button));
+      const ImVec2 size(button, button);
+      const bool clicked =
+          toggle ? platform::ImGui_RailCheckbox(label.c_str(), active, size)
+                 : platform::ImGui_RailButton(label.c_str(), size);
       // Record the button center for the capture script's cursor targeting.
       const ImVec2 lo = ImGui::GetItemRectMin();
       const ImVec2 hi = ImGui::GetItemRectMax();
       rail_button_center_[title] =
           ImVec2((lo.x + hi.x) * 0.5f, (lo.y + hi.y) * 0.5f);
-      if (active) {
-        ImGui::PopStyleColor();
-      }
       if (ImGui::IsItemHovered()) {
         ImGui::SetTooltip("%s", title);
       }
@@ -1154,11 +1154,12 @@ void App::ToolRailGui(const ImVec4& workspace_rect) {
     };
 
     // Group 0: model actions (reload / reset). These are one-shot buttons, not
-    // toggles, so they never show the "active" highlight.
-    if (icon_button(ICON_RELOAD_MODEL, "Reload", false)) {
+    // toggles, so they render as plain rail buttons (normal hover, no "active"
+    // state).
+    if (icon_button(ICON_RELOAD_MODEL, "Reload", false, /*toggle=*/false)) {
       RequestModelReload();
     }
-    if (icon_button(ICON_RESET_MODEL, "Reset", false)) {
+    if (icon_button(ICON_RESET_MODEL, "Reset", false, /*toggle=*/false)) {
       ResetPhysics();
     }
     ImGui::Separator();
