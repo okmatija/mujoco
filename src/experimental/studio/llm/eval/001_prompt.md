@@ -1,0 +1,1 @@
+Switch the renderer to wireframe mode.

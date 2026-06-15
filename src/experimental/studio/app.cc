@@ -971,6 +971,15 @@ void App::BuildGui() {
     ImGui::End();
   }
 
+  if (tmp_.agent_settings) {
+    ImGui::SetNextWindowSize(ImVec2(380, 0), ImGuiCond_FirstUseEver);
+    // The bool gives the title-bar close button; "/settings" toggles it too.
+    if (ImGui::Begin("Agent Settings###AgentSettings", &tmp_.agent_settings)) {
+      AgentSettingsGui();
+    }
+    ImGui::End();
+  }
+
   if (show_stats_window_) {
     // A transient hover peek, shown while the stats icon in the status bar is
     // hovered. Anchored to its bottom-right corner just above the status bar,
@@ -1392,6 +1401,7 @@ std::vector<CommandPalette::Command> App::CollectSlashCommands() {
       {"/clear", {}, "Clear the conversation history"},
       {"/copy", {}, "Copy the conversation to the clipboard"},
       {"/model", {}, "Switch or show the active model"},
+      {"/settings", {}, "Open the agent settings window"},
   };
 }
 
@@ -1514,6 +1524,8 @@ void App::RegisterLlmTools() {
   ui_agent_.set_on_ask([this] { grep_calls_ = 0; });
   ui_agent_.set_copy_handler(
       [](const std::string& text) { ImGui::SetClipboardText(text.c_str()); });
+  ui_agent_.set_settings_handler(
+      [this] { tmp_.agent_settings = !tmp_.agent_settings; });
 }
 
 void App::SpecExplorerGui() {
@@ -2110,6 +2122,46 @@ void App::GraphicsModeMenu() {
     ImGui::EndMenu();
   }
 #endif  // __linux__
+}
+
+void App::AgentSettingsGui() {
+  // Model selection. Disabled while a request is in flight (switching the
+  // provider mid-request is unsafe).
+  ImGui::SeparatorText("Model");
+  const std::vector<std::pair<std::string, std::string>> models =
+      ui_agent_.AvailableModels();
+  ImGui::BeginDisabled(ui_agent_.busy() || models.empty());
+  const std::string current = ui_agent_.provider_model();
+  ImGui::SetNextItemWidth(-FLT_MIN);
+  if (ImGui::BeginCombo("##model",
+                        current.empty() ? "(no API key set)" : current.c_str())) {
+    for (const auto& [alias, id] : models) {
+      const bool selected = (id == current);
+      if (ImGui::Selectable(id.c_str(), selected)) {
+        ui_agent_.SwitchModel(alias);
+      }
+      if (selected) {
+        ImGui::SetItemDefaultFocus();
+      }
+    }
+    ImGui::EndCombo();
+  }
+  ImGui::EndDisabled();
+  if (models.empty()) {
+    ImGui::TextDisabled("Set ANTHROPIC_API_KEY or GEMINI_API_KEY.");
+  }
+
+  // Test-engine playback settings (how the agent's mouse/typing is replayed).
+  ImGui::Spacing();
+  if (ImGui::CollapsingHeader("Playback (mouse / test engine)")) {
+    test_runner_.DrawPlaybackSettings();
+  }
+
+  ImGui::Spacing();
+  ImGui::Separator();
+  if (ImGui::Button("Close", ImVec2(-FLT_MIN, 0.0f))) {
+    tmp_.agent_settings = false;
+  }
 }
 
 void App::MainMenuGui() {

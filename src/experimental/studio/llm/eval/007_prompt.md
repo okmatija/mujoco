@@ -1,0 +1,1 @@
+Show body labels in the 3D view.

@@ -56,6 +56,10 @@ ABSL_FLAG(std::string, capture_prompt_demo, "",
           "Like --capture_prompt but drives the whole interaction (open the "
           "Ctrl+P box, type the prompt, press Enter) through the real input "
           "path via the test engine, for a cooler demo gif.");
+ABSL_FLAG(std::string, capture_model, "",
+          "For the LLM capture scripts: switch the agent to this model first "
+          "(alias 'opus'/'sonnet'/'haiku'/'gemini'/... or a full id). Lets eval "
+          "runs pin a consistent model. Empty = keep the default.");
 ABSL_FLAG(std::string, llm_probe, "",
           "If set, send this prompt to the real Claude provider (using "
           "ANTHROPIC_API_KEY) and print the reply, then exit. Headless probe to "
@@ -237,7 +241,8 @@ int main(int argc, char** argv, char** envp) {
       capture_script = mujoco::studio::CaptureScript::kTools;
     }
     app.StartCapture(capture_gif, absl::GetFlag(FLAGS_capture_frames),
-                     capture_script, capture_prompt);
+                     capture_script, capture_prompt,
+                     absl::GetFlag(FLAGS_capture_model));
     while (app.Update() && app.capture_active()) {
       app.BuildGui();
       app.Render();

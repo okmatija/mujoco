@@ -109,6 +109,54 @@ void UiAgent::Cancel() {
   history_.push_back({"assistant", "[cancelled]"});
 }
 
+std::string UiAgent::SwitchModel(const std::string& arg) {
+  if (busy_) return "Busy; cannot switch model right now.";
+  std::string a;
+  for (char c : arg) {
+    a += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  }
+  const bool gemini = a.rfind("gemini", 0) == 0 || a == "flash" || a == "pro";
+  const bool claude = a == "opus" || a == "sonnet" || a == "haiku" ||
+                      a.rfind("claude-", 0) == 0;
+  const char* want = gemini ? "Gemini" : (claude ? "Claude" : nullptr);
+  if (want == nullptr) {
+    return "Unknown model \"" + arg +
+           "\". Try: opus, sonnet, haiku, gemini, flash, pro.";
+  }
+  // Ensure the right provider is active (constructing it from its env key the
+  // first time), then set the model on it.
+  if (std::string(provider_->name()) != want) {
+    std::string key =
+        gemini ? GeminiProvider::KeyFromEnv() : ClaudeProvider::KeyFromEnv();
+    if (key.empty()) {
+      return std::string(gemini ? "GEMINI_API_KEY (or GOOGLE_API_KEY)"
+                                : "ANTHROPIC_API_KEY") +
+             " is not set.";
+    }
+    if (gemini) {
+      provider_ = std::make_shared<GeminiProvider>(key);
+    } else {
+      provider_ = std::make_shared<ClaudeProvider>(key);
+    }
+    provider_name_ = provider_->name();
+  }
+  const std::string id = provider_->SetModel(arg);
+  return id.empty() ? ("Unknown " + std::string(want) + " model \"" + arg + "\".")
+                    : ("Switched to " + id + " (" + std::string(want) + ").");
+}
+
+std::vector<std::pair<std::string, std::string>> UiAgent::AvailableModels()
+    const {
+  std::vector<std::pair<std::string, std::string>> out;
+  if (!ClaudeProvider::KeyFromEnv().empty()) {
+    for (const auto& m : ClaudeProvider::Models()) out.push_back(m);
+  }
+  if (!GeminiProvider::KeyFromEnv().empty()) {
+    for (const auto& m : GeminiProvider::Models()) out.push_back(m);
+  }
+  return out;
+}
+
 void UiAgent::Ask(const std::string& question) {
   if (question.empty() || busy_) return;
 
@@ -121,6 +169,11 @@ void UiAgent::Ask(const std::string& question) {
     // "/clear" wipes the conversation and starts fresh.
     if (trimmed == "/clear") {
       Clear();
+      return;
+    }
+    // "/settings" toggles the settings window (via the injected handler).
+    if (trimmed == "/settings") {
+      if (settings_) settings_();
       return;
     }
     // "/copy" puts the whole transcript on the clipboard (via the injected
@@ -185,42 +238,7 @@ void UiAgent::Ask(const std::string& question) {
                               "(ANTHROPIC_API_KEY / GEMINI_API_KEY).")
                 : ("Available models (use /model <alias>):\n" + msg);
     } else {
-      std::string a;
-      for (char c : arg) a += static_cast<char>(std::tolower(
-                                  static_cast<unsigned char>(c)));
-      const bool gemini =
-          a.rfind("gemini", 0) == 0 || a == "flash" || a == "pro";
-      const bool claude = a == "opus" || a == "sonnet" || a == "haiku" ||
-                          a.rfind("claude-", 0) == 0;
-      // Ensure the right provider is active (constructing from its env key the
-      // first time), then set the model on it.
-      const char* want = gemini ? "Gemini" : (claude ? "Claude" : nullptr);
-      if (want == nullptr) {
-        msg = "Unknown model \"" + arg +
-              "\". Try: opus, sonnet, haiku, gemini, flash, pro.";
-      } else {
-        if (std::string(provider_->name()) != want) {
-          std::string key = gemini ? GeminiProvider::KeyFromEnv()
-                                   : ClaudeProvider::KeyFromEnv();
-          if (key.empty()) {
-            msg = std::string(gemini ? "GEMINI_API_KEY (or GOOGLE_API_KEY)"
-                                     : "ANTHROPIC_API_KEY") +
-                  " is not set.";
-          } else if (gemini) {
-            provider_ = std::make_shared<GeminiProvider>(key);
-            provider_name_ = provider_->name();
-          } else {
-            provider_ = std::make_shared<ClaudeProvider>(key);
-            provider_name_ = provider_->name();
-          }
-        }
-        if (msg.empty()) {
-          std::string id = provider_->SetModel(arg);
-          msg = id.empty()
-                    ? ("Unknown " + std::string(want) + " model \"" + arg + "\".")
-                    : ("Switched to " + id + " (" + want + ").");
-        }
-      }
+      msg = SwitchModel(arg);
     }
     history_.push_back({"user", question});
     history_.push_back({"assistant", msg, "", provider_->Model()});

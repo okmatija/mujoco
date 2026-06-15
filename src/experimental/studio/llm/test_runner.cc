@@ -203,6 +203,34 @@ bool TestRunner::idle() {
   return jobs_.empty() && ImGuiTestEngine_IsTestQueueEmpty(engine_);
 }
 
+void TestRunner::DrawPlaybackSettings() {
+  if (!engine_) {
+    ImGui::TextDisabled("Test engine not running.");
+    return;
+  }
+  ImGuiTestEngineIO& io = ImGuiTestEngine_GetIO(engine_);
+
+  const char* kSpeeds[] = {"Fast (instant)", "Normal (smooth)",
+                           "Cinematic (paused)"};
+  int speed = static_cast<int>(io.ConfigRunSpeed);
+  if (ImGui::Combo("Run speed", &speed, kSpeeds, IM_ARRAYSIZE(kSpeeds))) {
+    io.ConfigRunSpeed = static_cast<ImGuiTestRunSpeed>(speed);
+  }
+  ImGui::SetItemTooltip(
+      "%s", "Fast teleports the cursor; Normal/Cinematic animate it (and run "
+            "the agent's actions in real time, so they take longer).");
+
+  // The remaining knobs only have an effect when not running in Fast mode.
+  ImGui::BeginDisabled(io.ConfigRunSpeed == ImGuiTestRunSpeed_Fast);
+  ImGui::SliderFloat("Mouse speed", &io.MouseSpeed, 100.0f, 2000.0f,
+                     "%.0f px/s");
+  ImGui::SliderFloat("Mouse wobble", &io.MouseWobble, 0.0f, 1.0f, "%.2f");
+  ImGui::SliderFloat("Typing speed", &io.TypingSpeed, 1.0f, 100.0f, "%.0f ch/s");
+  ImGui::SliderFloat("Scroll speed", &io.ScrollSpeed, 100.0f, 4000.0f,
+                     "%.0f px/s");
+  ImGui::EndDisabled();
+}
+
 int TestRunner::Run(const std::string& json_args) {
   std::string ops = ExtractOpsArray(json_args);
   if (ops.empty()) return 0;

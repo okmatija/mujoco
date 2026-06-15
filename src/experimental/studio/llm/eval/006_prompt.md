@@ -1,0 +1,1 @@
+Reset the simulation to its initial state.

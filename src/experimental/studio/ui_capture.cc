@@ -40,7 +40,8 @@ void App::ToggleToolWindowByName(const std::string& title) {
 }
 
 void App::StartCapture(const std::string& out_dir, int total_frames,
-                       CaptureScript script, const std::string& llm_prompt) {
+                       CaptureScript script, const std::string& llm_prompt,
+                       const std::string& llm_model) {
   capture_.active = true;
   capture_.out_dir = out_dir;
   capture_.frame = 0;
@@ -49,6 +50,12 @@ void App::StartCapture(const std::string& out_dir, int total_frames,
   capture_.llm_prompt = llm_prompt;
   capture_.cursor = ImVec2(-100.0f, -100.0f);
   capture_.click_flash = 0.0f;
+
+  // Optionally pin the agent to a specific model for the capture (e.g. eval
+  // runs), so results don't depend on the default.
+  if (!llm_model.empty()) {
+    ui_agent_.SwitchModel(llm_model);
+  }
 
   // The LLM scripts run the agent ASYNCHRONOUSLY (on a worker thread) so it can
   // call inspect_ui -- which blocks the worker until the UI thread runs a gather

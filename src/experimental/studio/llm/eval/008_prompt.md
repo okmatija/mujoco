@@ -1,0 +1,1 @@
+Launch a box using the Object Launcher.

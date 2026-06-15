@@ -71,6 +71,11 @@ class TestRunner {
   // True when nothing is queued and the engine isn't running a test.
   bool idle();
 
+  // Draws ImGui controls for the engine's playback settings (run speed, mouse
+  // speed/wobble, typing/scroll speed), bound to the live engine IO. Call from
+  // within an existing window.
+  void DrawPlaybackSettings();
+
  private:
   // Hands a gather result back from the UI thread to a blocked caller.
   struct GatherResult {

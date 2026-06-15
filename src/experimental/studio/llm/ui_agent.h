@@ -16,9 +16,11 @@
 #define MUJOCO_SRC_EXPERIMENTAL_STUDIO_LLM_UI_AGENT_H_
 
 #include <atomic>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "experimental/studio/llm/llm_provider.h"
@@ -71,6 +73,14 @@ class UiAgent {
   // Current model id (e.g. "claude-opus-4-8"), or "" if not applicable.
   std::string provider_model() const { return provider_ ? provider_->Model() : ""; }
 
+  // Switches the provider/model to `arg` (an alias like "opus"/"sonnet" or a
+  // full id). Returns a human-readable status message. No history side effects;
+  // used by both the "/model" command and the settings UI.
+  std::string SwitchModel(const std::string& arg);
+
+  // The {alias, full id} models offered by each provider whose API key is set.
+  std::vector<std::pair<std::string, std::string>> AvailableModels() const;
+
   void set_synchronous(bool s) { synchronous_ = s; }
   void set_provider(std::unique_ptr<LlmProvider> provider);
 
@@ -90,6 +100,12 @@ class UiAgent {
     copy_ = std::move(cb);
   }
 
+  // Handler used by the "/settings" command to toggle the settings window,
+  // injected so the agent does not depend on the app's UI.
+  void set_settings_handler(std::function<void()> cb) {
+    settings_ = std::move(cb);
+  }
+
  private:
   std::shared_ptr<LlmProvider> provider_;
   std::string provider_name_;
@@ -99,6 +115,7 @@ class UiAgent {
   ToolExecutor executor_;
   std::function<void()> on_ask_;
   std::function<void(const std::string&)> copy_;
+  std::function<void()> settings_;
 
   bool synchronous_ = false;
   std::atomic<bool> busy_{false};
