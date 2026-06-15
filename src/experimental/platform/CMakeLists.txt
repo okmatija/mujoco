@@ -61,6 +61,7 @@ target_sources(${MUJOCO_PLATFORM_TARGET_NAME}
 target_sources(${MUJOCO_PLATFORM_TARGET_NAME}
     PUBLIC
         ux/object_launcher_plugin.cc
+        ux/xml_editor_plugin.cc
 )
 
 if(APPLE)

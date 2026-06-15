@@ -67,8 +67,13 @@ void LlmPanel::Render(UiAgent& agent) {
     for (int i = 0; i < n; ++i) {
       const UiAgent::Turn& turn = history[i];
       const bool is_user = (turn.role == "user");
-      ImGui::TextDisabled("%s",
-                          is_user ? "You" : agent.provider_name().c_str());
+      if (is_user) {
+        ImGui::TextDisabled("You");
+      } else if (!turn.model.empty()) {
+        ImGui::TextDisabled("Agent (%s)", turn.model.c_str());
+      } else {
+        ImGui::TextDisabled("Agent");
+      }
 
       // Collapsible extended-thinking section (closed by default), shown only
       // for assistant turns that actually produced reasoning.
@@ -99,9 +104,22 @@ void LlmPanel::Render(UiAgent& agent) {
     }
 
     if (agent.busy()) {
-      ImGui::TextDisabled("%s", agent.provider_name().c_str());
+      const std::string model = agent.provider_model();
+      if (model.empty()) {
+        ImGui::TextDisabled("Agent");
+      } else {
+        ImGui::TextDisabled("Agent (%s)", model.c_str());
+      }
       const int dots = 1 + (static_cast<int>(ImGui::GetTime() * 3.0) % 3);
       ImGui::TextDisabled("thinking%s", std::string(dots, '.').c_str());
+      // Cancel pushed to the right edge of the conversation panel.
+      const char* kCancel = "Cancel";
+      const float button_w = ImGui::CalcTextSize(kCancel).x +
+                             ImGui::GetStyle().FramePadding.x * 2.0f;
+      ImGui::SameLine(ImGui::GetContentRegionMax().x - button_w);
+      if (ImGui::SmallButton(kCancel)) {
+        agent.Cancel();
+      }
     }
 
     // Follow new content while pinned to the bottom; release when the user

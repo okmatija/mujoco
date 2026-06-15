@@ -98,17 +98,53 @@ void UiAgent::Clear() {
   history_.clear();
 }
 
+void UiAgent::Cancel() {
+  if (!busy_) return;
+  // Drop our handle to the pending result so Poll() ignores it when the worker
+  // finishes (the worker keeps its own shared_ptr, so writing the result stays
+  // safe). Both Cancel() and Poll() run on the UI thread, so there is no race
+  // between them.
+  pending_.reset();
+  busy_ = false;
+  history_.push_back({"assistant", "[cancelled]"});
+}
+
 void UiAgent::Ask(const std::string& question) {
   if (question.empty() || busy_) return;
 
-  // "/clear" is a local command: wipe the conversation and start fresh.
+  // Local commands handled here (not sent to the model).
   {
     const size_t b = question.find_first_not_of(" \t");
     const size_t e = question.find_last_not_of(" \t");
     const std::string trimmed =
         (b == std::string::npos) ? "" : question.substr(b, e - b + 1);
+    // "/clear" wipes the conversation and starts fresh.
     if (trimmed == "/clear") {
       Clear();
+      return;
+    }
+    // "/copy" puts the whole transcript on the clipboard (via the injected
+    // handler) and confirms in the conversation.
+    if (trimmed == "/copy") {
+      std::string transcript;
+      for (const Turn& t : history_) {
+        const std::string who =
+            (t.role == "user")
+                ? "You"
+                : (t.model.empty() ? "Agent" : ("Agent (" + t.model + ")"));
+        transcript += who + ": " + t.text + "\n\n";
+      }
+      std::string msg;
+      if (transcript.empty()) {
+        msg = "Nothing to copy yet.";
+      } else if (copy_) {
+        copy_(transcript);
+        msg = "Copied the conversation to the clipboard.";
+      } else {
+        msg = "No clipboard handler is set.";
+      }
+      history_.push_back({"user", question});
+      history_.push_back({"assistant", msg});
       return;
     }
   }
@@ -187,7 +223,7 @@ void UiAgent::Ask(const std::string& question) {
       }
     }
     history_.push_back({"user", question});
-    history_.push_back({"assistant", msg});
+    history_.push_back({"assistant", msg, "", provider_->Model()});
     return;
   }
 
@@ -203,7 +239,7 @@ void UiAgent::Ask(const std::string& question) {
   if (synchronous_) {
     LlmResult r = provider_->Send(system_, messages, tools_, executor_);
     history_.push_back({"assistant", r.ok ? r.text : ("[error] " + r.error),
-                        r.ok ? r.thinking : ""});
+                        r.ok ? r.thinking : "", provider_->Model()});
     busy_ = false;
     return;
   }
@@ -229,7 +265,7 @@ void UiAgent::Poll() {
   if (!pending->done) return;
   const LlmResult& r = pending->result;
   history_.push_back({"assistant", r.ok ? r.text : ("[error] " + r.error),
-                      r.ok ? r.thinking : ""});
+                      r.ok ? r.thinking : "", provider_->Model()});
   busy_ = false;
   pending_.reset();
 }

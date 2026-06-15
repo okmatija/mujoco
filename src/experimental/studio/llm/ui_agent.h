@@ -40,6 +40,7 @@ class UiAgent {
     std::string role;      // "user" or "assistant"
     std::string text;
     std::string thinking;  // extended-thinking text (assistant turns only).
+    std::string model;     // model id that produced the reply (assistant only).
   };
 
   UiAgent();  // ClaudeProvider if ANTHROPIC_API_KEY is set, else MockProvider.
@@ -55,12 +56,20 @@ class UiAgent {
   // flight (the in-flight reply would otherwise reappear on the next Poll).
   void Clear();
 
+  // Interrupts the in-flight request: stops showing as busy and discards the
+  // reply when it eventually arrives. The detached worker keeps running in the
+  // background (the network call can't be aborted mid-flight) but its result is
+  // ignored. No-op if not busy.
+  void Cancel();
+
   // Folds any finished worker result into the history. Call once per frame.
   void Poll();
 
   bool busy() const { return busy_; }
   const std::vector<Turn>& history() const { return history_; }
   const std::string& provider_name() const { return provider_name_; }
+  // Current model id (e.g. "claude-opus-4-8"), or "" if not applicable.
+  std::string provider_model() const { return provider_ ? provider_->Model() : ""; }
 
   void set_synchronous(bool s) { synchronous_ = s; }
   void set_provider(std::unique_ptr<LlmProvider> provider);
@@ -75,6 +84,12 @@ class UiAgent {
   // budgets like the grep-call count.
   void set_on_ask(std::function<void()> cb) { on_ask_ = std::move(cb); }
 
+  // Handler used by the "/copy" command to put the transcript on the clipboard,
+  // injected so the agent stays free of any UI/clipboard dependency.
+  void set_copy_handler(std::function<void(const std::string&)> cb) {
+    copy_ = std::move(cb);
+  }
+
  private:
   std::shared_ptr<LlmProvider> provider_;
   std::string provider_name_;
@@ -83,6 +98,7 @@ class UiAgent {
   std::vector<ToolDef> tools_;
   ToolExecutor executor_;
   std::function<void()> on_ask_;
+  std::function<void(const std::string&)> copy_;
 
   bool synchronous_ = false;
   std::atomic<bool> busy_{false};

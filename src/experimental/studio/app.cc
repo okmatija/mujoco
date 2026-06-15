@@ -91,6 +91,10 @@ static constexpr float kOverlayInset = 10.0f;
 // see the comment there.
 void LinkObjectLauncherPlugin();
 
+// Likewise for the self-contained XML editor plugin (platform/ux/
+// xml_editor_plugin.cc).
+void LinkXmlEditorPlugin();
+
 App::App(Config config)
     : app_title_(std::move(config.title)),
       ini_path_(std::move(config.ini_path)),
@@ -111,6 +115,7 @@ App::App(Config config)
   RegisterToolWindows();
   RegisterLlmTools();
   LinkObjectLauncherPlugin();  // ensure the launcher plugin is registered
+  LinkXmlEditorPlugin();       // ensure the XML editor plugin is registered
   profiler_.Clear();
 }
 
@@ -1385,6 +1390,7 @@ std::vector<CommandPalette::Command> App::CollectSlashCommands() {
   // types the whole line (e.g. "/model sonnet") and it is submitted as-is.
   return {
       {"/clear", {}, "Clear the conversation history"},
+      {"/copy", {}, "Copy the conversation to the clipboard"},
       {"/model", {}, "Switch or show the active model"},
   };
 }
@@ -1506,6 +1512,8 @@ void App::RegisterLlmTools() {
 
   ui_agent_.set_tools({grep, inspect_ui, run_program}, exec);
   ui_agent_.set_on_ask([this] { grep_calls_ = 0; });
+  ui_agent_.set_copy_handler(
+      [](const std::string& text) { ImGui::SetClipboardText(text.c_str()); });
 }
 
 void App::SpecExplorerGui() {
