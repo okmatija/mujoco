@@ -1138,10 +1138,9 @@ void App::ToolRailGui(const ImVec4& workspace_rect) {
       // Explicit ### id so the test engine can reference the button as
       // "//ToolRail/<title>" (the visible label stays the icon glyph).
       const std::string label = std::string(icon) + "###" + title;
-      const ImVec2 size(button, button);
       const bool clicked =
-          toggle ? platform::ImGui_RailCheckbox(label.c_str(), active, size)
-                 : platform::ImGui_RailButton(label.c_str(), size);
+          toggle ? platform::ImGui_RailCheckbox(label.c_str(), active, button)
+                 : platform::ImGui_RailButton(label.c_str(), button);
       // Record the button center for the capture script's cursor targeting.
       const ImVec2 lo = ImGui::GetItemRectMin();
       const ImVec2 hi = ImGui::GetItemRectMax();
@@ -1841,8 +1840,10 @@ void App::ToolBarGui() {
   ImGui::SameLine(0, h * 0.6f);
   const std::string label =
       std::string(platform::ICON_FA_HISTORY) + "###Toggle history scrubber";
-  platform::ImGui_IconCheckbox(label.c_str(), &tmp_.scrubber_expanded,
-                               "History scrubber");
+  if (platform::ImGui_IconCheckbox(label.c_str(), tmp_.scrubber_expanded)) {
+    tmp_.scrubber_expanded = !tmp_.scrubber_expanded;
+  }
+  ImGui::SetItemTooltip("%s", "Toggle history scrubber");
 }
 
 namespace {
@@ -2039,8 +2040,10 @@ void App::StatusBarGui() {
       ImGui::TextUnformatted(metrics.c_str());
       ImGui::SameLine();
     }
-    platform::ImGui_IconCheckbox((icon + "###Stats").c_str(),
-                                 &tmp_.stats_in_statusbar, /*tooltip=*/"", side);
+    if (platform::ImGui_IconCheckbox((icon + "###Stats").c_str(),
+                                     tmp_.stats_in_statusbar, side)) {
+      tmp_.stats_in_statusbar = !tmp_.stats_in_statusbar;
+    }
     if (!tmp_.stats_in_statusbar && ImGui::IsItemHovered()) {
       show_stats_window_ = true;
     }

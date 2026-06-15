@@ -557,55 +557,15 @@ inline bool ImGui_IsChordJustPressed(ImGuiKeyChord chord) {
   return ImGui::IsKeyChordPressed(chord, 0);
 }
 
-// A square icon "checkbox": a toggle button drawn from `icon_label` (use a
-// stable "icon###Name" label so it keeps an addressable id). When `*down` it
-// shows the normal button frame (a pressed/"on" look); when up the frame is
-// fully transparent so only the icon glyph shows. Clicking flips `*down` and
-// returns true on that frame. If `tooltip` is non-empty, hovering shows
-// "<tooltip> is on/off". `size` is the square side; 0 uses GetFrameHeight().
-inline bool ImGui_IconCheckbox(const char* icon_label, bool* down,
-                               const char* tooltip = "", float size = 0.0f) {
-  int n;
-  if (*down) {
-    // On: keep the resting button colour, but read hover/active as the
-    // frame-background-hovered and base button colours.
-    ImGui::PushStyleColor(ImGuiCol_ButtonHovered,
-                          ImGui::GetStyleColorVec4(ImGuiCol_FrameBgHovered));
-    ImGui::PushStyleColor(ImGuiCol_ButtonActive,
-                          ImGui::GetStyleColorVec4(ImGuiCol_Button));
-    n = 2;
-  } else {
-    // Off: fully transparent frame in every state, so only the icon shows.
-    const ImU32 kTransparent = IM_COL32(255, 255, 255, 0);
-    ImGui::PushStyleColor(ImGuiCol_Button, kTransparent);
-    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, kTransparent);
-    ImGui::PushStyleColor(ImGuiCol_ButtonActive, kTransparent);
-    n = 3;
-  }
-  if (size <= 0.0f) size = ImGui::GetFrameHeight();
-  const bool toggled = ImGui::Button(icon_label, ImVec2(size, size));
-  if (toggled) *down = !*down;
-  ImGui::PopStyleColor(n);
-  if (tooltip && tooltip[0] != '\0' && ImGui::IsItemHovered()) {
-    ImGui::SetTooltip("%s is %s", tooltip, *down ? "on" : "off");
-  }
-  return toggled;
-}
-
-// A square icon button for an icon rail, for a one-shot action (not a toggle).
-// `label` should be a stable "icon###Name" so it keeps an addressable id while
-// only the icon glyph shows. Returns true when clicked.
-inline bool ImGui_RailButton(const char* label, const ImVec2& size) {
-  return ImGui::Button(label, size);
-}
-
-// A rail icon button that reflects a toggle state (`active`, e.g. whether the
-// window it opens is showing). When active it rests in the "active" colour and
-// keeps that colour on hover (no hover change). When inactive it uses the normal
-// button colours, so it shows the normal hover highlight. Returns true when
-// clicked (the caller flips its own state).
-inline bool ImGui_RailCheckbox(const char* label, bool active,
-                               const ImVec2& size) {
+// Lowest-level square icon "checkbox": a toggle button drawn from `label` (use
+// a stable "icon###Name" label so it keeps an addressable id while only the icon
+// glyph shows). When `active` it rests in the "active" colour and keeps it on
+// hover (no hover change); when inactive it uses the normal button colours, so
+// it shows the normal hover highlight. Returns true when clicked (the caller
+// flips its own state). `size` is the square side; 0 uses GetFrameHeight(). No
+// tooltip -- add one at the call site if needed.
+inline bool ImGui_IconCheckbox(const char* label, bool active,
+                               float size = 0.0f) {
   int n = 0;
   if (active) {
     const ImVec4 c = ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive);
@@ -613,11 +573,24 @@ inline bool ImGui_RailCheckbox(const char* label, bool active,
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, c);
     n = 2;
   }
-  const bool clicked = ImGui::Button(label, size);
+  if (size <= 0.0f) size = ImGui::GetFrameHeight();
+  const bool clicked = ImGui::Button(label, ImVec2(size, size));
   if (n > 0) {
     ImGui::PopStyleColor(n);
   }
   return clicked;
+}
+
+// A square icon button for an icon rail, for a one-shot action (not a toggle).
+// `label` should be a stable "icon###Name". Returns true when clicked.
+inline bool ImGui_RailButton(const char* label, float size) {
+  return ImGui::Button(label, ImVec2(size, size));
+}
+
+// A rail toggle button -- just a larger icon checkbox (see ImGui_IconCheckbox).
+// Returns true when clicked (the caller flips its own state).
+inline bool ImGui_RailCheckbox(const char* label, bool active, float size) {
+  return ImGui_IconCheckbox(label, active, size);
 }
 
 // Stateful button that displays the given color when active, and shows a
