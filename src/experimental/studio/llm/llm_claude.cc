@@ -174,6 +174,28 @@ std::string ExtractAssistantText(const std::string& json) {
   return out;
 }
 
+// Concatenates the text of every {"type":"thinking", ...} content block, i.e.
+// the model's extended-thinking ("reasoning") output. Skips redacted_thinking
+// blocks, which carry no human-readable text.
+std::string ExtractThinkingText(const std::string& json) {
+  std::string out;
+  const std::string key = "\"type\":\"thinking\"";
+  size_t i = 0;
+  while ((i = json.find(key, i)) != std::string::npos) {
+    size_t t = json.find("\"thinking\":", i + key.size());
+    if (t == std::string::npos) break;
+    size_t q = json.find('"', t + 11);  // 11 = strlen("\"thinking\":")
+    if (q == std::string::npos) break;
+    std::string piece;
+    size_t after = ParseJsonStringAt(json, q, piece);
+    if (after == std::string::npos) break;
+    if (!out.empty()) out += "\n\n";
+    out += piece;
+    i = after;
+  }
+  return out;
+}
+
 std::string ExtractErrorMessage(const std::string& json) {
   size_t e = json.find("\"type\":\"error\"");
   size_t m = json.find("\"message\":", e == std::string::npos ? 0 : e);
@@ -278,6 +300,12 @@ std::string BuildRequestBody(const std::string& model, int max_tokens,
 std::string ClaudeProvider::KeyFromEnv() {
   const char* k = std::getenv("ANTHROPIC_API_KEY");
   return (k && *k) ? std::string(k) : std::string();
+}
+
+std::vector<std::pair<std::string, std::string>> ClaudeProvider::Models() {
+  return {{"opus", "claude-opus-4-8"},
+          {"sonnet", "claude-sonnet-4-6"},
+          {"haiku", "claude-haiku-4-5"}};
 }
 
 ClaudeProvider::ClaudeProvider(std::string api_key)
@@ -427,6 +455,10 @@ LlmResult ClaudeProvider::Send(const std::string& system,
     return s.size() > n ? s.substr(0, n) + " ...(truncated)" : s;
   };
 
+  // Extended-thinking text, accumulated across every turn of the loop (the model
+  // often reasons before each tool call, not just before the final answer).
+  std::string thinking_acc;
+
   for (int iter = 0; iter < kMaxToolIterations; ++iter) {
     const std::string body =
         BuildRequestBody(model_, max_tokens_, adaptive_thinking_, system,
@@ -445,6 +477,15 @@ LlmResult ClaudeProvider::Send(const std::string& system,
       return r;
     }
 
+    if (const std::string think = ExtractThinkingText(response); !think.empty()) {
+      if (!thinking_acc.empty()) thinking_acc += "\n\n";
+      thinking_acc += think;
+      if (verbose) {
+        std::fprintf(stderr, "\n===== thinking (turn %d) =====\n%s\n", iter,
+                     think.c_str());
+      }
+    }
+
     if (verbose) {
       const std::string atext = ExtractAssistantText(response);
       if (!atext.empty()) {
@@ -460,6 +501,7 @@ LlmResult ClaudeProvider::Send(const std::string& system,
         r.error = "Empty response from Claude.";
         return r;
       }
+      r.thinking = thinking_acc;
       if (verbose) {
         std::fprintf(stderr, "\n===== final assistant reply =====\n%s\n",
                      r.text.c_str());

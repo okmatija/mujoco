@@ -152,7 +152,9 @@ class App {
 
     // Windows.
     bool help = false;
-    bool stats = false;
+    // When true, the sim/model metrics are pinned in the status bar (toggled by
+    // the stats icon at the bottom-right, or F2). Default off.
+    bool stats_in_statusbar = false;
     bool profiler = false;
     bool picture_in_picture = false;
     bool options_panel = true;
@@ -170,6 +172,9 @@ class App {
     bool perturb_active = false;
     int speed_index = 0;
     float cam_speed = 0.0f;
+    // The frame-history scrubber is merged into the top overlay and hidden
+    // behind a toggle; this tracks whether it is currently expanded.
+    bool scrubber_expanded = false;
 
     // Cached data.
     float expected_label_width = 0;
@@ -256,6 +261,7 @@ class App {
     const char* icon = nullptr;
     std::string title;
     std::function<void()> render;
+    std::string description;  // one-line hint for the command palette
     bool open = false;
   };
   void RegisterToolWindows();
@@ -263,6 +269,8 @@ class App {
   // executor on ui_agent_. Call after RegisterToolWindows so titles exist.
   void RegisterLlmTools();
   std::vector<CommandPalette::Command> CollectCommands();
+  // The local "/..." slash commands shown as completions in the command box.
+  std::vector<CommandPalette::Command> CollectSlashCommands();
   // Opens/closes a registered tool window by its title (used by the capture
   // script and the command palette).
   void ToggleToolWindowByName(const std::string& title);
@@ -278,17 +286,16 @@ class App {
   // windows they open.
   void ToolRailGui(const ImVec4& workspace_rect);
   void ToolWindowsGui(const ImVec4& workspace_rect);
-  // DCC-style translucent overlays drawn on top of the viewport: a top bar with
-  // transport + view controls, and a vertical frame scrubber flush to the right
-  // edge. RailWidth/ScrubberWidth give the gutters so overlays don't overlap.
+  // DCC-style translucent overlay drawn on top of the viewport: a top bar with
+  // the transport controls and the (collapsible) frame-history scrubber.
+  // RailWidth gives the left gutter so overlays don't overlap.
   void TopOverlayGui(const ImVec4& workspace_rect);
-  // Viewport-anchored (like the command palette) so it stays bottom-centered
-  // regardless of docking.
-  void ScrubberOverlayGui();
+  // Inline frame-history scrubber controls (oldest/prev/slider/next/current),
+  // drawn inside the top overlay only when the scrubber is expanded.
+  void ScrubberControls();
   // Bottom status bar, styled like the top menu bar (status text right-aligned).
   void StatusBarGui();
   float RailWidth() const;
-  float ScrubberWidth() const;
   void SpecExplorerGui();
   void SpecEditorGui();
 
@@ -324,9 +331,9 @@ class App {
   std::vector<std::string> search_paths_;
   std::vector<std::byte> pixels_;
 
-  // ImGui texture id for the MuJoCo logo on the menu bar. Uploaded lazily and
-  // reset to 0 on a graphics-mode switch (which recreates the renderer).
-  int logo_texture_ = 0;
+  // Set each frame by StatusBarGui when the stats icon is hovered; drives the
+  // transient floating stats window (a hover peek). Transient, not persisted.
+  bool show_stats_window_ = false;
 
   // Auto-screenshot capture (see Config::screenshot_path).
   std::string screenshot_path_;

@@ -328,8 +328,7 @@ ImVec4 ConfigureDockingLayout() {
   return ImVec4(workspace_x, workspace_y, workspace_w, workspace_h);
 }
 
-void StepControlGui(const mjModel* model, StepControl* step_control,
-                    int& speed_index) {
+void TransportButtonsGui(StepControl* step_control) {
   platform::ScopedStyle style;
   style.Var(ImGuiStyleVar_FrameRounding, 8.f * ImGui::GetStyle().FontScaleDpi);
 
@@ -367,10 +366,9 @@ void StepControlGui(const mjModel* model, StepControl* step_control,
   ImGui::SameLine(0.f, 0.f);
   make_button(ICON_FA_PLAY, StepControl::PauseState::kUnpaused, green,
               ImDrawFlags_RoundCornersRight, "Play", .3f, 1.6f);
+}
 
-  // Speed selection.
-  style.Reset();
-  ImGui::SameLine(0, ImGui::GetFrameHeight() * .6f);
+void SpeedControlGui(StepControl* step_control, int& speed_index) {
   ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,
                       ImVec2(ImGui::GetStyle().FramePadding.x +
                                  5.f * ImGui::GetStyle().FontScaleDpi,

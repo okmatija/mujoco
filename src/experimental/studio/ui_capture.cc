@@ -158,7 +158,7 @@ void App::CaptureStepLlmDemo() {
   const int type_frames = (n + kCharsPerFrame - 1) / kCharsPerFrame;
   const int submit = kTypeStart + type_frames + 8;
 
-  // Open the command palette (the app's Ctrl+P action).
+  // Open the command palette (the app's Ctrl+Shift+P action).
   if (f == kOpen) command_palette_.Open();
 
   // Type the prompt into the box a couple of characters per frame.

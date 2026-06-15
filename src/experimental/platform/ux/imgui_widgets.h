@@ -56,6 +56,7 @@ static constexpr const char ICON_FA_EJECT[] = "\xEF\x81\x92";
 static constexpr const char ICON_FA_EYE[] = "\xEF\x81\xAE";
 static constexpr const char ICON_FA_FAST_BACKWARD[] = "\xEF\x81\x89";
 static constexpr const char ICON_FA_FAST_FORWARD[] = "\xEF\x81\x90";
+static constexpr const char ICON_FA_HISTORY[] = "\xEF\x87\x9A";
 static constexpr const char ICON_FA_LINK[] = "\xEF\x83\x81";
 static constexpr const char ICON_FA_MAGIC[] = "\xEF\x83\x90";
 static constexpr const char ICON_FA_MOON[] = "\xEF\x86\x86";
@@ -554,6 +555,41 @@ bool ImGui_Input(const char* name, T* value, ImGuiOpts<T> opts = {}) {
 // is holding down the keys.)
 inline bool ImGui_IsChordJustPressed(ImGuiKeyChord chord) {
   return ImGui::IsKeyChordPressed(chord, 0);
+}
+
+// A square icon "checkbox": a toggle button drawn from `icon_label` (use a
+// stable "icon###Name" label so it keeps an addressable id). When `*down` it
+// shows the normal button frame (a pressed/"on" look); when up the frame is
+// fully transparent so only the icon glyph shows. Clicking flips `*down` and
+// returns true on that frame. If `tooltip` is non-empty, hovering shows
+// "<tooltip> is on/off". `size` is the square side; 0 uses GetFrameHeight().
+inline bool ImGui_IconCheckbox(const char* icon_label, bool* down,
+                               const char* tooltip = "", float size = 0.0f) {
+  int n;
+  if (*down) {
+    // On: keep the resting button colour, but read hover/active as the
+    // frame-background-hovered and base button colours.
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered,
+                          ImGui::GetStyleColorVec4(ImGuiCol_FrameBgHovered));
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive,
+                          ImGui::GetStyleColorVec4(ImGuiCol_Button));
+    n = 2;
+  } else {
+    // Off: fully transparent frame in every state, so only the icon shows.
+    const ImU32 kTransparent = IM_COL32(255, 255, 255, 0);
+    ImGui::PushStyleColor(ImGuiCol_Button, kTransparent);
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, kTransparent);
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive, kTransparent);
+    n = 3;
+  }
+  if (size <= 0.0f) size = ImGui::GetFrameHeight();
+  const bool toggled = ImGui::Button(icon_label, ImVec2(size, size));
+  if (toggled) *down = !*down;
+  ImGui::PopStyleColor(n);
+  if (tooltip && tooltip[0] != '\0' && ImGui::IsItemHovered()) {
+    ImGui::SetTooltip("%s is %s", tooltip, *down ? "on" : "off");
+  }
+  return toggled;
 }
 
 // Stateful button that displays the given color when active, and shows a

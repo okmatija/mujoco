@@ -37,8 +37,9 @@ namespace mujoco::studio {
 class UiAgent {
  public:
   struct Turn {
-    std::string role;  // "user" or "assistant"
+    std::string role;      // "user" or "assistant"
     std::string text;
+    std::string thinking;  // extended-thinking text (assistant turns only).
   };
 
   UiAgent();  // ClaudeProvider if ANTHROPIC_API_KEY is set, else MockProvider.
@@ -49,6 +50,10 @@ class UiAgent {
 
   // Submits a user question. No-op if empty or a request is already in flight.
   void Ask(const std::string& question);
+
+  // Wipes the conversation history to start fresh. No-op while a request is in
+  // flight (the in-flight reply would otherwise reappear on the next Poll).
+  void Clear();
 
   // Folds any finished worker result into the history. Call once per frame.
   void Poll();

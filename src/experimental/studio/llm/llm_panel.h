@@ -30,6 +30,8 @@ class LlmPanel {
  private:
   int revealing_index_ = -1;  // history index of the reply being revealed.
   int reveal_chars_ = 0;
+  int last_turn_count_ = 0;   // history size last frame; detects new/cleared.
+  bool scroll_to_bottom_ = false;  // one-shot jump after a new turn arrives.
 };
 
 }  // namespace mujoco::studio

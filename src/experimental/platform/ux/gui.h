@@ -80,9 +80,16 @@ static constexpr std::array<const char*, 31> kPercentRealTime = {
 
 // UX for controlling the simulation stepping. `speed_index` is an index into
 // kPercentRealTime, an array of available speeds (indices in range [0, 30] map
-// to real-time percentages in range [100%, 0.1%]).
-void StepControlGui(const mjModel* model, StepControl* step_control,
-                    int& speed_index);
+// to real-time percentages in range [100%, 0.1%]). The transport buttons and the
+// speed dial are also available separately (e.g. so a caller can place other
+// controls between them):
+
+// The transport buttons (Normal Pause / Viscous Pause / Play) only, drawn on one
+// row.
+void TransportButtonsGui(StepControl* step_control);
+
+// The simulation-speed dial (combo) only. Pairs with TransportButtonsGui.
+void SpeedControlGui(StepControl* step_control, int& speed_index);
 
 // Sets the simulation speed index and updates the StepControl object.
 void SetSpeedIndex(StepControl* step_control, int& speed_index,

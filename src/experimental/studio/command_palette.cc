@@ -41,12 +41,58 @@ bool ContainsCaseInsensitive(const std::string& haystack,
                      needle.end(), eq) != haystack.end();
 }
 
+// Draws one completion row: a full-width selectable whose label is the name (in
+// the normal text colour), with the optional description drawn dimmed at the
+// `desc_x` column on the same row. `desc_x` is a window-local x so descriptions
+// line up in a column. Returns true if the row was clicked.
+bool CompletionRow(const CommandPalette::Command& cmd, bool selected,
+                   float desc_x) {
+  const bool clicked = ImGui::Selectable(cmd.name.c_str(), selected);
+  if (!cmd.description.empty()) {
+    ImGui::SameLine(desc_x);
+    ImGui::TextDisabled("%s", cmd.description.c_str());
+  }
+  return clicked;
+}
+
 }  // namespace
+
+int CommandPalette::HistoryCallback(ImGuiInputTextCallbackData* data) {
+  auto* self = static_cast<CommandPalette*>(data->UserData);
+  // In list modes ('>' commands, '/' slash commands) leave Up/Down for the
+  // filtered list navigation below.
+  if (data->BufTextLen > 0 && (data->Buf[0] == '>' || data->Buf[0] == '/')) {
+    return 0;
+  }
+
+  const int n = static_cast<int>(self->prompt_history_.size());
+  if (n == 0) return 0;
+
+  const int prev = self->history_pos_;
+  if (data->EventKey == ImGuiKey_UpArrow) {
+    if (self->history_pos_ == -1) self->saved_input_ = std::string(data->Buf);
+    if (self->history_pos_ + 1 < n) ++self->history_pos_;
+  } else if (data->EventKey == ImGuiKey_DownArrow) {
+    if (self->history_pos_ > -1) --self->history_pos_;
+  }
+  if (self->history_pos_ == prev) return 0;
+
+  const std::string& text = (self->history_pos_ == -1)
+                                ? self->saved_input_
+                                : self->prompt_history_[n - 1 - self->history_pos_];
+  data->DeleteChars(0, data->BufTextLen);
+  data->InsertChars(0, text.c_str());
+  data->CursorPos = data->BufTextLen;
+  data->SelectionStart = data->SelectionEnd = data->CursorPos;
+  return 0;
+}
 
 void CommandPalette::Open() {
   open_ = true;
   focus_input_ = true;
   selection_ = 0;
+  history_pos_ = -1;
+  saved_input_.clear();
   input_[0] = '\0';
 }
 
@@ -73,8 +119,80 @@ void CommandPalette::Toggle() {
   }
 }
 
+const CommandPalette::Command* CommandPalette::DrawCompletionList(
+    const std::vector<Command>& list, const std::string& query, bool entered) {
+  std::vector<const Command*> matches;
+  for (const Command& command : list) {
+    if (ContainsCaseInsensitive(command.name, query)) {
+      matches.push_back(&command);
+    }
+  }
+
+  // Present candidates alphabetically (case-insensitive), regardless of the
+  // order the caller supplied them in.
+  std::sort(matches.begin(), matches.end(),
+            [](const Command* a, const Command* b) {
+              return std::lexicographical_compare(
+                  a->name.begin(), a->name.end(), b->name.begin(),
+                  b->name.end(), [](unsigned char x, unsigned char y) {
+                    return std::tolower(x) < std::tolower(y);
+                  });
+            });
+
+  // Keyboard navigation through the filtered list.
+  if (ImGui::IsKeyPressed(ImGuiKey_DownArrow)) {
+    ++selection_;
+  }
+  if (ImGui::IsKeyPressed(ImGuiKey_UpArrow)) {
+    --selection_;
+  }
+  if (!matches.empty()) {
+    const int n = static_cast<int>(matches.size());
+    selection_ = (selection_ % n + n) % n;
+  } else {
+    selection_ = 0;
+  }
+
+  // Column where descriptions start: past the widest name so they line up.
+  float desc_x = 0.0f;
+  for (const Command* command : matches) {
+    desc_x = std::max(desc_x, ImGui::CalcTextSize(command->name.c_str()).x);
+  }
+  desc_x += ImGui::GetStyle().ItemSpacing.x * 3.0f;
+
+  ImGui::Separator();
+  const Command* chosen = nullptr;
+  for (int i = 0; i < static_cast<int>(matches.size()); ++i) {
+    const bool is_selected = (i == selection_);
+    if (CompletionRow(*matches[i], is_selected, desc_x) ||
+        (is_selected && entered)) {
+      chosen = matches[i];
+    }
+  }
+  return chosen;
+}
+
+void CommandPalette::SubmitPlain(
+    const std::string& text,
+    const std::function<void(const std::string&)>& on_submit_plain) {
+  if (text.empty()) {
+    return;
+  }
+  if (prompt_history_.empty() || prompt_history_.back() != text) {
+    prompt_history_.push_back(text);
+  }
+  history_pos_ = -1;
+  saved_input_.clear();
+  if (on_submit_plain) {
+    on_submit_plain(text);
+  }
+  input_[0] = '\0';
+  focus_input_ = true;
+}
+
 void CommandPalette::Draw(
-    const std::vector<Command>& commands, const ImVec4& rect,
+    const std::vector<Command>& commands,
+    const std::vector<Command>& slash_commands, const ImVec4& rect,
     const std::function<void()>& render_below,
     const std::function<void(const std::string&)>& on_submit_plain) {
   if (!open_) {
@@ -107,65 +225,41 @@ void CommandPalette::Draw(
     }
     ImGui::SetNextItemWidth(-FLT_MIN);
     const bool entered = ImGui::InputTextWithHint(
-        "##cmdinput", "Type  >  for commands...", input_, sizeof(input_),
-        ImGuiInputTextFlags_EnterReturnsTrue);
+        "##cmdinput", "Use > for app commands or / for agent commands", input_,
+        sizeof(input_),
+        ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_CallbackHistory,
+        HistoryCallback, this);
 
     const bool command_mode = (input_[0] == '>');
+    const bool slash_mode = (input_[0] == '/');
 
-    // Ask mode: plain (non-'>') text submitted with Enter goes to the LLM. The
-    // box clears but stays open so the answer can render below.
-    if (entered && !command_mode && input_[0] != '\0') {
-      if (on_submit_plain) {
-        on_submit_plain(std::string(input_));
-      }
-      input_[0] = '\0';
-      focus_input_ = true;
-    }
-
-    // Command mode is entered by typing '>' as the first character.
     if (command_mode) {
-      const std::string query(input_ + 1);
-
-      std::vector<const Command*> matches;
-      for (const Command& command : commands) {
-        if (ContainsCaseInsensitive(command.name, query)) {
-          matches.push_back(&command);
-        }
+      // '>' command mode: choosing an entry runs its callback.
+      if (const Command* chosen =
+              DrawCompletionList(commands, input_ + 1, entered)) {
+        chosen->run();
+        Close();
       }
-
-      // Keyboard navigation through the filtered list.
-      if (ImGui::IsKeyPressed(ImGuiKey_DownArrow)) {
-        ++selection_;
+    } else if (slash_mode) {
+      // '/' slash mode: shares the completion list. Choosing an entry submits
+      // its name; otherwise Enter submits the typed text (so commands with
+      // arguments like "/model sonnet", which match no completion, still work).
+      const Command* chosen =
+          DrawCompletionList(slash_commands, input_ + 1, entered);
+      if (chosen) {
+        SubmitPlain(chosen->name, on_submit_plain);
+      } else if (entered) {
+        SubmitPlain(input_, on_submit_plain);
       }
-      if (ImGui::IsKeyPressed(ImGuiKey_UpArrow)) {
-        --selection_;
+    } else {
+      // Ask mode: plain text submitted with Enter goes to the LLM; the box
+      // clears but stays open so the conversation keeps rendering below.
+      if (entered && input_[0] != '\0') {
+        SubmitPlain(input_, on_submit_plain);
       }
-      if (!matches.empty()) {
-        selection_ = (selection_ % static_cast<int>(matches.size()) +
-                      static_cast<int>(matches.size())) %
-                     static_cast<int>(matches.size());
-      } else {
-        selection_ = 0;
+      if (render_below) {
+        render_below();
       }
-
-      ImGui::Separator();
-      for (int i = 0; i < static_cast<int>(matches.size()); ++i) {
-        const bool is_selected = (i == selection_);
-        bool run = false;
-        if (ImGui::Selectable(matches[i]->name.c_str(), is_selected)) {
-          run = true;
-        }
-        if (is_selected && entered) {
-          run = true;
-        }
-        if (run) {
-          matches[i]->run();
-          Close();
-        }
-      }
-    } else if (render_below) {
-      // Ask mode: draw the LLM conversation inside the palette window.
-      render_below();
     }
 
     if (ImGui::IsKeyPressed(ImGuiKey_Escape)) {

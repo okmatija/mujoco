@@ -49,7 +49,6 @@
 #include "experimental/platform/ux/picture_gui.h"
 #include "experimental/platform/ux/plugin.h"
 #include "experimental/studio/llm/source_search.h"
-#include "experimental/studio/mujoco_logo.h"
 
 namespace mujoco::studio {
 
@@ -83,8 +82,8 @@ static constexpr const char* ICON_CURR_FRAME = platform::ICON_FA_FAST_FORWARD;
 static constexpr const char* ICON_UNDO_SPEC = platform::ICON_FA_UNDO;
 static constexpr const char* ICON_REDO_SPEC = platform::ICON_FA_REPEAT;
 
-// Inset of the viewport overlays (left rail, bottom scrubber, top toolbar) from
-// the screen edge they hug.
+// Inset of the viewport overlays (left rail, top toolbar) from the screen edge
+// they hug.
 static constexpr float kOverlayInset = 10.0f;
 
 // Defined in platform/ux/object_launcher_plugin.cc. Calling it forces that
@@ -131,8 +130,6 @@ void App::SwitchGraphicsMode(int width, int height,
   renderer_.reset();
   window_.reset();
   gfx_mode_ = mode;
-  // The renderer owns GPU textures; force the logo to re-upload on the new one.
-  logo_texture_ = 0;
 
   platform::Window::Config window_config;
   window_config.gfx_mode = gfx_mode_;
@@ -627,11 +624,20 @@ void App::HandleMouseEvents() {
 
 void App::HandleKeyboardEvents() {
   using platform::ImGui_IsChordJustPressed;
-  if (ImGui::GetIO().WantCaptureKeyboard) {
+
+  constexpr auto ImGuiMod_CtrlShift = ImGuiMod_Ctrl | ImGuiMod_Shift;
+
+  // The command-palette toggle is handled before the WantCaptureKeyboard guard
+  // so Ctrl+Shift+P can also close the palette while its input box has keyboard
+  // focus (the Ctrl+Shift modifiers mean no stray 'P' is typed into the box).
+  if (ImGui_IsChordJustPressed(ImGuiKey_P | ImGuiMod_CtrlShift)) {
+    command_palette_.Toggle();
     return;
   }
 
-  constexpr auto ImGuiMod_CtrlShift = ImGuiMod_Ctrl | ImGuiMod_Shift;
+  if (ImGui::GetIO().WantCaptureKeyboard) {
+    return;
+  }
 
   bool is_freecam_wasd = ui_.camera_idx == platform::kFreeCameraIdx;
 
@@ -646,8 +652,6 @@ void App::HandleKeyboardEvents() {
     tmp_.file_dialog = UiTempState::FileDialog_PrintModel;
   } else if (ImGui_IsChordJustPressed(ImGuiKey_D | ImGuiMod_Ctrl)) {
     tmp_.file_dialog = UiTempState::FileDialog_PrintData;
-  } else if (ImGui_IsChordJustPressed(ImGuiKey_P | ImGuiMod_Ctrl)) {
-    command_palette_.Toggle();
   } else if (ImGui_IsChordJustPressed(ImGuiKey_C | ImGuiMod_Ctrl)) {
     std::string keyframe = platform::KeyframeToString(model(), data(), false);
     platform::MaybeSaveToClipboard(keyframe);
@@ -706,7 +710,7 @@ void App::HandleKeyboardEvents() {
   } else if (ImGui_IsChordJustPressed(ImGuiKey_F1)) {
     ToggleWindow(tmp_.help);
   } else if (ImGui_IsChordJustPressed(ImGuiKey_F2)) {
-    ToggleWindow(tmp_.stats);
+    tmp_.stats_in_statusbar = !tmp_.stats_in_statusbar;
   } else if (ImGui_IsChordJustPressed(ImGuiKey_F3)) {
     ToggleWindow(tmp_.profiler);
   } else if (ImGui_IsChordJustPressed(ImGuiKey_F6)) {
@@ -913,11 +917,10 @@ void App::BuildGui() {
 
   MainMenuGui();
 
-  // DCC-style translucent overlays on top of the viewport (transport + view
-  // controls along the top, a vertical frame scrubber on the right) plus a
+  // DCC-style translucent overlay on top of the viewport (transport controls
+  // plus the collapsible frame-history scrubber, along the top) and a
   // menu-bar-styled status bar pinned to the bottom.
   TopOverlayGui(workspace_rect);
-  ScrubberOverlayGui();
   StatusBarGui();
 
   // Feature documentation: the old "Options" and "Inspector" side panels
@@ -963,18 +966,26 @@ void App::BuildGui() {
     ImGui::End();
   }
 
-  if (tmp_.stats) {
-    // A small floating window. The "###" id keeps the docking layout's
-    // name-based docking from capturing it over the rail (same trick as the
-    // tool windows); first shown just to the right of the rail. Rendered with
+  if (show_stats_window_) {
+    // A transient hover peek, shown while the stats icon in the status bar is
+    // hovered. Anchored to its bottom-right corner just above the status bar,
+    // near that icon, as a borderless non-interactive overlay. Rendered with
     // plain text rather than the docked StatsGui (whose ImGui::Columns layout
     // doesn't play well in a small floating window).
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+    const float status_bar_h = ImGui::GetFrameHeight();
     ImGui::SetNextWindowPos(
-        ImVec2(workspace_rect.x + RailWidth() + 16.0f, workspace_rect.y + 16.0f),
-        ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSize(ImVec2(200.0f, 0.0f), ImGuiCond_FirstUseEver);
-    if (ImGui::Begin("Stats###StatsWindow", &tmp_.stats,
-                     ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImVec2(vp->WorkPos.x + vp->WorkSize.x - kOverlayInset,
+               vp->WorkPos.y + vp->WorkSize.y - status_bar_h - kOverlayInset),
+        ImGuiCond_Always, ImVec2(1.0f, 1.0f));
+    ImGui::SetNextWindowBgAlpha(0.85f);
+    if (ImGui::Begin("##StatsPeek", nullptr,
+                     ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+                         ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoDocking |
+                         ImGuiWindowFlags_NoSavedSettings |
+                         ImGuiWindowFlags_NoFocusOnAppearing |
+                         ImGuiWindowFlags_NoNavInputs |
+                         ImGuiWindowFlags_AlwaysAutoResize)) {
       ImGui::Text("FPS        %.0f", renderer_->GetFps());
       if (has_data()) {
         const mjModel* m = model();
@@ -1022,8 +1033,8 @@ void App::BuildGui() {
 
   FileDialogGui();
 
-  // Ctrl+P command palette, drawn last so it sits on top. Commands are only
-  // gathered while it is open. Centered on the screen, 10px below the top
+  // Ctrl+Shift+P command palette, drawn last so it sits on top. Commands are
+  // only gathered while it is open. Centered on the screen, 10px below the top
   // transport overlay (so it lines up with that bar).
   ui_agent_.Poll();
   if (command_palette_.is_open()) {
@@ -1031,7 +1042,7 @@ void App::BuildGui() {
     const ImVec4 palette_rect(vp->WorkPos.x, tmp_.top_overlay_bottom + 10.0f,
                               vp->WorkSize.x, workspace_rect.w);
     command_palette_.Draw(
-        CollectCommands(), palette_rect,
+        CollectCommands(), CollectSlashCommands(), palette_rect,
         [this] { llm_panel_.Render(ui_agent_); },
         [this](const std::string& q) { ui_agent_.Ask(q); });
   }
@@ -1089,12 +1100,6 @@ float App::RailWidth() const {
   const ImGuiStyle& style = ImGui::GetStyle();
   const float button = ImGui::GetFrameHeight() * 1.6f;
   return 2 * button + style.ItemSpacing.x + 2.0f * style.WindowPadding.x;
-}
-
-float App::ScrubberWidth() const {
-  // A thin vertical strip: one frame wide plus a small padding on each side
-  // (kScrubberPad in ScrubberOverlayGui).
-  return ImGui::GetFrameHeight() + 8.0f;
 }
 
 void App::ToolRailGui(const ImVec4& workspace_rect) {
@@ -1159,31 +1164,22 @@ void App::ToolRailGui(const ImVec4& workspace_rect) {
     ImGui::Separator();
     slot = 0;
 
-    // Group 1: registered tool windows (each opens a floating tool window).
+    // Group 1: registered tool windows (each opens a floating tool window),
+    // followed by the view / diagnostics windows (toggle the app's own windows).
     for (ToolWindow& tw : tool_windows_) {
       if (icon_button(tw.icon, tw.title.c_str(), tw.open)) {
         tw.open = !tw.open;
       }
     }
-
-    // Group 2: view / diagnostics windows (toggle the app's own windows).
-    ImGui::Separator();
-    slot = 0;
     if (icon_button(platform::ICON_FA_TACHOMETER, "Profiler", tmp_.profiler)) {
       ToggleWindow(tmp_.profiler);
-    }
-    if (icon_button(platform::ICON_FA_BAR_CHART, "Stats", tmp_.stats)) {
-      ToggleWindow(tmp_.stats);
     }
     if (icon_button(platform::ICON_FA_CLONE, "Picture-in-Picture",
                     tmp_.picture_in_picture)) {
       tmp_.picture_in_picture = !tmp_.picture_in_picture;
     }
-    if (icon_button(platform::ICON_FA_QUESTION_CIRCLE, "Help", tmp_.help)) {
-      ToggleWindow(tmp_.help);
-    }
 
-    // Group 3: GUI plugins (the same entries as the "Plugins" main menu). Each
+    // Group 2: GUI plugins (the same entries as the "Plugins" main menu). Each
     // button toggles the plugin's window, exactly like its menu item. Only
     // plugins that draw a window (have an `update`) are listed, matching the
     // menu. The separator/new row is emitted lazily so it doesn't appear when
@@ -1261,32 +1257,43 @@ void App::RegisterToolWindows() {
   // window here is all it takes to get a rail button, a tooltip, and a
   // command-palette entry -- the intended extension point (incl. a future
   // Python API that would register windows whose render() calls back to script).
-  tool_windows_.push_back({platform::ICON_FA_COGS, "Physics", [this] {
+  tool_windows_.push_back({platform::ICON_FA_COGS, "Physics",
+                           [this] {
                              platform::PhysicsGui(
                                  model(), platform::GetExpectedLabelWidth());
-                           }});
-  tool_windows_.push_back({platform::ICON_FA_CUBE, "Rendering", [this] {
+                           },
+                           "Physics options and solver parameters"});
+  tool_windows_.push_back({platform::ICON_FA_CUBE, "Rendering",
+                           [this] {
                              platform::RenderingGui(
                                  model(), &vis_options_,
                                  renderer_->GetRenderFlags(),
                                  platform::GetExpectedLabelWidth());
-                           }});
+                           },
+                           "Render flags and model element visibility"});
   tool_windows_.push_back(
-      {platform::ICON_FA_OBJECT_GROUP, "Visibility Groups", [this] {
+      {platform::ICON_FA_OBJECT_GROUP, "Visibility Groups",
+       [this] {
          platform::GroupsGui(model(), &vis_options_,
                              platform::GetExpectedLabelWidth());
-       }});
-  tool_windows_.push_back({platform::ICON_FA_EYE, "Visualization", [this] {
+       },
+       "Toggle visibility of element groups"});
+  tool_windows_.push_back({platform::ICON_FA_EYE, "Visualization",
+                           [this] {
                              platform::VisualizationGui(
                                  model(), &vis_options_, &camera_,
                                  platform::GetExpectedLabelWidth());
-                           }});
+                           },
+                           "Visualization options and camera"});
   tool_windows_.push_back(
-      {platform::ICON_FA_LINK, "Joints", needs_data([this] {
+      {platform::ICON_FA_LINK, "Joints",
+       needs_data([this] {
          platform::JointsGui(model(), data(), &vis_options_);
-       })});
+       }),
+       "Inspect and drive joint positions"});
   tool_windows_.push_back(
-      {platform::ICON_FA_SLIDERS, "Controls", needs_data([this] {
+      {platform::ICON_FA_SLIDERS, "Controls",
+       needs_data([this] {
          float noise_scale = 0;
          float noise_rate = 0;
          step_control_.GetNoiseParameters(noise_scale, noise_rate);
@@ -1294,61 +1301,92 @@ void App::RegisterToolWindows() {
          step_control_.SetNoiseParameters(noise_scale, noise_rate);
          ImGui::Separator();
          platform::ControlsGui(model(), data(), &vis_options_);
-       })});
+       }),
+       "Actuator controls and applied noise"});
   tool_windows_.push_back(
       {platform::ICON_FA_RSS, "Sensor",
-       needs_data([this] { platform::SensorGui(model(), data()); })});
+       needs_data([this] { platform::SensorGui(model(), data()); }),
+       "Live sensor readings"});
   tool_windows_.push_back(
-      {platform::ICON_FA_BINOCULARS, "Watch", needs_data([this] {
+      {platform::ICON_FA_BINOCULARS, "Watch",
+       needs_data([this] {
          platform::WatchGui(model(), data(), ui_.watch_field,
                             sizeof(ui_.watch_field), ui_.watch_index);
-       })});
+       }),
+       "Watch a named mjData field"});
   tool_windows_.push_back(
-      {platform::ICON_FA_TABLE, "State", needs_data([this] {
+      {platform::ICON_FA_TABLE, "State",
+       needs_data([this] {
          platform::StateGui(model(), data(), tmp_.state, tmp_.state_sig,
                             platform::GetExpectedLabelWidth());
-       })});
-  tool_windows_.push_back(
-      {platform::ICON_FA_SITEMAP, "Explorer", [this] { SpecExplorerGui(); }});
-  tool_windows_.push_back(
-      {platform::ICON_FA_PENCIL, "Editor", [this] { SpecEditorGui(); }});
+       }),
+       "Full physics state vector"});
+  tool_windows_.push_back({platform::ICON_FA_SITEMAP, "Explorer",
+                           [this] { SpecExplorerGui(); },
+                           "Browse the model spec tree"});
+  tool_windows_.push_back({platform::ICON_FA_PENCIL, "Editor",
+                           [this] { SpecEditorGui(); },
+                           "Edit the model spec"});
 }
 
 std::vector<CommandPalette::Command> App::CollectCommands() {
   std::vector<CommandPalette::Command> commands;
 
   // Model actions.
-  commands.push_back({"Reload", [this] { RequestModelReload(); }});
-  commands.push_back({"Reset", [this] { ResetPhysics(); }});
+  commands.push_back(
+      {"Reload", [this] { RequestModelReload(); }, "Reload the model from disk"});
+  commands.push_back(
+      {"Reset", [this] { ResetPhysics(); }, "Reset the simulation state"});
 
   // Registered tool windows (index is stable for the process lifetime).
   for (int i = 0; i < static_cast<int>(tool_windows_.size()); ++i) {
-    commands.push_back({tool_windows_[i].title, [this, i] {
+    commands.push_back({tool_windows_[i].title,
+                        [this, i] {
                           tool_windows_[i].open = !tool_windows_[i].open;
-                        }});
+                        },
+                        tool_windows_[i].description});
   }
 
   // View / diagnostics windows.
-  commands.push_back({"Profiler", [this] { ToggleWindow(tmp_.profiler); }});
-  commands.push_back({"Stats", [this] { ToggleWindow(tmp_.stats); }});
-  commands.push_back({"Picture-in-Picture", [this] {
+  commands.push_back({"Profiler", [this] { ToggleWindow(tmp_.profiler); },
+                      "Open the timing profiler window"});
+  commands.push_back({"Stats",
+                      [this] {
+                        tmp_.stats_in_statusbar = !tmp_.stats_in_statusbar;
+                      },
+                      "Pin sim metrics in the status bar"});
+  commands.push_back({"Picture-in-Picture",
+                      [this] {
                         tmp_.picture_in_picture = !tmp_.picture_in_picture;
-                      }});
-  commands.push_back({"Help", [this] { ToggleWindow(tmp_.help); }});
+                      },
+                      "Open a picture-in-picture viewport"});
+  commands.push_back({"Help", [this] { ToggleWindow(tmp_.help); },
+                      "Show keyboard shortcuts and help"});
 
   // GUI plugins (the same entries as the Plugins menu and the rail). Each
-  // toggles the plugin's window; only plugins that draw one are listed.
+  // toggles the plugin's window; only plugins that draw one are listed. The
+  // "Plugins > " prefix hints where they live in the menu bar.
   platform::ForEachPlugin<platform::GuiPlugin>(
       [&commands](platform::GuiPlugin* plugin) {
         if (!plugin->update) {
           return;
         }
-        commands.push_back({plugin->name, [plugin] {
-                              plugin->active = !plugin->active;
-                            }});
+        commands.push_back({std::string("Plugins > ") + plugin->name,
+                            [plugin] { plugin->active = !plugin->active; },
+                            "GUI plugin window"});
       });
 
   return commands;
+}
+
+std::vector<CommandPalette::Command> App::CollectSlashCommands() {
+  // Local "/..." commands handled by UiAgent::Ask (not sent to the model).
+  // Choosing one submits its name; for commands that take an argument, the user
+  // types the whole line (e.g. "/model sonnet") and it is submitted as-is.
+  return {
+      {"/clear", {}, "Clear the conversation history"},
+      {"/model", {}, "Switch or show the active model"},
+  };
 }
 
 void App::RegisterLlmTools() {
@@ -1773,10 +1811,37 @@ void App::HelpGui() {
 }
 
 void App::ToolBarGui() {
-  // Transport only: combined (Normal Pause, Viscous Pause, Play) widget + speed.
-  // The view-display selectors (camera/label/frame) live on the menu bar, and
-  // engine settings (threadpool size) live in Edit > Preferences.
-  platform::StepControlGui(model(), &step_control_, tmp_.speed_index);
+  // Transport buttons (Normal Pause, Viscous Pause, Play) + the speed dial, as
+  // in the original combined StepControlGui. The view-display selectors
+  // (camera/label/frame) live on the menu bar, and engine settings (threadpool
+  // size) live in Edit > Preferences.
+  const float h = ImGui::GetFrameHeight();
+  platform::TransportButtonsGui(&step_control_);
+  ImGui::SameLine(0, h * 0.6f);
+  platform::SpeedControlGui(&step_control_, tmp_.speed_index);
+
+  // Without a model there is no history to scrub.
+  if (!has_model()) {
+    return;
+  }
+
+  // Frame-history scrubber, shown to the left of the toggle when expanded. The
+  // overlay auto-resizes and is centered with a (0.5, 0) pivot, so it re-centers
+  // as the bar widens.
+  const bool expanded = tmp_.scrubber_expanded;
+  if (expanded) {
+    ImGui::SameLine(0, h * 0.6f);  // match the transport-to-speed gap
+    ScrubberControls();
+  }
+
+  // Expand/collapse toggle, always right-most: a square history-icon checkbox
+  // that shows the pressed ("on") frame while the scrubber is expanded. The
+  // "###..." id is stable so the test engine / LLM agent can address it.
+  ImGui::SameLine(0, h * 0.6f);
+  const std::string label =
+      std::string(platform::ICON_FA_HISTORY) + "###Toggle history scrubber";
+  platform::ImGui_IconCheckbox(label.c_str(), &tmp_.scrubber_expanded,
+                               "History scrubber");
 }
 
 namespace {
@@ -1791,10 +1856,11 @@ constexpr float kOverlayAlpha = 0.65f;
 
 void App::TopOverlayGui(const ImVec4& workspace_rect) {
   // Auto-size to the packed controls and center horizontally on the actual
-  // screen center (the rail and scrubber are thin overlays that don't sit at the
-  // top center, so we don't bias around them). The (0.5, 0) pivot keeps it
-  // centered regardless of its content width. workspace_rect.y is the menu-bar
-  // bottom, so sit kOverlayInset below it.
+  // screen center (the left rail is a thin overlay that doesn't sit at the top
+  // center, so we don't bias around it). The (0.5, 0) pivot keeps it centered
+  // regardless of its content width, so the bar re-centers when the scrubber is
+  // expanded or collapsed. workspace_rect.y is the menu-bar bottom, so sit
+  // kOverlayInset below it.
   const ImGuiViewport* vp = ImGui::GetMainViewport();
   const float center_x = vp->WorkPos.x + vp->WorkSize.x * 0.5f;
   ImGui::SetNextWindowPos(ImVec2(center_x, workspace_rect.y + kOverlayInset),
@@ -1809,90 +1875,87 @@ void App::TopOverlayGui(const ImVec4& workspace_rect) {
   ImGui::End();
 }
 
-void App::ScrubberOverlayGui() {
-  if (!has_model()) {
-    return;
+void App::ScrubberControls() {
+  // One fused row, like the transport bar: rounded end buttons (oldest / current)
+  // around square inner buttons and a square history slider (left = oldest, right
+  // = now), joined with zero spacing. Every control carries a stable "###<Name>"
+  // id so the test engine / LLM agent can address it (see WIDGET_GUIDELINES.md).
+  const float h = ImGui::GetFrameHeight();
+  const ImVec2 btn(h, h);
+  // The rounded end buttons get the same width as the transport's play/pause
+  // buttons (icon width + padding, scaled by 1.6 -- see TransportButtonsGui).
+  const float end_w = (ImGui::CalcTextSize(platform::ICON_FA_PLAY).x +
+                       ImGui::GetStyle().FramePadding.x * 2.f) *
+                      1.6f;
+  const ImVec2 end_btn(end_w, h);
+  // Momentary buttons: resting = ImGuiCol_Button, hover = ImGuiCol_ButtonHovered.
+  const ImColor hover(ImGui::GetStyleColorVec4(ImGuiCol_ButtonHovered));
+
+  platform::ScopedStyle style;
+  style.Var(ImGuiStyleVar_FrameRounding, 8.f * ImGui::GetStyle().FontScaleDpi);
+
+  // Oldest frame (start of history): rounded left end.
+  if (platform::ImGui_ColorButtonEx(
+          (std::string(platform::ICON_FA_FAST_BACKWARD) + "###Oldest frame")
+              .c_str(),
+          /*active=*/false, hover, ImDrawFlags_RoundCornersLeft, end_btn,
+          /*hover_alpha=*/1.f)) {
+    LoadHistory(1 - sim_history_.Size());
   }
-  const ImGuiStyle& style = ImGui::GetStyle();
-  // A horizontal strip centered along the bottom of the screen. It is anchored
-  // to the viewport -- like the Ctrl+P palette -- not the dockspace, so it stays
-  // centered on screen and does not shift when a panel is docked. Its length
-  // matches the height it had as a vertical strip; its thickness is the old
-  // (thin) width; its bottom sits kOverlayInset above the top of the status bar.
-  const ImGuiViewport* vp = ImGui::GetMainViewport();
-  const float status_bar_h = ImGui::GetFrameHeight();
-  const float status_bar_top = vp->WorkPos.y + vp->WorkSize.y - status_bar_h;
-  const float thickness = ScrubberWidth();
-  const float length = std::max(160.0f, (vp->WorkSize.y - status_bar_h) * 0.6f);
-  const float x = vp->WorkPos.x + (vp->WorkSize.x - length) * 0.5f;
-  const float y = status_bar_top - kOverlayInset - thickness;
+  ImGui::SetItemTooltip("%s", "Oldest frame (start of history)");
 
-  ImGui::SetNextWindowPos(ImVec2(x, y));
-  ImGui::SetNextWindowSize(ImVec2(length, thickness));
-  ImGui::SetNextWindowBgAlpha(kOverlayAlpha);
-  // Tight padding so the thin strip's content fills its height.
-  constexpr float kScrubberPad = 4.0f;
-  platform::ScopedStyle pad;
-  pad.Var(ImGuiStyleVar_WindowPadding, ImVec2(kScrubberPad, kScrubberPad));
-  if (ImGui::Begin("##Scrubber", nullptr, kOverlayFlags)) {
-    // One row; square icon buttons with a horizontal slider filling the middle.
-    // Every control carries a stable, self-describing "###<Name>" id so the test
-    // engine / LLM agent can address it (see llm/WIDGET_GUIDELINES.md).
-    const float row_h = ImGui::GetContentRegionAvail().y;
-    const ImVec2 btn(row_h, row_h);
+  // Previous frame (toward older states): square.
+  ImGui::SameLine(0, 0);
+  if (platform::ImGui_ColorButtonEx(
+          (std::string(ICON_PREV_FRAME) + "###Previous frame").c_str(),
+          /*active=*/false, hover, ImDrawFlags_RoundCornersNone, btn, 1.f)) {
+    LoadHistory(sim_history_.GetIndex() - 1);
+  }
+  ImGui::SetItemTooltip("%s", "Previous frame");
 
-    // Oldest frame (start of history) at the left.
-    if (ImGui::Button((std::string(platform::ICON_FA_FAST_BACKWARD) +
-                       "###Oldest frame").c_str(), btn)) {
-      LoadHistory(1 - sim_history_.Size());
-    }
-    ImGui::SetItemTooltip("%s", "Oldest frame (start of history)");
-
-    // Previous frame (toward older states).
-    ImGui::SameLine();
-    if (ImGui::Button((std::string(ICON_PREV_FRAME) +
-                       "###Previous frame").c_str(), btn)) {
-      LoadHistory(sim_history_.GetIndex() - 1);
-    }
-    ImGui::SetItemTooltip("%s", "Previous frame");
-
-    // Horizontal history slider fills the middle (left = oldest, right = now).
-    // Reserve room for the two buttons that follow it.
-    ImGui::SameLine();
-    int index = sim_history_.GetIndex();
-    const float slider_w = std::max(
-        40.0f, ImGui::GetContentRegionAvail().x - 2.0f * (row_h + style.ItemSpacing.x));
-    ImGui::SetNextItemWidth(slider_w);
+  // History slider: square corners so it fuses with the buttons on both sides.
+  ImGui::SameLine(0, 0);
+  int index = sim_history_.GetIndex();
+  ImGui::SetNextItemWidth(ImGui::GetFontSize() * 12.0f);
+  {
+    platform::ScopedStyle slider_style;
+    slider_style.Var(ImGuiStyleVar_FrameRounding, 0.f);
     if (ImGui::SliderInt("###Frame", &index, 1 - sim_history_.Size(), 0, "")) {
       LoadHistory(index);
     }
-    ImGui::SetItemTooltip("Frame %d of %d", index, sim_history_.Size());
-
-    // Next frame (toward the current state).
-    ImGui::SameLine();
-    if (ImGui::Button((std::string(ICON_NEXT_FRAME) +
-                       "###Next frame").c_str(), btn)) {
-      if (sim_history_.GetIndex() == 0) {
-        step_control_.RequestSingleStep();
-      } else {
-        LoadHistory(sim_history_.GetIndex() + 1);
-      }
-    }
-    ImGui::SetItemTooltip("%s", "Next frame");
-
-    // Jump to the current (latest) frame at the right.
-    ImGui::SameLine();
-    if (ImGui::Button((std::string(ICON_CURR_FRAME) +
-                       "###Current frame").c_str(), btn)) {
-      LoadHistory(0);
-    }
-    ImGui::SetItemTooltip("%s", "Current frame");
   }
-  ImGui::End();
+  ImGui::SetItemTooltip("Frame %d of %d", index, sim_history_.Size());
+
+  // Next frame (toward the current state): square.
+  ImGui::SameLine(0, 0);
+  if (platform::ImGui_ColorButtonEx(
+          (std::string(ICON_NEXT_FRAME) + "###Next frame").c_str(),
+          /*active=*/false, hover, ImDrawFlags_RoundCornersNone, btn, 1.f)) {
+    if (sim_history_.GetIndex() == 0) {
+      step_control_.RequestSingleStep();
+    } else {
+      LoadHistory(sim_history_.GetIndex() + 1);
+    }
+  }
+  ImGui::SetItemTooltip("%s", "Next frame");
+
+  // Current (latest) frame: rounded right end.
+  ImGui::SameLine(0, 0);
+  if (platform::ImGui_ColorButtonEx(
+          (std::string(ICON_CURR_FRAME) + "###Current frame").c_str(),
+          /*active=*/false, hover, ImDrawFlags_RoundCornersRight, end_btn,
+          1.f)) {
+    LoadHistory(0);
+  }
+  ImGui::SetItemTooltip("%s", "Current frame");
 }
 
 void App::StatusBarGui() {
-  // Left: run state + any error message. Right: model/sim metrics.
+  // Recomputed below from the stats icon's hover state.
+  show_stats_window_ = false;
+
+  // Left: run state + any error message. Right: a stats toggle icon, plus the
+  // model/sim metrics when they are pinned.
   std::string left;
   if (!has_model()) {
     left = "No model loaded";
@@ -1954,14 +2017,31 @@ void App::StatusBarGui() {
   if (ImGui::Begin("##StatusBar", nullptr, flags)) {
     // Status message on the left.
     ImGui::TextUnformatted(left.c_str());
-    // Metrics right-aligned on the same line.
-    if (!right.empty()) {
-      const float right_w = ImGui::CalcTextSize(right.c_str()).x;
+
+    // Right side, right-aligned: the metrics (only when pinned) followed by the
+    // stats toggle (the shared icon-checkbox: pressed/"on" frame while pinned).
+    // Clicking pins/unpins the metrics here; hovering while unpinned peeks the
+    // floating stats window. The "###Stats" id lets the test engine / LLM agent
+    // address it.
+    const std::string icon = platform::ICON_FA_BAR_CHART;
+    const float side = ImGui::GetTextLineHeight();
+    const std::string metrics = tmp_.stats_in_statusbar ? right : std::string();
+    float block_w = side;
+    if (!metrics.empty()) {
+      block_w += ImGui::CalcTextSize(metrics.c_str()).x + s.ItemSpacing.x;
+    }
+    ImGui::SameLine();
+    ImGui::SetCursorPosX(std::max(
+        ImGui::GetCursorPosX(),
+        ImGui::GetWindowWidth() - block_w - 2.0f * s.ItemSpacing.x));
+    if (!metrics.empty()) {
+      ImGui::TextUnformatted(metrics.c_str());
       ImGui::SameLine();
-      ImGui::SetCursorPosX(std::max(
-          ImGui::GetCursorPosX(),
-          ImGui::GetWindowWidth() - right_w - 2.0f * s.ItemSpacing.x));
-      ImGui::TextUnformatted(right.c_str());
+    }
+    platform::ImGui_IconCheckbox((icon + "###Stats").c_str(),
+                                 &tmp_.stats_in_statusbar, /*tooltip=*/"", side);
+    if (!tmp_.stats_in_statusbar && ImGui::IsItemHovered()) {
+      show_stats_window_ = true;
     }
   }
   ImGui::End();
@@ -2022,17 +2102,6 @@ void App::GraphicsModeMenu() {
 
 void App::MainMenuGui() {
   if (ImGui::BeginMainMenuBar()) {
-    // MuJoCo logo in a square to the left of the File menu. Uploaded lazily
-    // (the renderer must exist) and kept square at the menu-bar height.
-    if (logo_texture_ == 0) {
-      logo_texture_ = renderer_->UploadImage(
-          0, reinterpret_cast<const std::byte*>(kMujocoLogoRgba),
-          kMujocoLogoWidth, kMujocoLogoHeight, 4);
-    }
-    const float logo_size = ImGui::GetFrameHeight();
-    ImGui::Image(logo_texture_, ImVec2(logo_size, logo_size));
-    ImGui::SameLine();
-
     if (ImGui::BeginMenu("File")) {
 #ifndef __EMSCRIPTEN__
       if (ImGui::MenuItem("Open Model File", "Ctrl+O")) {
@@ -2146,8 +2215,9 @@ void App::MainMenuGui() {
       if (ImGui::MenuItem("Profiler", "F3", tmp_.profiler)) {
         ToggleWindow(tmp_.profiler);
       }
-      if (ImGui::MenuItem("Stats", "F2", tmp_.stats)) {
-        ToggleWindow(tmp_.stats);
+      if (ImGui::MenuItem("Stats in status bar", "F2",
+                          tmp_.stats_in_statusbar)) {
+        tmp_.stats_in_statusbar = !tmp_.stats_in_statusbar;
       }
       if (ImGui::MenuItem("Picture-in-Picture", nullptr,
                           tmp_.picture_in_picture)) {

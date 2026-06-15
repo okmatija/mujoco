@@ -388,7 +388,7 @@ void TestRunner::DoGather(ImGuiTestContext* ctx,
     if (w->Flags & ImGuiWindowFlags_ChildWindow) continue;
     // Window display name. "Title##id"/"Title###id" -> "Title"; but a name that
     // STARTS with "##"/"###" (an overlay with no visible title, e.g.
-    // "##Scrubber") has no display text, so use its descriptive id part instead
+    // "##TopOverlay") has no display text, so use its descriptive id part instead
     // of dropping the window entirely.
     std::string name = w->Name ? w->Name : "";
     const size_t h = name.find("##");

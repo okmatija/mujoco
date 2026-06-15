@@ -15,6 +15,7 @@
 #include "experimental/studio/llm/llm_panel.h"
 
 #include <algorithm>
+#include <cfloat>
 #include <string>
 #include <vector>
 
@@ -31,44 +32,92 @@ constexpr int kRevealSpeed = 3;
 
 void LlmPanel::Render(UiAgent& agent) {
   const std::vector<UiAgent::Turn>& history = agent.history();
+  const int n = static_cast<int>(history.size());
 
-  if (history.empty() && !agent.busy()) {
-    ImGui::Spacing();
-    ImGui::TextDisabled("Ask %s, or type  >  for commands.",
-                        agent.provider_name().c_str());
+  // Detect /clear (or any history reset) so the typewriter starts fresh, and a
+  // newly appended turn so we scroll the transcript to the bottom once.
+  if (n < last_turn_count_) {
+    revealing_index_ = -1;
+    reveal_chars_ = 0;
+  }
+  if (n != last_turn_count_) {
+    scroll_to_bottom_ = true;
+    last_turn_count_ = n;
+  }
+
+  if (n == 0 && !agent.busy()) {
+    // Nothing to show yet; the input box hint guides the user.
     return;
   }
 
-  // Find the latest user and assistant turns.
-  int last_user = -1, last_assistant = -1;
-  for (int i = 0; i < static_cast<int>(history.size()); ++i) {
-    if (history[i].role == "user") last_user = i;
-    else if (history[i].role == "assistant") last_assistant = i;
+  // The most recent assistant turn gets the typewriter reveal; older ones show
+  // in full.
+  int last_assistant = -1;
+  for (int i = 0; i < n; ++i) {
+    if (history[i].role == "assistant") last_assistant = i;
   }
 
   ImGui::Separator();
 
-  if (last_user >= 0) {
-    ImGui::TextDisabled("You");
-    ImGui::TextWrapped("%s", history[last_user].text.c_str());
-    ImGui::Spacing();
-  }
+  // Scrollable transcript: grows with content up to a cap, then scrolls so the
+  // whole conversation stays reachable by scrolling up.
+  const float max_h = ImGui::GetMainViewport()->WorkSize.y * 0.5f;
+  ImGui::SetNextWindowSizeConstraints(ImVec2(0, 0), ImVec2(FLT_MAX, max_h));
+  if (ImGui::BeginChild("##convo", ImVec2(0, 0), ImGuiChildFlags_AutoResizeY)) {
+    for (int i = 0; i < n; ++i) {
+      const UiAgent::Turn& turn = history[i];
+      const bool is_user = (turn.role == "user");
+      ImGui::TextDisabled("%s",
+                          is_user ? "You" : agent.provider_name().c_str());
 
-  ImGui::TextDisabled("%s", agent.provider_name().c_str());
-  if (agent.busy()) {
-    // Simple animated ellipsis.
-    const int dots = 1 + (static_cast<int>(ImGui::GetTime() * 3.0) % 3);
-    ImGui::TextDisabled("thinking%s", std::string(dots, '.').c_str());
-  } else if (last_assistant >= 0) {
-    const std::string& answer = history[last_assistant].text;
-    if (last_assistant != revealing_index_) {
-      revealing_index_ = last_assistant;
-      reveal_chars_ = 0;
+      // Collapsible extended-thinking section (closed by default), shown only
+      // for assistant turns that actually produced reasoning.
+      if (!is_user && !turn.thinking.empty()) {
+        ImGui::PushID(i);
+        if (ImGui::CollapsingHeader("Thoughts")) {
+          ImGui::PushStyleColor(ImGuiCol_Text,
+                                ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+          ImGui::TextWrapped("%s", turn.thinking.c_str());
+          ImGui::PopStyleColor();
+        }
+        ImGui::PopID();
+      }
+
+      if (!is_user && i == last_assistant) {
+        // Typewriter reveal of the latest reply.
+        if (i != revealing_index_) {
+          revealing_index_ = i;
+          reveal_chars_ = 0;
+        }
+        reveal_chars_ = std::min(reveal_chars_ + kRevealSpeed,
+                                 static_cast<int>(turn.text.size()));
+        ImGui::TextWrapped("%.*s", reveal_chars_, turn.text.c_str());
+      } else {
+        ImGui::TextWrapped("%s", turn.text.c_str());
+      }
+      ImGui::Spacing();
     }
-    reveal_chars_ =
-        std::min(reveal_chars_ + kRevealSpeed, static_cast<int>(answer.size()));
-    ImGui::TextWrapped("%.*s", reveal_chars_, answer.c_str());
+
+    if (agent.busy()) {
+      ImGui::TextDisabled("%s", agent.provider_name().c_str());
+      const int dots = 1 + (static_cast<int>(ImGui::GetTime() * 3.0) % 3);
+      ImGui::TextDisabled("thinking%s", std::string(dots, '.').c_str());
+    }
+
+    // Follow new content while pinned to the bottom; release when the user
+    // scrolls up. A freshly appended turn forces a one-shot jump.
+    const bool revealing =
+        last_assistant >= 0 &&
+        reveal_chars_ < static_cast<int>(history[last_assistant].text.size());
+    if (scroll_to_bottom_) {
+      ImGui::SetScrollHereY(1.0f);
+      scroll_to_bottom_ = false;
+    } else if ((agent.busy() || revealing) &&
+               ImGui::GetScrollY() >= ImGui::GetScrollMaxY()) {
+      ImGui::SetScrollHereY(1.0f);
+    }
   }
+  ImGui::EndChild();
 }
 
 }  // namespace mujoco::studio

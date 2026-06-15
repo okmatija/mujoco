@@ -93,8 +93,25 @@ void UiAgent::set_tools(std::vector<ToolDef> tools, ToolExecutor exec) {
   executor_ = std::move(exec);
 }
 
+void UiAgent::Clear() {
+  if (busy_) return;
+  history_.clear();
+}
+
 void UiAgent::Ask(const std::string& question) {
   if (question.empty() || busy_) return;
+
+  // "/clear" is a local command: wipe the conversation and start fresh.
+  {
+    const size_t b = question.find_first_not_of(" \t");
+    const size_t e = question.find_last_not_of(" \t");
+    const std::string trimmed =
+        (b == std::string::npos) ? "" : question.substr(b, e - b + 1);
+    if (trimmed == "/clear") {
+      Clear();
+      return;
+    }
+  }
 
   // "/model <alias|id>" is a local command: switch the provider/model (or report
   // the current one) without calling the model. Claude aliases:
@@ -106,10 +123,31 @@ void UiAgent::Ask(const std::string& question) {
     arg = (b == std::string::npos) ? "" : arg.substr(b, e - b + 1);
     std::string msg;
     if (arg.empty()) {
-      const std::string cur = provider_->Model();
-      msg = "Current model: " + (cur.empty() ? std::string("(n/a)") : cur) +
-            " (" + provider_->name() +
-            "). Usage: /model opus|sonnet|haiku | gemini|flash|pro | <full id>.";
+      // List the models for each provider whose API key is set, marking the one
+      // that is currently active.
+      const std::string active_id = provider_->Model();
+      const std::string active_provider = provider_->name();
+      auto append = [&](const char* heading, const char* provider_name,
+                        const std::vector<std::pair<std::string, std::string>>&
+                            models) {
+        msg += std::string(heading) + ":\n";
+        for (const auto& [alias, id] : models) {
+          const bool current =
+              active_provider == provider_name && active_id == id;
+          msg += "  " + alias + "  (" + id + ")" +
+                 (current ? "  (current)" : "") + "\n";
+        }
+      };
+      if (!ClaudeProvider::KeyFromEnv().empty()) {
+        append("Anthropic", "Claude", ClaudeProvider::Models());
+      }
+      if (!GeminiProvider::KeyFromEnv().empty()) {
+        append("Gemini", "Gemini", GeminiProvider::Models());
+      }
+      msg = msg.empty()
+                ? std::string("No model API keys set "
+                              "(ANTHROPIC_API_KEY / GEMINI_API_KEY).")
+                : ("Available models (use /model <alias>):\n" + msg);
     } else {
       std::string a;
       for (char c : arg) a += static_cast<char>(std::tolower(
@@ -164,7 +202,8 @@ void UiAgent::Ask(const std::string& question) {
 
   if (synchronous_) {
     LlmResult r = provider_->Send(system_, messages, tools_, executor_);
-    history_.push_back({"assistant", r.ok ? r.text : ("[error] " + r.error)});
+    history_.push_back({"assistant", r.ok ? r.text : ("[error] " + r.error),
+                        r.ok ? r.thinking : ""});
     busy_ = false;
     return;
   }
@@ -189,7 +228,8 @@ void UiAgent::Poll() {
   std::lock_guard<std::mutex> lk(pending->mu);
   if (!pending->done) return;
   const LlmResult& r = pending->result;
-  history_.push_back({"assistant", r.ok ? r.text : ("[error] " + r.error)});
+  history_.push_back({"assistant", r.ok ? r.text : ("[error] " + r.error),
+                      r.ok ? r.thinking : ""});
   busy_ = false;
   pending_.reset();
 }

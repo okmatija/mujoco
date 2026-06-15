@@ -16,6 +16,7 @@
 #define MUJOCO_SRC_EXPERIMENTAL_STUDIO_LLM_LLM_CLAUDE_H_
 
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "experimental/studio/llm/llm_provider.h"
@@ -37,6 +38,10 @@ class ClaudeProvider : public LlmProvider {
 
   // Returns the ANTHROPIC_API_KEY value, or "" if unset/empty.
   static std::string KeyFromEnv();
+
+  // The {alias, full id} pairs this provider understands, for the "/model"
+  // listing (e.g. {"opus", "claude-opus-4-8"}).
+  static std::vector<std::pair<std::string, std::string>> Models();
 
   LlmResult Send(const std::string& system,
                  const std::vector<LlmMessage>& messages,

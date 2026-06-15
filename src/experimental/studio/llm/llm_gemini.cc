@@ -258,6 +258,10 @@ std::string GeminiProvider::KeyFromEnv() {
 GeminiProvider::GeminiProvider(std::string api_key)
     : api_key_(std::move(api_key)) {}
 
+std::vector<std::pair<std::string, std::string>> GeminiProvider::Models() {
+  return {{"flash", "gemini-2.5-flash"}, {"pro", "gemini-2.5-pro"}};
+}
+
 std::string GeminiProvider::SetModel(const std::string& id_or_alias) {
   std::string a;
   for (char c : id_or_alias) {

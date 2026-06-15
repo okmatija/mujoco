@@ -60,6 +60,10 @@ ABSL_FLAG(std::string, llm_probe, "",
           "If set, send this prompt to the real Claude provider (using "
           "ANTHROPIC_API_KEY) and print the reply, then exit. Headless probe to "
           "verify the live connection without launching the GUI.");
+ABSL_FLAG(std::string, llm_probe_model, "",
+          "For --llm_probe: switch the model first (alias 'opus'/'sonnet'/"
+          "'haiku' or a full id). Use opus/sonnet to exercise extended "
+          "thinking.");
 
 std::string Resolve(std::string_view path) {
   std::string_view subpath = path.substr(path.find(':') + 1);
@@ -117,11 +121,19 @@ int main(int argc, char** argv, char** envp) {
       return 1;
     }
     mujoco::studio::ClaudeProvider provider(std::move(key));
+    if (const std::string m = absl::GetFlag(FLAGS_llm_probe_model); !m.empty()) {
+      const std::string id = provider.SetModel(m);
+      std::fprintf(stderr, "[llm_probe] model: %s\n",
+                   id.empty() ? "(unrecognized, using default)" : id.c_str());
+    }
     mujoco::studio::LlmResult r = provider.Send(
         "You are a terse assistant. Answer in one short sentence.",
         {{"user", llm_probe}}, /*tools=*/{},
         [](const std::string&, const std::string&) { return std::string(); });
     if (r.ok) {
+      if (!r.thinking.empty()) {
+        std::fprintf(stderr, "[llm_probe] THINKING: %s\n", r.thinking.c_str());
+      }
       std::fprintf(stderr, "[llm_probe] OK: %s\n", r.text.c_str());
       return 0;
     }

@@ -23,7 +23,7 @@
 
 namespace mujoco::studio {
 
-// A VS Code-style command palette. The owner opens it (e.g. on Ctrl+P) and
+// A VS Code-style command palette. The owner opens it (e.g. on Ctrl+Shift+P) and
 // passes the available commands to Draw() each frame. The palette starts as a
 // single-line input; typing '>' switches to command mode, which grows the box
 // and shows a filtered, keyboard-navigable list. Selecting an entry runs its
@@ -37,6 +37,8 @@ class CommandPalette {
   struct Command {
     std::string name;
     std::function<void()> run;
+    // Optional one-line hint shown dimmed after the name in the completion list.
+    std::string description;
   };
 
   void Open();
@@ -53,13 +55,19 @@ class CommandPalette {
   ImVec2 window_center() const { return center_; }
 
   // Draws the palette (if open), horizontally centered near the top of `rect`
-  // (x, y, width, height). `commands` is searched in '>' command mode.
+  // (x, y, width, height). `commands` is searched in '>' command mode and
+  // `slash_commands` in '/' mode; both render the same completion list (name in
+  // normal text, `description` dimmed after it).
   //
-  // Input that does NOT start with '>' is "ask" mode: pressing Enter calls
-  // `on_submit_plain(text)` (and clears the box, keeping it open), and
+  // Input that starts with neither '>' nor '/' is "ask" mode: pressing Enter
+  // calls `on_submit_plain(text)` (and clears the box, keeping it open), and
   // `render_below` is invoked inside the palette window to draw the LLM
-  // conversation right in the Ctrl+P box. Both callbacks are optional.
-  void Draw(const std::vector<Command>& commands, const ImVec4& rect,
+  // conversation right in the command box. In '/' mode, choosing a completion
+  // submits its name via `on_submit_plain`, while typed text with arguments
+  // (e.g. "/model sonnet", which matches no completion) is submitted as-is.
+  // Both callbacks are optional.
+  void Draw(const std::vector<Command>& commands,
+            const std::vector<Command>& slash_commands, const ImVec4& rect,
             const std::function<void()>& render_below = {},
             const std::function<void(const std::string&)>& on_submit_plain = {});
 
@@ -69,6 +77,22 @@ class CommandPalette {
   int selection_ = 0;
   char input_[256] = "";
   ImVec2 center_{0.0f, 0.0f};
+
+  std::vector<std::string> prompt_history_;
+  int history_pos_ = -1;   // -1 = current (unsaved) input
+  std::string saved_input_;
+
+  // Filters `list` by `query`, runs Up/Down navigation, and draws the rows.
+  // Returns the chosen command (clicked, or Enter on the highlighted row) or
+  // nullptr. `entered` is the InputText's Enter result for this frame.
+  const Command* DrawCompletionList(const std::vector<Command>& list,
+                                    const std::string& query, bool entered);
+  // Records `text` in the history, calls `on_submit_plain`, then clears and
+  // refocuses the box (the shared "submit a line" path for ask and '/' modes).
+  void SubmitPlain(const std::string& text,
+                   const std::function<void(const std::string&)>& on_submit_plain);
+
+  static int HistoryCallback(ImGuiInputTextCallbackData* data);
 };
 
 }  // namespace mujoco::studio

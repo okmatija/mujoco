@@ -47,8 +47,9 @@ using ToolExecutor =
 // The outcome of a request (after any tool-use round trips).
 struct LlmResult {
   bool ok = false;
-  std::string text;   // final assistant reply, when ok.
-  std::string error;  // human-readable message, when !ok.
+  std::string text;      // final assistant reply, when ok.
+  std::string thinking;  // extended-thinking text, when the model produced any.
+  std::string error;     // human-readable message, when !ok.
 };
 
 // Provider-agnostic seam for talking to an LLM. Implementations are called on a

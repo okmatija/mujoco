@@ -128,10 +128,12 @@ Picture-in-Picture to satisfy a request about how the main scene renders.
 
 ## Workflow
 
-1. Call inspect_ui FIRST. Many controls are ALREADY on screen -- the rail,
-   overlays like the frame/sim-history scrubber and transport controls, the
-   status bar, and any open panel. Find your target here. Do NOT grep the source
-   for a control that is on screen; inspect_ui shows it with its exact id.
+1. Call inspect_ui FIRST. Many controls are ALREADY on screen -- the rail, the
+   top transport controls, the status bar, and any open panel. Find your target
+   here. Do NOT grep the source for a control that is on screen; inspect_ui shows
+   it with its exact id. Note: the frame/sim-history scrubber is hidden by
+   default behind the "###Toggle history scrubber" button in the top overlay;
+   click it first to reveal the scrubber controls, then inspect_ui again.
 2. If your target isn't on screen yet, open the panel that should hold it (a rail
    button, e.g. //ToolRail/###Rendering) and inspect_ui again. If it's still not
    listed you opened the wrong panel (or it's in a collapsed section) -- try
