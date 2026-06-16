@@ -295,12 +295,27 @@ void TestRunner::Execute(ImGuiTestContext* ctx, const std::string& ops_json) {
          op == "set_int" || op == "combo_select" || op == "set_text" ||
          op == "right_click" || op == "double_click" || op == "item_open" ||
          op == "item_close" || op == "hover" || op == "item_hold");
-    if (targets_item && !ctx->ItemExists(tref)) {
-      const std::string what =
-          id != 0 ? ("id=" + std::to_string(id)) : ("ref=" + ref);
-      std::fprintf(stderr, "[run_ui_program] skip %s: item not found (%s)\n",
-                   op.c_str(), what.c_str());
-      return;  // continue with the next op
+    if (targets_item) {
+      const ImGuiTestItemInfo info = ctx->ItemInfo(tref, ImGuiTestOpFlags_NoError);
+      if (info.ID == 0) {
+        const std::string what =
+            id != 0 ? ("id=" + std::to_string(id)) : ("ref=" + ref);
+        std::fprintf(stderr, "[run_ui_program] skip %s: item not found (%s)\n",
+                     op.c_str(), what.c_str());
+        return;  // continue with the next op
+      }
+      // A plain click on an openable item (a TreeNode / collapsing section
+      // header, e.g. "Model Elements") is routed to an idempotent Open instead
+      // of a toggling click. Otherwise an agent that clicks an already-open
+      // section would COLLAPSE it -- which un-submits the checkboxes inside, so
+      // their ids vanish and the very next clicks (e.g. "Contact Force") silently
+      // miss with "item not found". Open is a no-op when already open; use the
+      // explicit "item_open"/"item_close" ops to deliberately toggle a section.
+      if ((op == "item_click" || op == "click_id") &&
+          (info.StatusFlags & ImGuiItemStatusFlags_Openable)) {
+        ctx->ItemOpen(tref, ImGuiTestOpFlags_NoError);
+        return;
+      }
     }
 
     if (op == "item_click" || op == "click_id") {
@@ -436,7 +451,7 @@ void TestRunner::DoGather(ImGuiTestContext* ctx,
     ctx->GatherItems(&items, ImGuiTestRef(wr.id), 99);
     std::string lines;
     int n = 0;
-    for (int i = 0; i < items.GetSize() && total < 250; ++i) {
+    for (int i = 0; i < items.GetSize() && total < 400; ++i) {
       const ImGuiTestItemInfo* it = items.GetByIndex(i);
       if (it == nullptr || it->DebugLabel[0] == '\0') continue;
       // For recognition only -- the id is the exact address. When a label uses
@@ -454,13 +469,16 @@ void TestRunner::DoGather(ImGuiTestContext* ctx,
       lines += std::string("  ") + label + "  [id=" + std::to_string(it->ID) +
                "]\n";
       ++total;
-      if (++n >= 40) {
+      // Per-window cap high enough to list a dense panel in full (the Rendering
+      // panel alone has ~48 flag toggles); a section cut short here would hide a
+      // flag's id and force the LLM onto a fragile label ref.
+      if (++n >= 120) {
         lines += "  ...\n";
         break;
       }
     }
     if (!lines.empty()) text += "[" + wr.name + "]\n" + lines;
-    if (total >= 250) break;
+    if (total >= 400) break;
   }
   if (text.empty()) text = "(no visible items found)";
 

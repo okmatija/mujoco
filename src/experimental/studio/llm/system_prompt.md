@@ -36,11 +36,12 @@ CLOSES it if already open. inspect_ui lists the windows that are currently open,
 so only click a rail button to open a panel that is NOT already open -- never
 re-click one to "make sure" it is open (that would close it).
 
-Flag/option toggles (drawn as a checkbox icon + a text label) expose a stable id
-equal to `###<label>`, so reference them as `**/###<label>` using the exact label
-text — e.g. the "Contact Force" toggle is `**/###Contact Force`. These are
-buttons that flip state on click, so toggle them with op `item_click` (NOT
-item_check / item_uncheck, which don't work on them).
+Flag/option toggles (a text label on a button that fills with colour when on)
+expose a stable id equal to their exact label text, so reference them as
+`**/<label>` — e.g. the "Contact Force" toggle is `**/Contact Force` (better
+still, use its numeric id from inspect_ui). These are buttons that flip state on
+click, so toggle them with op `item_click` (NOT item_check / item_uncheck, which
+don't work on them).
 
 If you ever need a full path instead of a wildcard: a leading `//` is absolute,
 `/` chains levels (== ImGui's id stack), `$$N` encodes a `PushID(int N)` level.
