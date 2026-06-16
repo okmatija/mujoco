@@ -61,6 +61,15 @@ the Label is the exact string passed to the widget in the source.
   input the components are `/$$0`, `/$$1`, ...). Set it with
   `{"op":"set_float","ref":"//<Window>/<Label>/$$0","value":N}` (or `set_int`).
   E.g. set the launcher's Size: `{"op":"set_float","ref":"//ObjectLauncher/Size/$$0","value":0.3}`.
+- A control inside a collapsing section (an `ImGui::TreeNode`/`TreeNodeEx("...")`,
+  whose headers DO show in inspect_ui) sits one id-level deeper: put the section
+  label between the window and the control. So Gravity's Y component (it's
+  `ImGui_InputN("Gravity", ...)` inside the Physics panel's `TreeNodeEx("Physical
+  Parameters")`) is `//Physics/Physical Parameters/Gravity/$$1`. You do NOT need to
+  open the section first -- addressing the path opens the section (and selects the
+  panel's tab) automatically. NOTE: a docked panel lists its contents under the
+  dockspace host (e.g. `[Dockspace]`) in inspect_ui, but you still address them by
+  the panel's own title (`//Physics/...`), never `//Dockspace/...`.
 
 To pick a combo option use:
 `{"op":"combo_select","ref":"//<Window>/<ComboLabel>","value":"<ExactOptionText>"}`
@@ -166,6 +175,11 @@ closing it), insert `{"op":"wait","seconds":N}` between the other ops in the sam
 run_ui_program. The wait holds in place (and is visible in a recording), so put
 the ops and the waits in order in one program, e.g. open, wait, close, wait.
 
-To pause/play the simulation, press Space: `{"op":"key_chars","text":" "}` — never
-hunt for the pause button's ref. If you cannot reference something after a search or two,
-skip it and proceed. Keep any text replies to one short sentence.
+To pause the simulation, click the transport Pause button: `{"op":"item_click",
+"ref":"**/###Pause"}`; to resume, click Play: `**/###Play`. These set that state
+directly (not a toggle) and are always on screen in the top overlay. Do NOT press
+Space (or any keybind) for this -- a key goes to whatever widget is focused (e.g.
+the command box you just typed into), not the simulation.
+
+If you cannot reference something after a search or two, skip it and proceed. Keep
+any text replies to one short sentence.

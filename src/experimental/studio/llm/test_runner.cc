@@ -296,7 +296,15 @@ void TestRunner::Execute(ImGuiTestContext* ctx, const std::string& ops_json) {
          op == "right_click" || op == "double_click" || op == "item_open" ||
          op == "item_close" || op == "hover" || op == "item_hold");
     if (targets_item) {
-      const ImGuiTestItemInfo info = ctx->ItemInfo(tref, ImGuiTestOpFlags_NoError);
+      // Resolve via the SAME path the action functions use: ItemInfoOpenFullPath
+      // auto-opens Openable ancestors (e.g. the "Physical Parameters" TreeNode
+      // wrapping the Gravity input) and selects the owning dock tab along the
+      // way. A plain ItemInfo() existence check would miss a field in a closed
+      // section and we'd skip the op before ItemClick/ItemInputValue could open
+      // it. For a raw id (no path) there is nothing to open, so use ItemInfo.
+      const ImGuiTestItemInfo info =
+          (id != 0) ? ctx->ItemInfo(tref, ImGuiTestOpFlags_NoError)
+                    : ctx->ItemInfoOpenFullPath(tref, ImGuiTestOpFlags_NoError);
       if (info.ID == 0) {
         const std::string what =
             id != 0 ? ("id=" + std::to_string(id)) : ("ref=" + ref);

@@ -44,6 +44,7 @@ prompt), billed to the key file.
 | id  | request                                                  | exercises                       |
 |-----|----------------------------------------------------------|---------------------------------|
 | 000 | Turn on segmentation rendering, contact forces and points | Render Flags + Model Elements toggles, multi-flag |
+| 001 | Set gravity.y to 10                                      | numeric input nested in a collapsing section (`//Physics/Physical Parameters/Gravity/$$1`) |
 
 Add a case by dropping the next `NNN_input.md` into a model folder; add a model
 by creating a new `<model_id_with_underscores>/` folder.
