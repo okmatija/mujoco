@@ -918,7 +918,16 @@ void App::BuildGui() {
 
   ImGui::GetIO().FontGlobalScale = ui_.font_scale;
 
-  const ImVec4 workspace_rect = platform::ConfigureDockingLayout();
+  // Tool windows default-dock into DockRight (by title); plugins stay floating.
+  // The Profiler is rail-accessible like the tools, so it docks there too.
+  std::vector<std::string> dock_right_windows;
+  dock_right_windows.reserve(tool_windows_.size() + 1);
+  for (const ToolWindow& tw : tool_windows_) {
+    dock_right_windows.push_back(tw.title);
+  }
+  dock_right_windows.push_back("Profiler");
+  const ImVec4 workspace_rect =
+      platform::ConfigureDockingLayout(dock_right_windows);
 
   MainMenuGui();
 
@@ -1093,6 +1102,11 @@ void App::BuildGui() {
       ImGui::EndMainMenuBar();
     }
     if (plugin->active) {
+      // Plugins are not docked by ConfigureDockingLayout; float them centered on
+      // the viewport the first time they appear.
+      const ImGuiViewport* vp = ImGui::GetMainViewport();
+      ImGui::SetNextWindowPos(vp->GetCenter(), ImGuiCond_FirstUseEver,
+                              ImVec2(0.5f, 0.5f));
       ImGui::Begin(plugin->name);
       plugin->update(plugin);
       ImGui::End();
@@ -1228,7 +1242,10 @@ void App::ToolWindowsGui(const ImVec4& workspace_rect) {
     if (!tw.open) {
       continue;
     }
-    // Cascade newly opened windows just to the right of the rail.
+    // Cascade the window if it ends up floating (undocked); when docked, the
+    // dock node controls geometry and these hints are ignored. By default each
+    // tool window is docked into DockRight by ConfigureDockingLayout, keyed on
+    // the window title -- so the title is the bare ImGui id (no "###" suffix).
     const float offset = 24.0f * i;
     ImGui::SetNextWindowPos(
         ImVec2(workspace_rect.x + rail_width + 8.0f + offset,
@@ -1239,12 +1256,7 @@ void App::ToolWindowsGui(const ImVec4& workspace_rect) {
     // section being clipped below the fold (clipped rows aren't rendered, so
     // they're invisible to the test engine / inspect_ui).
     ImGui::SetNextWindowSize(ImVec2(460, 520), ImGuiCond_FirstUseEver);
-    // Stable, unique ImGui id (via "###") so these windows are not captured by
-    // ConfigureDockingLayout's name-based docking; they stay floating.
-    char window_id[96];
-    std::snprintf(window_id, sizeof(window_id), "%s###ToolWindow%d",
-                  tw.title.c_str(), i);
-    if (ImGui::Begin(window_id, &tw.open)) {
+    if (ImGui::Begin(tw.title.c_str(), &tw.open)) {
       tw.render();
     }
     // Record the window rect (x, y, w, h) for the capture script's cursor.

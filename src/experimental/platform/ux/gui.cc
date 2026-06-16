@@ -232,59 +232,51 @@ void RescaleDock(float ratio) {
   }
 }
 
-ImVec4 ConfigureDockingLayout() {
+ImVec4 ConfigureDockingLayout(const std::vector<std::string>& dock_right_windows) {
   ImGuiViewport* viewport = ImGui::GetMainViewport();
 
-  const float kOptionsRelWidth = 0.22f;
-  const float kInspectorRelWidth = 0.22f;
-  const float kStatsRelHeight = 0.3f;
+  // Width of the right-hand dock zone, as a fraction of the total width.
+  const float kRightRelWidth = 0.22f;
   // The toolbar is a translucent overlay on the viewport (App::TopOverlayGui),
   // so no top strip is reserved. The status bar is a real bar pinned to the
   // bottom (App::StatusBarGui), so reserve a strip the height of one frame for
   // it; the dockspace fills the area between the menu bar and the status bar.
-  const float kToolsBarHeight = 0.f;
   const float kStatusBarHeight = ImGui::GetFrameHeight();
 
-  const ImVec2 dockspace_pos{viewport->WorkPos.x,
-                             viewport->WorkPos.y + kToolsBarHeight};
-  const ImVec2 dockspace_size{
-      viewport->WorkSize.x,
-      viewport->WorkSize.y - kToolsBarHeight - kStatusBarHeight};
+  const ImVec2 dockspace_pos{viewport->WorkPos.x, viewport->WorkPos.y};
+  const ImVec2 dockspace_size{viewport->WorkSize.x,
+                              viewport->WorkSize.y - kStatusBarHeight};
 
   ImGuiID root = ImGui::GetID("Root");
-  const bool first_time = (ImGui::DockBuilderGetNode(root) == nullptr);
+
+  // Rebuild the programmatic layout once per launch. There is no .ini in Studio
+  // (io.IniFilename is null), so every launch starts fresh anyway; this just
+  // establishes the default split before any window is submitted.
+  static bool built = false;
+  const bool first_time = !built;
+  built = true;
 
   if (first_time) {
     ImGui::DockBuilderRemoveNode(root);
     ImGui::DockBuilderAddNode(root, ImGuiDockNodeFlags_DockSpace);
     ImGui::DockBuilderSetNodeSize(root, dockspace_size);
 
-    // Slice up the main dock space.
-    ImGuiID main = root;
+    // Split a right-hand zone off the dock space and default-dock the tool
+    // windows into it; whatever remains is the central node (DockCenter), kept
+    // empty + passthrough so the 3D viewport shows behind it. The other edges
+    // (left/bottom) are not pre-created: an empty dock node is invisible and not
+    // a drop target, so it would serve no purpose -- instead the user creates
+    // those zones on demand by dragging a window to that edge (ImGui shows the
+    // drop preview and splits there). The central node is tab-protected by the
+    // NoDockingOverCentralNode flag on the dock space below, so the viewport can
+    // never be covered, though windows can be docked alongside it.
+    ImGuiID dock_right = 0;
+    ImGui::DockBuilderSplitNode(root, ImGuiDir_Right, kRightRelWidth, &dock_right,
+                                nullptr);
+    for (const std::string& w : dock_right_windows) {
+      ImGui::DockBuilderDockWindow(w.c_str(), dock_right);
+    }
 
-    ImGuiID options = 0;
-    ImGui::DockBuilderSplitNode(main, ImGuiDir_Left, kOptionsRelWidth, &options,
-                                &main);
-
-    ImGuiID inspector = 0;
-    ImGui::DockBuilderSplitNode(main, ImGuiDir_Right, kInspectorRelWidth,
-                                &inspector, &main);
-
-    ImGuiID properties = 0;
-    ImGui::DockBuilderSplitNode(inspector, ImGuiDir_Down, kStatsRelHeight,
-                                &properties, &inspector);
-
-    ImGuiID profiler = 0;
-    ImGui::DockBuilderSplitNode(main, ImGuiDir_Right, 0.42f, &profiler, &main);
-
-    ImGui::DockBuilderDockWindow("Dockspace", main);
-    ImGui::DockBuilderDockWindow("Options", options);
-    ImGui::DockBuilderDockWindow("Explorer", inspector);
-    ImGui::DockBuilderDockWindow("Editor", inspector);
-    ImGui::DockBuilderDockWindow("Inspector", inspector);
-    ImGui::DockBuilderDockWindow("Properties", properties);
-    // Stats is a small floating window (App::BuildGui), not docked over the rail.
-    ImGui::DockBuilderDockWindow("Profiler", profiler);
     ImGui::DockBuilderFinish(root);
   }
 
@@ -319,11 +311,11 @@ ImVec4 ConfigureDockingLayout() {
     return ImVec4(central->Pos.x, central->Pos.y,
                   central->Size.x, central->Size.y);
   }
-  const int settings_width = dockspace_size.x * kOptionsRelWidth;
-  const int inspector_width = dockspace_size.x * kInspectorRelWidth;
-  const float workspace_x = dockspace_pos.x + settings_width;
+  // Fallback: estimate the central (DockCenter) rect, leaving room for the
+  // right-hand zone.
+  const float workspace_x = dockspace_pos.x;
   const float workspace_y = dockspace_pos.y;
-  const float workspace_w = dockspace_size.x - settings_width - inspector_width;
+  const float workspace_w = dockspace_size.x * (1.0f - kRightRelWidth);
   const float workspace_h = dockspace_size.y;
   return ImVec4(workspace_x, workspace_y, workspace_w, workspace_h);
 }
