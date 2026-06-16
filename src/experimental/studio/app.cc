@@ -981,8 +981,12 @@ void App::BuildGui() {
   }
 
   if (tmp_.agent_settings) {
+    // Center each time it opens (Appearing fires when "/settings" reveals it).
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(vp->GetCenter(), ImGuiCond_Appearing,
+                            ImVec2(0.5f, 0.5f));
     ImGui::SetNextWindowSize(ImVec2(380, 0), ImGuiCond_FirstUseEver);
-    // The bool gives the title-bar close button; "/settings" toggles it too.
+    // The bool gives the title-bar close button (the X); "/settings" toggles it.
     if (ImGui::Begin("Agent Settings###AgentSettings", &tmp_.agent_settings)) {
       AgentSettingsGui();
     }
@@ -2137,42 +2141,37 @@ void App::GraphicsModeMenu() {
 }
 
 void App::AgentSettingsGui() {
-  // Model selection. Disabled while a request is in flight (switching the
+  // Agent: model selection. Disabled while a request is in flight (switching the
   // provider mid-request is unsafe).
-  ImGui::SeparatorText("Model");
-  const std::vector<std::pair<std::string, std::string>> models =
-      ui_agent_.AvailableModels();
-  ImGui::BeginDisabled(ui_agent_.busy() || models.empty());
-  const std::string current = ui_agent_.provider_model();
-  ImGui::SetNextItemWidth(-FLT_MIN);
-  if (ImGui::BeginCombo("##model",
-                        current.empty() ? "(no API key set)" : current.c_str())) {
-    for (const auto& [alias, id] : models) {
-      const bool selected = (id == current);
-      if (ImGui::Selectable(id.c_str(), selected)) {
-        ui_agent_.SwitchModel(alias);
+  if (ImGui::CollapsingHeader("Agent", ImGuiTreeNodeFlags_DefaultOpen)) {
+    const std::vector<std::pair<std::string, std::string>> models =
+        ui_agent_.AvailableModels();
+    ImGui::BeginDisabled(ui_agent_.busy() || models.empty());
+    const std::string current = ui_agent_.provider_model();
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    if (ImGui::BeginCombo(
+            "##model",
+            current.empty() ? "(no API key set)" : current.c_str())) {
+      for (const auto& [alias, id] : models) {
+        const bool selected = (id == current);
+        if (ImGui::Selectable(id.c_str(), selected)) {
+          ui_agent_.SwitchModel(alias);
+        }
+        if (selected) {
+          ImGui::SetItemDefaultFocus();
+        }
       }
-      if (selected) {
-        ImGui::SetItemDefaultFocus();
-      }
+      ImGui::EndCombo();
     }
-    ImGui::EndCombo();
-  }
-  ImGui::EndDisabled();
-  if (models.empty()) {
-    ImGui::TextDisabled("Set ANTHROPIC_API_KEY or GEMINI_API_KEY.");
+    ImGui::EndDisabled();
+    if (models.empty()) {
+      ImGui::TextDisabled("Set ANTHROPIC_API_KEY or GEMINI_API_KEY.");
+    }
   }
 
   // Test-engine playback settings (how the agent's mouse/typing is replayed).
-  ImGui::Spacing();
-  if (ImGui::CollapsingHeader("Playback (mouse / test engine)")) {
+  if (ImGui::CollapsingHeader("Playback", ImGuiTreeNodeFlags_DefaultOpen)) {
     test_runner_.DrawPlaybackSettings();
-  }
-
-  ImGui::Spacing();
-  ImGui::Separator();
-  if (ImGui::Button("Close", ImVec2(-FLT_MIN, 0.0f))) {
-    tmp_.agent_settings = false;
   }
 }
 
