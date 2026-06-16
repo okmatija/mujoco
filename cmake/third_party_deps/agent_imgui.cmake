@@ -13,7 +13,7 @@
 # limitations under the License.
 
 set(MUJOCO_DEP_VERSION_agent_imgui
-    c5c0be56327b22aba68eec6181cd10a8a8bb27d9
+    8a8f851338e2cfebd328edfa025a60dd6c97f29a
     CACHE STRING "Tag/version of `agent_imgui` to be fetched."
 )
 mark_as_advanced(MUJOCO_DEP_VERSION_agent_imgui)
