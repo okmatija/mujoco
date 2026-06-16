@@ -48,6 +48,7 @@
 #include "experimental/platform/ux/interaction.h"
 #include "experimental/platform/ux/picture_gui.h"
 #include "experimental/platform/ux/plugin.h"
+#include "experimental/studio/llm/source_search.h"
 
 namespace mujoco::studio {
 
@@ -81,10 +82,25 @@ static constexpr const char* ICON_CURR_FRAME = platform::ICON_FA_FAST_FORWARD;
 static constexpr const char* ICON_UNDO_SPEC = platform::ICON_FA_UNDO;
 static constexpr const char* ICON_REDO_SPEC = platform::ICON_FA_REPEAT;
 
+// Inset of the viewport overlays (left rail, top toolbar) from the screen edge
+// they hug.
+static constexpr float kOverlayInset = 10.0f;
+
+// Defined in platform/ux/object_launcher_plugin.cc. Calling it forces that
+// translation unit (and so its mjPLUGIN_LIB_INIT registration) to be linked in;
+// see the comment there.
+void LinkObjectLauncherPlugin();
+
+// Likewise for the self-contained XML editor plugin (platform/ux/
+// xml_editor_plugin.cc).
+void LinkXmlEditorPlugin();
+
 App::App(Config config)
     : app_title_(std::move(config.title)),
       ini_path_(std::move(config.ini_path)),
-      gfx_mode_(config.gfx_mode) {
+      gfx_mode_(config.gfx_mode),
+      screenshot_path_(std::move(config.screenshot_path)),
+      screenshot_frame_(config.screenshot_frame) {
   SwitchGraphicsMode(config.width, config.height, config.gfx_mode);
 
   if (config.initial_theme.has_value()) {
@@ -96,11 +112,26 @@ App::App(Config config)
   mjv_defaultCamera(&camera_);
   mjv_defaultOption(&vis_options_);
 
+  RegisterToolWindows();
+  RegisterLlmTools();
+  LinkObjectLauncherPlugin();  // ensure the launcher plugin is registered
+  LinkXmlEditorPlugin();       // ensure the XML editor plugin is registered
   profiler_.Clear();
+}
+
+App::~App() {
+  // Stop the test engine while the ImGui context is still alive. We don't
+  // Destroy() it (that must follow ImGui::DestroyContext, which the window never
+  // calls); leaking the engine at process exit is harmless.
+  test_runner_.Stop();
 }
 
 void App::SwitchGraphicsMode(int width, int height,
                              platform::GraphicsMode mode) {
+  // The test engine is bound to the ImGui context that the window owns. Stop it
+  // before the window is torn down. (We don't Destroy()/restart across a real
+  // graphics switch yet -- not exercised here; the engine just stays stopped.)
+  test_runner_.Stop();
   renderer_.reset();
   window_.reset();
   gfx_mode_ = mode;
@@ -117,6 +148,9 @@ void App::SwitchGraphicsMode(int width, int height,
   if (ui_.window_width > 0 && ui_.window_height > 0) {
     window_->Resize(ui_.window_width, ui_.window_height);
   }
+
+  // The Window ctor created a fresh ImGui context; bind the test engine to it.
+  test_runner_.Start();
 }
 
 void App::Recompile() {
@@ -374,6 +408,33 @@ void App::Render() {
   window_->EndFrame();
   window_->Present(pixels_);
 
+  // Tick the test engine after the swap so it can advance any queued UI program
+  // (the run_ui_program tool) and perform clicks across frames.
+  test_runner_.PostSwap();
+
+  // Auto-screenshot: once enough frames have rendered for the model and GUI to
+  // settle, dump the headless framebuffer (RGB888, scene + GUI) to a PPM and
+  // request exit. Only valid in headless mode, where pixels_ is populated.
+  if (!screenshot_path_.empty() && IsHeadless(window_->GetGraphicsMode())) {
+    if (frame_count_ == screenshot_frame_) {
+      const int w = static_cast<int>(width);
+      const int h = static_cast<int>(height);
+      std::FILE* f = std::fopen(screenshot_path_.c_str(), "wb");
+      if (f != nullptr) {
+        std::fprintf(f, "P6\n%d %d\n255\n", w, h);
+        std::fwrite(pixels_.data(), 1, pixels_.size(), f);
+        std::fclose(f);
+        mju_warning("Saved screenshot to %s (%dx%d)", screenshot_path_.c_str(),
+                    w, h);
+      } else {
+        mju_warning("Could not open screenshot file %s",
+                    screenshot_path_.c_str());
+      }
+      tmp_.should_exit = true;
+    }
+    ++frame_count_;
+  }
+
   if (has_data()) {
     for (int i = 0; i < mjNTIMER; i++) {
       data()->timer[i].duration = 0;
@@ -568,11 +629,20 @@ void App::HandleMouseEvents() {
 
 void App::HandleKeyboardEvents() {
   using platform::ImGui_IsChordJustPressed;
-  if (ImGui::GetIO().WantCaptureKeyboard) {
+
+  constexpr auto ImGuiMod_CtrlShift = ImGuiMod_Ctrl | ImGuiMod_Shift;
+
+  // The command-palette toggle is handled before the WantCaptureKeyboard guard
+  // so Ctrl+Shift+P can also close the palette while its input box has keyboard
+  // focus (the Ctrl+Shift modifiers mean no stray 'P' is typed into the box).
+  if (ImGui_IsChordJustPressed(ImGuiKey_P | ImGuiMod_CtrlShift)) {
+    command_palette_.Toggle();
     return;
   }
 
-  constexpr auto ImGuiMod_CtrlShift = ImGuiMod_Ctrl | ImGuiMod_Shift;
+  if (ImGui::GetIO().WantCaptureKeyboard) {
+    return;
+  }
 
   bool is_freecam_wasd = ui_.camera_idx == platform::kFreeCameraIdx;
 
@@ -587,8 +657,6 @@ void App::HandleKeyboardEvents() {
     tmp_.file_dialog = UiTempState::FileDialog_PrintModel;
   } else if (ImGui_IsChordJustPressed(ImGuiKey_D | ImGuiMod_Ctrl)) {
     tmp_.file_dialog = UiTempState::FileDialog_PrintData;
-  } else if (ImGui_IsChordJustPressed(ImGuiKey_P | ImGuiMod_Ctrl)) {
-    tmp_.file_dialog = UiTempState::FileDialog_SaveScreenshot;
   } else if (ImGui_IsChordJustPressed(ImGuiKey_C | ImGuiMod_Ctrl)) {
     std::string keyframe = platform::KeyframeToString(model(), data(), false);
     platform::MaybeSaveToClipboard(keyframe);
@@ -598,8 +666,6 @@ void App::HandleKeyboardEvents() {
     tmp_.should_exit = true;
   } else if (ImGui_IsChordJustPressed(ImGuiKey_A | ImGuiMod_Ctrl)) {
     mjv_defaultFreeCamera(model(), &camera_);
-  } else if (ImGui_IsChordJustPressed(ImGuiKey_Tab | ImGuiMod_Shift)) {
-    tmp_.inspector_panel = !tmp_.inspector_panel;
   } else if (ImGui_IsChordJustPressed(ImGuiKey_Tab)) {
     tmp_.options_panel = !tmp_.options_panel;
   } else if (ImGui_IsChordJustPressed(ImGuiKey_Minus | ImGuiMod_Ctrl)) {
@@ -649,7 +715,7 @@ void App::HandleKeyboardEvents() {
   } else if (ImGui_IsChordJustPressed(ImGuiKey_F1)) {
     ToggleWindow(tmp_.help);
   } else if (ImGui_IsChordJustPressed(ImGuiKey_F2)) {
-    ToggleWindow(tmp_.stats);
+    tmp_.stats_in_statusbar = !tmp_.stats_in_statusbar;
   } else if (ImGui_IsChordJustPressed(ImGuiKey_F3)) {
     ToggleWindow(tmp_.profiler);
   } else if (ImGui_IsChordJustPressed(ImGuiKey_F6)) {
@@ -852,59 +918,35 @@ void App::BuildGui() {
 
   ImGui::GetIO().FontGlobalScale = ui_.font_scale;
 
-  const ImVec4 workspace_rect = platform::ConfigureDockingLayout();
-
-  // Place charts in bottom right corner of the workspace.
-  const ImVec2 chart_size(250, 500);
-  const ImVec2 chart_pos(workspace_rect.x + workspace_rect.z - chart_size.x,
-                         workspace_rect.y + workspace_rect.w - chart_size.y);
+  // Tool windows default-dock into DockRight (by title); plugins stay floating.
+  // The Profiler is rail-accessible like the tools, so it docks there too.
+  std::vector<std::string> dock_right_windows;
+  dock_right_windows.reserve(tool_windows_.size() + 1);
+  for (const ToolWindow& tw : tool_windows_) {
+    dock_right_windows.push_back(tw.title);
+  }
+  dock_right_windows.push_back("Profiler");
+  const ImVec4 workspace_rect =
+      platform::ConfigureDockingLayout(dock_right_windows);
 
   MainMenuGui();
 
-  {
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
-    if (ImGui::Begin("ToolBar")) {
-      ImGui::PopStyleVar();
-      ToolBarGui();
-    } else {
-      ImGui::PopStyleVar();
-    }
-    ImGui::End();
-  }
+  // DCC-style translucent overlay on top of the viewport (transport controls
+  // plus the collapsible frame-history scrubber, along the top) and a
+  // menu-bar-styled status bar pinned to the bottom.
+  TopOverlayGui(workspace_rect);
+  StatusBarGui();
 
-  {
-    platform::ScopedStyle style;
-    style.Var(ImGuiStyleVar_CellPadding, ImVec2(0, 0));
-    style.Var(ImGuiStyleVar_FramePadding, ImVec2(0, 0));
-    style.Var(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
-    if (ImGui::Begin("StatusBar")) {
-      StatusBarGui();
-    }
-    ImGui::End();
-  }
-
+  // Feature documentation: the old "Options" and "Inspector" side panels
+  // reserved two wide fixed columns even when their collapsing sections were
+  // closed, wasting a lot of horizontal space. They are replaced by a thin
+  // Photoshop-style icon rail on the left; each button opens that section as a
+  // floating, movable tool window so the viewport stays large and tools appear
+  // only on demand. The Explorer (spec tree) and Editor are rail tools too, so
+  // no side panels stay docked.
   if (tmp_.options_panel) {
-    if (ImGui::Begin("Options", &tmp_.options_panel)) {
-      ModelOptionsGui();
-    }
-    ImGui::End();
-  }
-
-  if (tmp_.inspector_panel) {
-    if (ImGui::Begin("Explorer", &tmp_.inspector_panel)) {
-      SpecExplorerGui();
-    }
-    ImGui::End();
-
-    if (ImGui::Begin("Editor", &tmp_.inspector_panel)) {
-      SpecEditorGui();
-    }
-    ImGui::End();
-
-    if (ImGui::Begin("Inspector", &tmp_.inspector_panel)) {
-      DataInspectorGui();
-    }
-    ImGui::End();
+    ToolRailGui(workspace_rect);
+    ToolWindowsGui(workspace_rect);
   }
 
   if (tmp_.profiler) {
@@ -938,14 +980,55 @@ void App::BuildGui() {
     ImGui::End();
   }
 
-  if (tmp_.stats) {
-    platform::ScopedStyle style;
-    style.Var(ImGuiStyleVar_Alpha, 0.6f);
-    if (ImGui::Begin("Stats", &tmp_.stats)) {
-      const float fps = renderer_->GetFps();
-      platform::StatsGui(
-          model(), data(),
-          step_control_.GetPauseState() == PauseState::kNormalPaused, fps);
+  if (tmp_.agent_settings) {
+    // Center each time it opens (Appearing fires when "/settings" reveals it).
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(vp->GetCenter(), ImGuiCond_Appearing,
+                            ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(ImVec2(380, 0), ImGuiCond_FirstUseEver);
+    // The bool gives the title-bar close button (the X); "/settings" toggles it.
+    if (ImGui::Begin("Agent Settings###AgentSettings", &tmp_.agent_settings)) {
+      AgentSettingsGui();
+    }
+    ImGui::End();
+  }
+
+  if (show_stats_window_) {
+    // A transient hover peek, shown while the stats icon in the status bar is
+    // hovered. Anchored to its bottom-right corner just above the status bar,
+    // near that icon, as a borderless non-interactive overlay. Rendered with
+    // plain text rather than the docked StatsGui (whose ImGui::Columns layout
+    // doesn't play well in a small floating window).
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+    const float status_bar_h = ImGui::GetFrameHeight();
+    ImGui::SetNextWindowPos(
+        ImVec2(vp->WorkPos.x + vp->WorkSize.x - kOverlayInset,
+               vp->WorkPos.y + vp->WorkSize.y - status_bar_h - kOverlayInset),
+        ImGuiCond_Always, ImVec2(1.0f, 1.0f));
+    ImGui::SetNextWindowBgAlpha(0.85f);
+    if (ImGui::Begin("##StatsPeek", nullptr,
+                     ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+                         ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoDocking |
+                         ImGuiWindowFlags_NoSavedSettings |
+                         ImGuiWindowFlags_NoFocusOnAppearing |
+                         ImGuiWindowFlags_NoNavInputs |
+                         ImGuiWindowFlags_AlwaysAutoResize)) {
+      ImGui::Text("FPS        %.0f", renderer_->GetFps());
+      if (has_data()) {
+        const mjModel* m = model();
+        const mjData* d = data();
+        const bool paused =
+            step_control_.GetPauseState() == PauseState::kNormalPaused;
+        const auto timer = paused ? mjTIMER_FORWARD : mjTIMER_STEP;
+        const double ms =
+            d->timer[timer].duration / mjMAX(1, d->timer[timer].number);
+        ImGui::Text("Step       %.3f ms", ms);
+        ImGui::Text("Sim time   %.3f s", d->time);
+        ImGui::Separator();
+        ImGui::Text("Bodies     %d", m->nbody);
+        ImGui::Text("DOFs       %d", m->nv);
+        ImGui::Text("Contacts   %d", d->ncon);
+      }
     }
     ImGui::End();
   }
@@ -977,6 +1060,25 @@ void App::BuildGui() {
 
   FileDialogGui();
 
+  // Ctrl+Shift+P command palette, drawn last so it sits on top. Commands are
+  // only gathered while it is open. Centered on the screen, 10px below the top
+  // transport overlay (so it lines up with that bar).
+  ui_agent_.Poll();
+  if (command_palette_.is_open()) {
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+    const ImVec4 palette_rect(vp->WorkPos.x, tmp_.top_overlay_bottom + 10.0f,
+                              vp->WorkSize.x, workspace_rect.w);
+    command_palette_.Draw(
+        CollectCommands(), CollectSlashCommands(), palette_rect,
+        [this] { llm_panel_.Render(ui_agent_); },
+        [this](const std::string& q) { ui_agent_.Ask(q); });
+  }
+
+  // Scripted GIF capture: advance the script and draw the synthetic cursor.
+  if (capture_.active) {
+    CaptureStep();
+  }
+
   if (tmp_.imgui_demo) {
     ImGui::ShowDemoWindow();
   }
@@ -1004,6 +1106,11 @@ void App::BuildGui() {
       ImGui::EndMainMenuBar();
     }
     if (plugin->active) {
+      // Plugins are not docked by ConfigureDockingLayout; float them centered on
+      // the viewport the first time they appear.
+      const ImGuiViewport* vp = ImGui::GetMainViewport();
+      ImGui::SetNextWindowPos(vp->GetCenter(), ImGuiCond_FirstUseEver,
+                              ImVec2(0.5f, 0.5f));
       ImGui::Begin(plugin->name);
       plugin->update(plugin);
       ImGui::End();
@@ -1021,98 +1128,420 @@ void App::BuildGui() {
   }
 }
 
-void App::ModelOptionsGui() {
-  const float min_width = platform::GetExpectedLabelWidth();
-  const ImGuiChildFlags child_flags =
-      ImGuiChildFlags_AutoResizeY | ImGuiChildFlags_AlwaysAutoResize;
-  const ImGuiTreeNodeFlags node_flags =
-      ImGuiTreeNodeFlags_SpanAvailWidth | ImGuiTreeNodeFlags_Framed;
-
-  ImGui::BeginChild("PhysicsGui", {0, 0}, child_flags);
-  if (ImGui::TreeNodeEx("Physics", node_flags)) {
-    platform::PhysicsGui(model(), min_width);
-    ImGui::TreePop();
-  }
-  ImGui::EndChild();
-
-  ImGui::BeginChild("RenderingGui", {0, 0}, child_flags);
-  if (ImGui::TreeNodeEx("Rendering", node_flags)) {
-    platform::RenderingGui(model(), &vis_options_, renderer_->GetRenderFlags(),
-                           min_width);
-    ImGui::TreePop();
-  }
-  ImGui::EndChild();
-
-  ImGui::BeginChild("GroupsGui", {0, 0}, child_flags);
-  if (ImGui::TreeNodeEx("Visibility Groups", node_flags)) {
-    platform::GroupsGui(model(), &vis_options_, min_width);
-    ImGui::TreePop();
-  }
-  ImGui::EndChild();
-
-  ImGui::BeginChild("VisualizationGui", {0, 0}, child_flags);
-  if (ImGui::TreeNodeEx("Visualization", node_flags)) {
-    platform::VisualizationGui(model(), &vis_options_, &camera_, min_width);
-    ImGui::TreePop();
-  }
-  ImGui::EndChild();
+float App::RailWidth() const {
+  const ImGuiStyle& style = ImGui::GetStyle();
+  const float button = ImGui::GetFrameHeight() * 1.6f;
+  return 2 * button + style.ItemSpacing.x + 2.0f * style.WindowPadding.x;
 }
 
-void App::DataInspectorGui() {
-  if (!has_data()) {
-    ImGui::Text("No mjData loaded.");
-    return;
-  }
+void App::ToolRailGui(const ImVec4& workspace_rect) {
+  const float button = ImGui::GetFrameHeight() * 1.6f;  // square icon button
+  constexpr int kColumns = 2;
 
-  const float min_width = platform::GetExpectedLabelWidth();
-  const ImGuiChildFlags child_flags =
-      ImGuiChildFlags_AutoResizeY | ImGuiChildFlags_AlwaysAutoResize;
-  const ImGuiTreeNodeFlags node_flags =
-      ImGuiTreeNodeFlags_SpanAvailWidth | ImGuiTreeNodeFlags_Framed;
+  // Float the rail vertically centered on the left, auto-sized to just contain
+  // its buttons, and inset kOverlayInset from the left edge.
+  ImGui::SetNextWindowPos(
+      ImVec2(workspace_rect.x + kOverlayInset,
+             workspace_rect.y + workspace_rect.w * 0.5f),
+      ImGuiCond_Always, ImVec2(0.0f, 0.5f));
+  ImGui::SetNextWindowBgAlpha(0.65f);  // translucent, like the other overlays
 
-  ImGui::BeginChild("JointsGui", {0, 0}, child_flags);
-  if (ImGui::TreeNodeEx("Joints", node_flags)) {
-    platform::JointsGui(model(), data(), &vis_options_);
-    ImGui::TreePop();
-  }
-  ImGui::EndChild();
+  const ImGuiWindowFlags flags =
+      ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+      ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoDocking |
+      ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse |
+      ImGuiWindowFlags_NoBringToFrontOnFocus |
+      ImGuiWindowFlags_AlwaysAutoResize;
 
-  ImGui::BeginChild("ControlsGui", {0, 0}, child_flags);
-  if (ImGui::TreeNodeEx("Controls", node_flags)) {
+  if (ImGui::Begin("ToolRail", nullptr, flags)) {
+    // Lay out square icon buttons in a 2-column grid. `active` highlights the
+    // button when its window/panel is open; returns true when clicked.
+    int slot = 0;
+    // `toggle` buttons reflect whether their window is showing via the rail
+    // checkbox colours (see ImGui_RailCheckbox); one-shot buttons (toggle=false,
+    // e.g. Reload/Reset) render as plain rail buttons. Both lay out in the grid,
+    // record their center for the capture cursor, and show a tooltip.
+    auto icon_button = [&](const char* icon, const char* title, bool active,
+                           bool toggle = true) -> bool {
+      if (slot % kColumns != 0) {
+        ImGui::SameLine();
+      }
+      ++slot;
+      // Explicit ### id so the test engine can reference the button as
+      // "//ToolRail/<title>" (the visible label stays the icon glyph).
+      const std::string label = std::string(icon) + "###" + title;
+      const bool clicked =
+          toggle ? platform::ImGui_RailCheckbox(label.c_str(), active, button)
+                 : platform::ImGui_RailButton(label.c_str(), button);
+      // Record the button center for the capture script's cursor targeting.
+      const ImVec2 lo = ImGui::GetItemRectMin();
+      const ImVec2 hi = ImGui::GetItemRectMax();
+      rail_button_center_[title] =
+          ImVec2((lo.x + hi.x) * 0.5f, (lo.y + hi.y) * 0.5f);
+      if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("%s", title);
+      }
+      return clicked;
+    };
 
-    float noise_scale = 0;
-    float noise_rate = 0;
-    step_control_.GetNoiseParameters(noise_scale, noise_rate);
-    platform::NoiseGui(model(), data(), noise_scale, noise_rate);
-    step_control_.SetNoiseParameters(noise_scale, noise_rate);
+    // Group 0: model actions (reload / reset). These are one-shot buttons, not
+    // toggles, so they render as plain rail buttons (normal hover, no "active"
+    // state).
+    if (icon_button(ICON_RELOAD_MODEL, "Reload", false, /*toggle=*/false)) {
+      RequestModelReload();
+    }
+    if (icon_button(ICON_RESET_MODEL, "Reset", false, /*toggle=*/false)) {
+      ResetPhysics();
+    }
     ImGui::Separator();
+    slot = 0;
 
-    platform::ControlsGui(model(), data(), &vis_options_);
-    ImGui::TreePop();
-  }
-  ImGui::EndChild();
+    // Group 1: registered tool windows (each opens a floating tool window),
+    // followed by the view / diagnostics windows (toggle the app's own windows).
+    for (ToolWindow& tw : tool_windows_) {
+      if (icon_button(tw.icon, tw.title.c_str(), tw.open)) {
+        tw.open = !tw.open;
+      }
+    }
+    if (icon_button(platform::ICON_FA_TACHOMETER, "Profiler", tmp_.profiler)) {
+      ToggleWindow(tmp_.profiler);
+    }
+    if (icon_button(platform::ICON_FA_CLONE, "Picture-in-Picture",
+                    tmp_.picture_in_picture)) {
+      tmp_.picture_in_picture = !tmp_.picture_in_picture;
+    }
 
-  ImGui::BeginChild("SensorGui", {0, 0}, child_flags);
-  if (ImGui::TreeNodeEx("Sensor", node_flags)) {
-    platform::SensorGui(model(), data());
-    ImGui::TreePop();
+    // Group 2: GUI plugins (the same entries as the "Plugins" main menu). Each
+    // button toggles the plugin's window, exactly like its menu item. Only
+    // plugins that draw a window (have an `update`) are listed, matching the
+    // menu. The separator/new row is emitted lazily so it doesn't appear when
+    // no GUI plugins are registered.
+    bool first_plugin = true;
+    platform::ForEachPlugin<platform::GuiPlugin>(
+        [&](platform::GuiPlugin* plugin) {
+          if (!plugin->update) {
+            return;
+          }
+          if (first_plugin) {
+            ImGui::Separator();
+            slot = 0;
+            first_plugin = false;
+          }
+          const char* icon = (plugin->icon && plugin->icon[0])
+                                 ? plugin->icon
+                                 : platform::ICON_FA_MAGIC;
+          if (icon_button(icon, plugin->name, plugin->active)) {
+            plugin->active = !plugin->active;
+          }
+        });
   }
-  ImGui::EndChild();
+  ImGui::End();
+}
 
-  ImGui::BeginChild("WatchGui", {0, 0}, child_flags);
-  if (ImGui::TreeNodeEx("Watch", node_flags)) {
-    platform::WatchGui(model(), data(), ui_.watch_field,
-                       sizeof(ui_.watch_field), ui_.watch_index);
-    ImGui::TreePop();
-  }
-  ImGui::EndChild();
+void App::ToolWindowsGui(const ImVec4& workspace_rect) {
+  const float rail_width = RailWidth();
 
-  ImGui::BeginChild("StateGui", {0, 0}, child_flags);
-  if (ImGui::TreeNodeEx("State", node_flags)) {
-    platform::StateGui(model(), data(), tmp_.state, tmp_.state_sig, min_width);
-    ImGui::TreePop();
+  for (int i = 0; i < static_cast<int>(tool_windows_.size()); ++i) {
+    ToolWindow& tw = tool_windows_[i];
+    if (!tw.open) {
+      continue;
+    }
+    // Cascade the window if it ends up floating (undocked); when docked, the
+    // dock node controls geometry and these hints are ignored. By default each
+    // tool window is docked into DockRight by ConfigureDockingLayout, keyed on
+    // the window title -- so the title is the bare ImGui id (no "###" suffix).
+    const float offset = 24.0f * i;
+    ImGui::SetNextWindowPos(
+        ImVec2(workspace_rect.x + rail_width + 8.0f + offset,
+               workspace_rect.y + 8.0f + offset),
+        ImGuiCond_FirstUseEver);
+    // Default wide+tall enough that flag panels (e.g. Rendering's Model
+    // Elements + Render Flags) lay out in ~3 columns and fit without the lower
+    // section being clipped below the fold (clipped rows aren't rendered, so
+    // they're invisible to the test engine / inspect_ui).
+    ImGui::SetNextWindowSize(ImVec2(460, 520), ImGuiCond_FirstUseEver);
+    if (ImGui::Begin(tw.title.c_str(), &tw.open)) {
+      tw.render();
+    }
+    // Record the window rect (x, y, w, h) for the capture script's cursor.
+    const ImVec2 wp = ImGui::GetWindowPos();
+    const ImVec2 ws = ImGui::GetWindowSize();
+    tool_window_rect_[tw.title] = ImVec4(wp.x, wp.y, ws.x, ws.y);
+    ImGui::End();
   }
-  ImGui::EndChild();
+}
+
+void App::RegisterToolWindows() {
+  // Wraps a render callback so it shows a placeholder until mjData is available.
+  auto needs_data = [this](std::function<void()> fn) -> std::function<void()> {
+    return [this, fn = std::move(fn)]() {
+      if (!has_data()) {
+        ImGui::TextUnformatted("No mjData loaded.");
+        return;
+      }
+      fn();
+    };
+  };
+
+  // Icons are FontAwesome 4 glyphs chosen to evoke each window's name. Adding a
+  // window here is all it takes to get a rail button, a tooltip, and a
+  // command-palette entry -- the intended extension point (incl. a future
+  // Python API that would register windows whose render() calls back to script).
+  tool_windows_.push_back({platform::ICON_FA_COGS, "Physics",
+                           [this] {
+                             platform::PhysicsGui(
+                                 model(), platform::GetExpectedLabelWidth());
+                           },
+                           "Physics options and solver parameters"});
+  tool_windows_.push_back({platform::ICON_FA_CUBE, "Rendering",
+                           [this] {
+                             platform::RenderingGui(
+                                 model(), &vis_options_,
+                                 renderer_->GetRenderFlags(),
+                                 platform::GetExpectedLabelWidth());
+                           },
+                           "Render flags and model element visibility"});
+  tool_windows_.push_back(
+      {platform::ICON_FA_OBJECT_GROUP, "Visibility Groups",
+       [this] {
+         platform::GroupsGui(model(), &vis_options_,
+                             platform::GetExpectedLabelWidth());
+       },
+       "Toggle visibility of element groups"});
+  tool_windows_.push_back({platform::ICON_FA_EYE, "Visualization",
+                           [this] {
+                             platform::VisualizationGui(
+                                 model(), &vis_options_, &camera_,
+                                 platform::GetExpectedLabelWidth());
+                           },
+                           "Visualization options and camera"});
+  tool_windows_.push_back(
+      {platform::ICON_FA_LINK, "Joints",
+       needs_data([this] {
+         platform::JointsGui(model(), data(), &vis_options_);
+       }),
+       "Inspect and drive joint positions"});
+  tool_windows_.push_back(
+      {platform::ICON_FA_SLIDERS, "Controls",
+       needs_data([this] {
+         float noise_scale = 0;
+         float noise_rate = 0;
+         step_control_.GetNoiseParameters(noise_scale, noise_rate);
+         platform::NoiseGui(model(), data(), noise_scale, noise_rate);
+         step_control_.SetNoiseParameters(noise_scale, noise_rate);
+         ImGui::Separator();
+         platform::ControlsGui(model(), data(), &vis_options_);
+       }),
+       "Actuator controls and applied noise"});
+  tool_windows_.push_back(
+      {platform::ICON_FA_RSS, "Sensor",
+       needs_data([this] { platform::SensorGui(model(), data()); }),
+       "Live sensor readings"});
+  tool_windows_.push_back(
+      {platform::ICON_FA_BINOCULARS, "Watch",
+       needs_data([this] {
+         platform::WatchGui(model(), data(), ui_.watch_field,
+                            sizeof(ui_.watch_field), ui_.watch_index);
+       }),
+       "Watch a named mjData field"});
+  tool_windows_.push_back(
+      {platform::ICON_FA_TABLE, "State",
+       needs_data([this] {
+         platform::StateGui(model(), data(), tmp_.state, tmp_.state_sig,
+                            platform::GetExpectedLabelWidth());
+       }),
+       "Full physics state vector"});
+  tool_windows_.push_back({platform::ICON_FA_SITEMAP, "Explorer",
+                           [this] { SpecExplorerGui(); },
+                           "Browse the model spec tree"});
+  tool_windows_.push_back({platform::ICON_FA_PENCIL, "Editor",
+                           [this] { SpecEditorGui(); },
+                           "Edit the model spec"});
+}
+
+std::vector<CommandPalette::Command> App::CollectCommands() {
+  std::vector<CommandPalette::Command> commands;
+
+  // Model actions.
+  commands.push_back(
+      {"Reload", [this] { RequestModelReload(); }, "Reload the model from disk"});
+  commands.push_back(
+      {"Reset", [this] { ResetPhysics(); }, "Reset the simulation state"});
+
+  // Registered tool windows (index is stable for the process lifetime).
+  for (int i = 0; i < static_cast<int>(tool_windows_.size()); ++i) {
+    commands.push_back({tool_windows_[i].title,
+                        [this, i] {
+                          tool_windows_[i].open = !tool_windows_[i].open;
+                        },
+                        tool_windows_[i].description});
+  }
+
+  // View / diagnostics windows.
+  commands.push_back({"Profiler", [this] { ToggleWindow(tmp_.profiler); },
+                      "Open the timing profiler window"});
+  commands.push_back({"Stats",
+                      [this] {
+                        tmp_.stats_in_statusbar = !tmp_.stats_in_statusbar;
+                      },
+                      "Pin sim metrics in the status bar"});
+  commands.push_back({"Picture-in-Picture",
+                      [this] {
+                        tmp_.picture_in_picture = !tmp_.picture_in_picture;
+                      },
+                      "Open a picture-in-picture viewport"});
+  commands.push_back({"Help", [this] { ToggleWindow(tmp_.help); },
+                      "Show keyboard shortcuts and help"});
+
+  // GUI plugins (the same entries as the Plugins menu and the rail). Each
+  // toggles the plugin's window; only plugins that draw one are listed. The
+  // "Plugins > " prefix hints where they live in the menu bar.
+  platform::ForEachPlugin<platform::GuiPlugin>(
+      [&commands](platform::GuiPlugin* plugin) {
+        if (!plugin->update) {
+          return;
+        }
+        commands.push_back({std::string("Plugins > ") + plugin->name,
+                            [plugin] { plugin->active = !plugin->active; },
+                            "GUI plugin window"});
+      });
+
+  return commands;
+}
+
+std::vector<CommandPalette::Command> App::CollectSlashCommands() {
+  // Local "/..." commands handled by UiAgent::Ask (not sent to the model).
+  // Choosing one submits its name; for commands that take an argument, the user
+  // types the whole line (e.g. "/model sonnet") and it is submitted as-is.
+  return {
+      {"/clear", {}, "Clear the conversation history"},
+      {"/copy", {}, "Copy the conversation to the clipboard"},
+      {"/model", {}, "Switch or show the active model"},
+      {"/settings", {}, "Open the agent settings window"},
+  };
+}
+
+void App::RegisterLlmTools() {
+  // The sole actuator: the model drives the real UI through the ImGui Test
+  // Engine by emitting a JSON op-program whose refs are ImGui item IDs (see
+  // LLM_INTEGRATION_DESIGN.md and test_runner_).
+  std::string panels = "Reload, Reset";
+  for (const ToolWindow& tw : tool_windows_) panels += ", " + tw.title;
+  panels += ", Profiler, Stats, Picture-in-Picture, Help";
+
+  const std::string description =
+      "Drive the MuJoCo Studio UI by running a short program of Dear ImGui Test "
+      "Engine operations -- this clicks the real on-screen widgets. Use it for "
+      "any UI action the user asks for.\n"
+      "Reference items by their ImGui path. The left icon rail is the window "
+      "'ToolRail'; each of its panel buttons is referenced as "
+      "'//ToolRail/###<Panel>' (note the ### prefix on the panel name), where "
+      "<Panel> is one of: " +
+      panels +
+      ". Clicking a panel button toggles that panel. Top menu-bar items use the "
+      "'menu_click' op with a path like 'View/Tools'.\n"
+      "Example -- open the Physics panel: "
+      "{\"ops\":[{\"op\":\"item_click\",\"ref\":\"//ToolRail/###Physics\"}]}";
+
+  ToolDef grep{
+      "grep",
+      "Case-insensitive substring search over the Studio C++ source AND the "
+      "currently-loaded model's input files (e.g. the model XML). Use it to "
+      "find/verify exact names before referencing them: widget ids/labels and "
+      "keyboard shortcuts live in the source; model entity names (joints, "
+      "bodies, actuators) live in the input files -- e.g. grep 'knee' to find "
+      "the real joint name. Returns matching file:line lines.",
+      "{\"type\":\"object\",\"properties\":{\"pattern\":{\"type\":\"string\","
+      "\"description\":\"text to search for\"}},\"required\":[\"pattern\"]}"};
+
+  ToolDef inspect_ui{
+      "inspect_ui",
+      "Lists the widgets currently visible on screen, grouped by window, with "
+      "their labels. Call it AFTER opening a panel to confirm the right window "
+      "actually opened and the controls you need are showing (and to read exact "
+      "labels). Takes no arguments.",
+      "{\"type\":\"object\",\"properties\":{},\"required\":[]}"};
+
+  ToolDef run_program{
+      "run_ui_program", description,
+      "{\"type\":\"object\",\"properties\":{\"ops\":{\"type\":\"array\","
+      "\"items\":{\"type\":\"object\",\"properties\":{"
+      "\"op\":{\"type\":\"string\",\"enum\":[\"item_click\",\"click_id\","
+      "\"right_click\",\"double_click\",\"item_check\",\"item_uncheck\","
+      "\"item_open\",\"item_close\",\"set_float\",\"set_float_id\",\"set_int\","
+      "\"set_text\",\"combo_select\",\"menu_click\",\"scroll\",\"hover\","
+      "\"item_hold\",\"key_chars\",\"key_press\",\"wait\",\"set_ref\"]},"
+      "\"ref\":{\"type\":\"string\",\"description\":\"ImGui item path, e.g. "
+      "//ToolRail/###Physics\"},"
+      "\"id\":{\"type\":\"number\",\"description\":\"exact ImGui id from "
+      "inspect_ui\"},"
+      "\"path\":{\"type\":\"string\",\"description\":\"menu path for "
+      "menu_click\"},"
+      "\"value\":{\"description\":\"number for set_float/set_int, or the option "
+      "text (string) for combo_select\"},"
+      "\"text\":{\"type\":\"string\",\"description\":\"text for set_text/"
+      "key_chars\"},"
+      "\"key\":{\"type\":\"string\",\"description\":\"key name for key_press\"},"
+      "\"to\":{\"type\":\"string\",\"description\":\"scroll target: top|bottom\"},"
+      "\"seconds\":{\"type\":\"number\",\"description\":\"duration for wait\"}},"
+      "\"required\":[\"op\"]}}},\"required\":[\"ops\"]}"};
+
+  auto exec = [this](const std::string& name,
+                     const std::string& json_args) -> std::string {
+    if (name == "grep") {
+      // Hard per-turn budget so the agent can't get stuck exploring (the system
+      // prompt also asks it to grep sparingly).
+      if (grep_calls_ >= 6) {
+        return "Search budget reached. Stop searching and emit a run_ui_program "
+               "now with what you know (use keyboard shortcuts for anything you "
+               "couldn't reference).";
+      }
+      ++grep_calls_;
+      // Extract the "pattern" string argument.
+      std::string pattern;
+      size_t k = json_args.find("\"pattern\"");
+      if (k != std::string::npos) {
+        size_t colon = json_args.find(':', k);
+        size_t q = (colon == std::string::npos)
+                       ? std::string::npos
+                       : json_args.find('"', colon + 1);
+        size_t e = (q == std::string::npos) ? std::string::npos
+                                            : json_args.find('"', q + 1);
+        if (e != std::string::npos) pattern = json_args.substr(q + 1, e - q - 1);
+      }
+      std::fprintf(stderr, "[grep] %s\n", pattern.c_str());
+      std::fflush(stderr);
+      // Also search the loaded model's input files (where joint/body names live).
+      std::string model_dir;
+      if (!model_path_.empty()) {
+        model_dir = std::filesystem::path(model_path_).parent_path().string();
+      }
+      return GrepSource(pattern, model_dir, 40);
+    }
+    if (name == "inspect_ui") {
+      std::string result = test_runner_.Inspect();
+      std::fprintf(stderr, "===== inspect_ui result =====\n%s===== end inspect_ui "
+                           "=====\n",
+                   result.c_str());
+      std::fflush(stderr);
+      return result;
+    }
+    if (name == "run_ui_program") {
+      // Echo the program the LLM generated to the console before running it.
+      std::fprintf(stderr, "[run_ui_program] %s\n", json_args.c_str());
+      std::fflush(stderr);
+      const int n = test_runner_.Run(json_args);
+      return "Queued a " + std::to_string(n) + "-op UI program.";
+    }
+    return "Unknown tool: " + name;
+  };
+
+  ui_agent_.set_tools({grep, inspect_ui, run_program}, exec);
+  ui_agent_.set_on_ask([this] { grep_calls_ = 0; });
+  ui_agent_.set_copy_handler(
+      [](const std::string& text) { ImGui::SetClipboardText(text.c_str()); });
+  ui_agent_.set_settings_handler(
+      [this] { tmp_.agent_settings = !tmp_.agent_settings; });
 }
 
 void App::SpecExplorerGui() {
@@ -1200,13 +1629,13 @@ void App::SpecEditorGui() {
 
       ImGui::TableNextColumn();
       ImGui::BeginDisabled(!spec_editor_.CanUndo());
-      if (ImGui::Button(ICON_UNDO_SPEC)) {
+      if (ImGui::Button((std::string(ICON_UNDO_SPEC) + "###Undo").c_str())) {
         spec_editor_.Undo();
       }
       ImGui::EndDisabled();
       ImGui::SameLine();
       ImGui::BeginDisabled(!spec_editor_.CanRedo());
-      if (ImGui::Button(ICON_REDO_SPEC)) {
+      if (ImGui::Button((std::string(ICON_REDO_SPEC) + "###Redo").c_str())) {
         spec_editor_.Redo();
       }
       ImGui::EndDisabled();
@@ -1238,6 +1667,7 @@ void App::SpecEditorGui() {
           }
         };
 
+        option("Body", mjOBJ_BODY);  // added to the world body
         option("Actuator", mjOBJ_ACTUATOR);
         option("Equality", mjOBJ_EQUALITY);
         option("Exclude", mjOBJ_EXCLUDE);
@@ -1417,153 +1847,331 @@ void App::HelpGui() {
 }
 
 void App::ToolBarGui() {
-  ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, ImVec2(0, 0));
-  if (ImGui::BeginTable("##ToolBarTable", 2)) {
-    platform::ScopedStyle style;
-    style.Var(ImGuiStyleVar_ItemSpacing,
-              ImVec2(ImGui::GetStyle().ItemSpacing.x * 2.0f,
-                     ImGui::GetStyle().ItemSpacing.y));
+  // Transport buttons (Normal Pause, Viscous Pause, Play) + the speed dial, as
+  // in the original combined StepControlGui. The view-display selectors
+  // (camera/label/frame) live on the menu bar, and engine settings (threadpool
+  // size) live in Edit > Preferences.
+  const float h = ImGui::GetFrameHeight();
+  platform::TransportButtonsGui(&step_control_);
+  ImGui::SameLine(0, h * 0.6f);
+  platform::SpeedControlGui(&step_control_, tmp_.speed_index);
 
-    const float label_width = platform::GetExpectedLabelWidth();
-    const float copy_btn_width = ImGui::GetFrameHeight();
-    const float theme_width =
-        ImGui::CalcTextSize(platform::ICON_FA_CIRCLE_O).x +
-        ImGui::GetStyle().FramePadding.x * 2;
-    const float sp = ImGui::GetStyle().ItemSpacing.x;
-    const float right_width = copy_btn_width + label_width + sp +
-                              label_width + sp + label_width + sp +
-                              theme_width;
-    const float separator_width = ImGui::GetFrameHeight() * .6f;
-
-    ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthStretch);
-    ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, right_width);
-
-    ImGui::TableNextColumn();
-    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + ImGui::GetStyle().WindowPadding.x);
-
-    const float btn_size = ImGui::GetFrameHeight();
-    const ImVec2 square_size(btn_size, btn_size);
-
-    // Reload button.
-    {
-      style.Var(ImGuiStyleVar_FrameRounding, 2.0f);
-      if (ImGui::Button(ICON_RELOAD_MODEL, square_size)) {
-        RequestModelReload();
-      }
-      ImGui::SetItemTooltip("%s", "Reload");
-    }
-
-    // Reset button.
-    ImGui::SameLine(0, 0.5 * separator_width);
-    if (ImGui::Button(ICON_RESET_MODEL, square_size)) {
-      ResetPhysics();
-    }
-    ImGui::SetItemTooltip("%s", "Reset");
-
-    // Combined (Normal Pause, Viscous Pause, Play) widget and Speed selection.
-    ImGui::SameLine(0, separator_width);
-    platform::StepControlGui(model(), &step_control_, tmp_.speed_index);
-
-    ImGui::SameLine(0, separator_width);
-    ImGui::SetNextItemWidth(120);
-    ImGui::BeginDisabled(std::thread::hardware_concurrency() <= 1);
-    if (ImGui::SliderInt("##NumThreads", &ui_.nthread, 0, 8, "%d threads")) {
-      tmp_.update_threadpool = true;
-    }
-    ImGui::EndDisabled();
-    ImGui::SetItemTooltip("%s", "Number of threads in threadpool");
-
-    ImGui::TableNextColumn();
-
-    platform::CameraSelectionGui(model(), data(), camera_, ui_.camera_idx);
-
-    ImGui::SameLine();
-    platform::LabelSelectionGui(&vis_options_);
-
-    ImGui::SameLine();
-    platform::FrameSelectionGui(&vis_options_);
-
-    ImGui::SameLine();
-    if (platform::ThemeSelectGui(&ui_.theme, square_size)) {
-      platform::SetupTheme(ui_.theme);
-      ImGui::GetIO().WantSaveIniSettings = true;
-    }
-
-    ImGui::EndTable();
+  // Without a model there is no history to scrub.
+  if (!has_model()) {
+    return;
   }
-  ImGui::PopStyleVar();
+
+  // Frame-history scrubber, shown to the left of the toggle when expanded. The
+  // overlay auto-resizes and is centered with a (0.5, 0) pivot, so it re-centers
+  // as the bar widens.
+  const bool expanded = tmp_.scrubber_expanded;
+  if (expanded) {
+    ImGui::SameLine(0, h * 0.6f);  // match the transport-to-speed gap
+    ScrubberControls();
+  }
+
+  // Expand/collapse toggle, always right-most: a square history-icon checkbox
+  // that shows the pressed ("on") frame while the scrubber is expanded. The
+  // "###..." id is stable so the test engine / LLM agent can address it.
+  ImGui::SameLine(0, h * 0.6f);
+  const std::string label =
+      std::string(platform::ICON_FA_HISTORY) + "###Toggle history scrubber";
+  if (platform::ImGui_IconCheckbox(label.c_str(), tmp_.scrubber_expanded)) {
+    tmp_.scrubber_expanded = !tmp_.scrubber_expanded;
+  }
+  ImGui::SetItemTooltip("%s", "Toggle history scrubber");
+}
+
+namespace {
+// Shared flags for the translucent viewport overlays.
+constexpr ImGuiWindowFlags kOverlayFlags =
+    ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+    ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoDocking |
+    ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse |
+    ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNavFocus;
+constexpr float kOverlayAlpha = 0.65f;
+}  // namespace
+
+void App::TopOverlayGui(const ImVec4& workspace_rect) {
+  // Auto-size to the packed controls and center horizontally on the actual
+  // screen center (the left rail is a thin overlay that doesn't sit at the top
+  // center, so we don't bias around it). The (0.5, 0) pivot keeps it centered
+  // regardless of its content width, so the bar re-centers when the scrubber is
+  // expanded or collapsed. workspace_rect.y is the menu-bar bottom, so sit
+  // kOverlayInset below it.
+  const ImGuiViewport* vp = ImGui::GetMainViewport();
+  const float center_x = vp->WorkPos.x + vp->WorkSize.x * 0.5f;
+  ImGui::SetNextWindowPos(ImVec2(center_x, workspace_rect.y + kOverlayInset),
+                          ImGuiCond_Always, ImVec2(0.5f, 0.0f));
+  ImGui::SetNextWindowBgAlpha(kOverlayAlpha);
+  if (ImGui::Begin("##TopOverlay", nullptr,
+                   kOverlayFlags | ImGuiWindowFlags_AlwaysAutoResize)) {
+    ToolBarGui();
+  }
+  // Remember the bar's bottom edge so the command palette can sit just below it.
+  tmp_.top_overlay_bottom = ImGui::GetWindowPos().y + ImGui::GetWindowSize().y;
+  ImGui::End();
+}
+
+void App::ScrubberControls() {
+  // One fused row, like the transport bar: rounded end buttons (oldest / current)
+  // around square inner buttons and a square history slider (left = oldest, right
+  // = now), joined with zero spacing. Every control carries a stable "###<Name>"
+  // id so the test engine / LLM agent can address it (see WIDGET_GUIDELINES.md).
+  const float h = ImGui::GetFrameHeight();
+  const ImVec2 btn(h, h);
+  // The rounded end buttons get the same width as the transport's play/pause
+  // buttons (icon width + padding, scaled by 1.6 -- see TransportButtonsGui).
+  const float end_w = (ImGui::CalcTextSize(platform::ICON_FA_PLAY).x +
+                       ImGui::GetStyle().FramePadding.x * 2.f) *
+                      1.6f;
+  const ImVec2 end_btn(end_w, h);
+  // Momentary buttons: resting = ImGuiCol_Button, hover = ImGuiCol_ButtonHovered.
+  const ImColor hover(ImGui::GetStyleColorVec4(ImGuiCol_ButtonHovered));
+
+  platform::ScopedStyle style;
+  style.Var(ImGuiStyleVar_FrameRounding, 8.f * ImGui::GetStyle().FontScaleDpi);
+
+  // Oldest frame (start of history): rounded left end.
+  if (platform::ImGui_ColorButtonEx(
+          (std::string(platform::ICON_FA_FAST_BACKWARD) + "###Oldest frame")
+              .c_str(),
+          /*active=*/false, hover, ImDrawFlags_RoundCornersLeft, end_btn,
+          /*hover_alpha=*/1.f)) {
+    LoadHistory(1 - sim_history_.Size());
+  }
+  ImGui::SetItemTooltip("%s", "Oldest frame (start of history)");
+
+  // Previous frame (toward older states): square.
+  ImGui::SameLine(0, 0);
+  if (platform::ImGui_ColorButtonEx(
+          (std::string(ICON_PREV_FRAME) + "###Previous frame").c_str(),
+          /*active=*/false, hover, ImDrawFlags_RoundCornersNone, btn, 1.f)) {
+    LoadHistory(sim_history_.GetIndex() - 1);
+  }
+  ImGui::SetItemTooltip("%s", "Previous frame");
+
+  // History slider: square corners so it fuses with the buttons on both sides.
+  ImGui::SameLine(0, 0);
+  int index = sim_history_.GetIndex();
+  ImGui::SetNextItemWidth(ImGui::GetFontSize() * 12.0f);
+  {
+    platform::ScopedStyle slider_style;
+    slider_style.Var(ImGuiStyleVar_FrameRounding, 0.f);
+    if (ImGui::SliderInt("###Frame", &index, 1 - sim_history_.Size(), 0, "")) {
+      LoadHistory(index);
+    }
+  }
+  ImGui::SetItemTooltip("Frame %d of %d", index, sim_history_.Size());
+
+  // Next frame (toward the current state): square.
+  ImGui::SameLine(0, 0);
+  if (platform::ImGui_ColorButtonEx(
+          (std::string(ICON_NEXT_FRAME) + "###Next frame").c_str(),
+          /*active=*/false, hover, ImDrawFlags_RoundCornersNone, btn, 1.f)) {
+    if (sim_history_.GetIndex() == 0) {
+      step_control_.RequestSingleStep();
+    } else {
+      LoadHistory(sim_history_.GetIndex() + 1);
+    }
+  }
+  ImGui::SetItemTooltip("%s", "Next frame");
+
+  // Current (latest) frame: rounded right end.
+  ImGui::SameLine(0, 0);
+  if (platform::ImGui_ColorButtonEx(
+          (std::string(ICON_CURR_FRAME) + "###Current frame").c_str(),
+          /*active=*/false, hover, ImDrawFlags_RoundCornersRight, end_btn,
+          1.f)) {
+    LoadHistory(0);
+  }
+  ImGui::SetItemTooltip("%s", "Current frame");
 }
 
 void App::StatusBarGui() {
-  if (ImGui::BeginTable("##StatusBarTable", 2)) {
-    ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthStretch);
-    ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, 520);
+  // Recomputed below from the stats icon's hover state.
+  show_stats_window_ = false;
 
-    ImGui::TableNextColumn();
+  // Left: run state + any error message. Right: a stats toggle icon, plus the
+  // model/sim metrics when they are pinned.
+  std::string left;
+  if (!has_model()) {
+    left = "No model loaded";
+  } else if (step_control_.GetPauseState() == PauseState::kViscousPaused) {
+    left = "Viscous Pause";
+  } else if (step_control_.GetPauseState() == PauseState::kNormalPaused) {
+    left = "Paused";
+  } else {
+    left = "Running";
+  }
+  if (!step_error_.empty()) {
+    left += "   |   Step Error: " + step_error_;
+  } else if (!load_error_.empty()) {
+    left += "   |   Load Error: " + load_error_;
+  } else if (!edit_error_.empty()) {
+    left += "   |   Edit Error: " + edit_error_;
+  }
 
-    if (!has_model()) {
-      ImGui::Text("No model loaded");
-    } else if (step_control_.GetPauseState() == PauseState::kViscousPaused) {
-      ImGui::Text("Viscous Pause");
-      ImGui::SetItemTooltip("Zero gravity, high viscosity, no spring forces");
-    } else if (step_control_.GetPauseState() == PauseState::kNormalPaused) {
-      ImGui::Text("Paused");
-    } else {
-      ImGui::Text("Running");
+  std::string right;
+  if (has_model() && has_data()) {
+    const mjModel* m = model();
+    const mjData* d = data();
+    const int step_num = d->timer[mjTIMER_STEP].number;
+    const double ms_per_step =
+        step_num > 0 ? d->timer[mjTIMER_STEP].duration / step_num : 0.0;
+    char buf[256];
+    std::snprintf(buf, sizeof(buf),
+                  "bodies %d   dof %d   contacts %d      "
+                  "t %.3f s   frame %d      "
+                  "%.2f ms/step      %.0f fps",
+                  m->nbody, m->nv, d->ncon, d->time, sim_history_.GetIndex(),
+                  ms_per_step, renderer_->GetFps());
+    right = buf;
+  }
+
+  // A full-width bar pinned to the bottom of the viewport, styled like the top
+  // menu bar (same background colour, square corners). ConfigureDockingLayout
+  // reserves the matching strip so it does not overlap the dockspace.
+  const ImGuiViewport* vp = ImGui::GetMainViewport();
+  const float h = ImGui::GetFrameHeight();
+  const ImGuiStyle& s = ImGui::GetStyle();
+  ImGui::SetNextWindowPos(
+      ImVec2(vp->WorkPos.x, vp->WorkPos.y + vp->WorkSize.y - h));
+  ImGui::SetNextWindowSize(ImVec2(vp->WorkSize.x, h));
+
+  platform::ScopedStyle style;
+  style.Var(ImGuiStyleVar_WindowRounding, 0.0f);
+  style.Var(ImGuiStyleVar_WindowBorderSize, 0.0f);
+  style.Var(ImGuiStyleVar_WindowPadding,
+            ImVec2(s.ItemSpacing.x, (h - ImGui::GetTextLineHeight()) * 0.5f));
+  style.Color(ImGuiCol_WindowBg, ImGui::GetStyleColorVec4(ImGuiCol_MenuBarBg));
+
+  const ImGuiWindowFlags flags =
+      ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+      ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoDocking |
+      ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse |
+      ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBringToFrontOnFocus |
+      ImGuiWindowFlags_NoNavFocus;
+  if (ImGui::Begin("##StatusBar", nullptr, flags)) {
+    // Status message on the left.
+    ImGui::TextUnformatted(left.c_str());
+
+    // Right side, right-aligned: the metrics (only when pinned) followed by the
+    // stats toggle (the shared icon-checkbox: pressed/"on" frame while pinned).
+    // Clicking pins/unpins the metrics here; hovering while unpinned peeks the
+    // floating stats window. The "###Stats" id lets the test engine / LLM agent
+    // address it.
+    const std::string icon = platform::ICON_FA_BAR_CHART;
+    const float side = ImGui::GetTextLineHeight();
+    const std::string metrics = tmp_.stats_in_statusbar ? right : std::string();
+    float block_w = side;
+    if (!metrics.empty()) {
+      block_w += ImGui::CalcTextSize(metrics.c_str()).x + s.ItemSpacing.x;
     }
-
-    if (!step_error_.empty()) {
-      ImGui::SameLine();
-      ImGui::Text(" | Step Error: %s", step_error_.c_str());
-    } else if (!load_error_.empty()) {
-      ImGui::SameLine();
-      ImGui::Text(" | Load Error: %s", load_error_.c_str());
-    } else if (!edit_error_.empty()) {
-      ImGui::SameLine();
-      ImGui::Text(" | Edit Error: %s", edit_error_.c_str());
-    }
-
-    ImGui::TableNextColumn();
-    ImGui::Text("%s", " |");
-
-    // Frame scrubber.
-    platform::ScopedStyle style;
-
-    style.Var(ImGuiStyleVar_FrameBorderSize, 0);
-    style.Color(ImGuiCol_Button, ImGui::GetStyle().Colors[ImGuiCol_WindowBg]);
     ImGui::SameLine();
-    if (ImGui::Button(ICON_PREV_FRAME)) {
-      LoadHistory(sim_history_.GetIndex() - 1);
+    ImGui::SetCursorPosX(std::max(
+        ImGui::GetCursorPosX(),
+        ImGui::GetWindowWidth() - block_w - 2.0f * s.ItemSpacing.x));
+    if (!metrics.empty()) {
+      ImGui::TextUnformatted(metrics.c_str());
+      ImGui::SameLine();
     }
-    ImGui::SetItemTooltip("%s", "Previous Frame");
-
-    style.Reset();
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(450);
-    int index = sim_history_.GetIndex();
-    if (ImGui::SliderInt("##ScrubIndex", &index, 1 - sim_history_.Size(), 0)) {
-      LoadHistory(index);
+    if (platform::ImGui_IconCheckbox((icon + "###Stats").c_str(),
+                                     tmp_.stats_in_statusbar, side)) {
+      tmp_.stats_in_statusbar = !tmp_.stats_in_statusbar;
     }
+    if (!tmp_.stats_in_statusbar && ImGui::IsItemHovered()) {
+      show_stats_window_ = true;
+    }
+  }
+  ImGui::End();
+}
 
-    style.Var(ImGuiStyleVar_FrameBorderSize, 0);
-    style.Color(ImGuiCol_Button, ImGui::GetStyle().Colors[ImGuiCol_WindowBg]);
-    ImGui::SameLine();
-    if (ImGui::Button(ICON_NEXT_FRAME)) {
-      if (sim_history_.GetIndex() == 0) {
-        step_control_.RequestSingleStep();
-      } else {
-        LoadHistory(sim_history_.GetIndex() + 1);
+void App::GraphicsModeMenu() {
+#ifdef __linux__
+  if (ImGui::BeginMenu("Graphics Mode (Experimental)")) {
+    std::optional<platform::GraphicsMode> mode;
+    if (ImGui::MenuItem("Classic OpenGL", nullptr,
+                        gfx_mode_ == platform::GraphicsMode::ClassicOpenGl)) {
+      mode = platform::GraphicsMode::ClassicOpenGl;
+    }
+    if (ImGui::MenuItem(
+            "Classic OpenGL Headless", nullptr,
+            gfx_mode_ == platform::GraphicsMode::ClassicOpenGlHeadless)) {
+      mode = platform::GraphicsMode::ClassicOpenGlHeadless;
+    }
+    if (ImGui::MenuItem("Filament OpenGL", nullptr,
+                        gfx_mode_ == platform::GraphicsMode::FilamentOpenGl)) {
+      mode = platform::GraphicsMode::FilamentOpenGl;
+    }
+    if (ImGui::MenuItem(
+            "Filament OpenGL Headless", nullptr,
+            gfx_mode_ == platform::GraphicsMode::FilamentOpenGlHeadless)) {
+      mode = platform::GraphicsMode::FilamentOpenGlHeadless;
+    }
+    if (ImGui::MenuItem(
+            "Filament OpenGL Software", nullptr,
+            gfx_mode_ == platform::GraphicsMode::FilamentOpenGlSoftware)) {
+      mode = platform::GraphicsMode::FilamentOpenGlSoftware;
+    }
+    if (ImGui::MenuItem("Filament Vulkan", nullptr,
+                        gfx_mode_ == platform::GraphicsMode::FilamentVulkan)) {
+      mode = platform::GraphicsMode::FilamentVulkan;
+    }
+    if (ImGui::MenuItem(
+            "Filament Vulkan Software", nullptr,
+            gfx_mode_ == platform::GraphicsMode::FilamentVulkanSoftware)) {
+      mode = platform::GraphicsMode::FilamentVulkanSoftware;
+    }
+    if (mode.has_value()) {
+      pending_op_ = [=, this]() {
+        const int width = window_->GetWidth();
+        const int height = window_->GetHeight();
+        SwitchGraphicsMode(width, height, *mode);
+        // TODO: figure out why ImGui doesn't work unless we do this twice.
+        if (IsClassic(*mode)) {
+          SwitchGraphicsMode(width, height, *mode);
+        }
+        renderer_->Init(model());
+      };
+    }
+    ImGui::EndMenu();
+  }
+#endif  // __linux__
+}
+
+void App::AgentSettingsGui() {
+  // Agent: model selection. Disabled while a request is in flight (switching the
+  // provider mid-request is unsafe).
+  if (ImGui::CollapsingHeader("Agent", ImGuiTreeNodeFlags_DefaultOpen)) {
+    const std::vector<std::pair<std::string, std::string>> models =
+        ui_agent_.AvailableModels();
+    ImGui::BeginDisabled(ui_agent_.busy() || models.empty());
+    const std::string current = ui_agent_.provider_model();
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    if (ImGui::BeginCombo(
+            "##model",
+            current.empty() ? "(no API key set)" : current.c_str())) {
+      for (const auto& [alias, id] : models) {
+        const bool selected = (id == current);
+        if (ImGui::Selectable(id.c_str(), selected)) {
+          ui_agent_.SwitchModel(alias);
+        }
+        if (selected) {
+          ImGui::SetItemDefaultFocus();
+        }
       }
+      ImGui::EndCombo();
     }
-    ImGui::SetItemTooltip("%s", "Next Frame");
-
-    ImGui::SameLine();
-    if (ImGui::Button(ICON_CURR_FRAME)) {
-      LoadHistory(0);
+    ImGui::EndDisabled();
+    if (models.empty()) {
+      ImGui::TextDisabled("Set ANTHROPIC_API_KEY or GEMINI_API_KEY.");
     }
-    ImGui::SetItemTooltip("%s", "Current Frame");
+  }
 
-    ImGui::EndTable();
+  // Test-engine playback settings (how the agent's mouse/typing is replayed).
+  if (ImGui::CollapsingHeader("Playback", ImGuiTreeNodeFlags_DefaultOpen)) {
+    test_runner_.DrawPlaybackSettings();
   }
 }
 
@@ -1581,7 +2189,7 @@ void App::MainMenuGui() {
       if (ImGui::MenuItem("Save MJB", "Ctrl+Shift+S")) {
         tmp_.file_dialog = UiTempState::FileDialog_SaveMjb;
       }
-      if (ImGui::MenuItem("Save Screenshot", "Ctrl+P")) {
+      if (ImGui::MenuItem("Save Screenshot")) {
         tmp_.file_dialog = UiTempState::FileDialog_SaveScreenshot;
       }
       ImGui::Separator();
@@ -1602,6 +2210,33 @@ void App::MainMenuGui() {
         tmp_.should_exit = true;
       }
 #endif  // !__EMSCRIPTEN__
+      ImGui::EndMenu();
+    }
+
+    if (ImGui::BeginMenu("Edit")) {
+      if (ImGui::BeginMenu("Preferences")) {
+        ImGui::TextUnformatted("Threadpool size");
+        ImGui::SetNextItemWidth(180);
+        ImGui::BeginDisabled(std::thread::hardware_concurrency() <= 1);
+        if (ImGui::SliderInt("##NumThreads", &ui_.nthread, 0, 8, "%d threads")) {
+          tmp_.update_threadpool = true;
+        }
+        ImGui::EndDisabled();
+        ImGui::SetItemTooltip("%s",
+                              "Number of worker threads used to step the model");
+
+        GraphicsModeMenu();
+
+        ImGui::Separator();
+        if (ImGui::MenuItem("Save Config")) {
+          SaveSettings();
+        }
+        if (ImGui::MenuItem("Reset Config")) {
+          platform::SaveText("\n\n", ini_path_);
+          LoadSettings();
+        }
+        ImGui::EndMenu();
+      }
       ImGui::EndMenu();
     }
 
@@ -1642,97 +2277,30 @@ void App::MainMenuGui() {
     }
 
     if (ImGui::BeginMenu("View")) {
-      if (ImGui::MenuItem("Save Config")) {
-        SaveSettings();
-      }
-      if (ImGui::MenuItem("Reset Config")) {
-        platform::SaveText("\n\n", ini_path_);
-        LoadSettings();
-      }
-      ImGui::Separator();
-
-      if (ImGui::MenuItem(tmp_.options_panel ? "Hide Options" : "Show Options",
+      if (ImGui::MenuItem(tmp_.options_panel ? "Hide Tools" : "Show Tools",
                           "Tab")) {
         tmp_.options_panel = !tmp_.options_panel;
-      }
-      if (ImGui::MenuItem(
-              tmp_.inspector_panel ? "Hide Inspector" : "Show Inspector",
-              "Shift+Tab")) {
-        tmp_.inspector_panel = !tmp_.inspector_panel;
       }
       if (ImGui::MenuItem("Full Screen", "F11")) {
         tmp_.full_screen = !tmp_.full_screen;
       }
       ImGui::Separator();
 
-      if (ImGui::MenuItem("Picture-in-Picture")) {
-        tmp_.picture_in_picture = !tmp_.picture_in_picture;
-      }
-      ImGui::Separator();
-
-#ifdef __linux__
-      if (ImGui::BeginMenu("Graphics Mode (Experimental)")) {
-        std::optional<platform::GraphicsMode> mode;
-        if (ImGui::MenuItem(
-                "Classic OpenGL", nullptr,
-                gfx_mode_ == platform::GraphicsMode::ClassicOpenGl)) {
-          mode = platform::GraphicsMode::ClassicOpenGl;
-        }
-        if (ImGui::MenuItem(
-                "Classic OpenGL Headless", nullptr,
-                gfx_mode_ == platform::GraphicsMode::ClassicOpenGlHeadless)) {
-          mode = platform::GraphicsMode::ClassicOpenGlHeadless;
-        }
-        if (ImGui::MenuItem(
-                "Filament OpenGL", nullptr,
-                gfx_mode_ == platform::GraphicsMode::FilamentOpenGl)) {
-          mode = platform::GraphicsMode::FilamentOpenGl;
-        }
-        if (ImGui::MenuItem(
-                "Filament OpenGL Headless", nullptr,
-                gfx_mode_ == platform::GraphicsMode::FilamentOpenGlHeadless)) {
-          mode = platform::GraphicsMode::FilamentOpenGlHeadless;
-        }
-        if (ImGui::MenuItem(
-                "Filament OpenGL Software", nullptr,
-                gfx_mode_ == platform::GraphicsMode::FilamentOpenGlSoftware)) {
-          mode = platform::GraphicsMode::FilamentOpenGlSoftware;
-        }
-        if (ImGui::MenuItem(
-                "Filament Vulkan", nullptr,
-                gfx_mode_ == platform::GraphicsMode::FilamentVulkan)) {
-          mode = platform::GraphicsMode::FilamentVulkan;
-        }
-        if (ImGui::MenuItem(
-                "Filament Vulkan Software", nullptr,
-                gfx_mode_ == platform::GraphicsMode::FilamentVulkanSoftware)) {
-          mode = platform::GraphicsMode::FilamentVulkanSoftware;
-        }
-        if (mode.has_value()) {
-          pending_op_ = [=, this]() {
-            const int width = window_->GetWidth();
-            const int height = window_->GetHeight();
-            SwitchGraphicsMode(width, height, *mode);
-            // TODO: figure out why ImGui doesn't work unless we do this twice.
-            if (IsClassic(*mode)) {
-              SwitchGraphicsMode(width, height, *mode);
-            }
-            renderer_->Init(model());
-          };
-        }
-        ImGui::EndMenu();
-      }
-#endif  // __linux__
-
-      ImGui::EndMenu();
-    }
-
-    if (ImGui::BeginMenu("Charts")) {
-      if (ImGui::MenuItem("Profiler", "F3")) {
+      // Diagnostics / secondary windows.
+      if (ImGui::MenuItem("Profiler", "F3", tmp_.profiler)) {
         ToggleWindow(tmp_.profiler);
       }
+      if (ImGui::MenuItem("Stats in status bar", "F2",
+                          tmp_.stats_in_statusbar)) {
+        tmp_.stats_in_statusbar = !tmp_.stats_in_statusbar;
+      }
+      if (ImGui::MenuItem("Picture-in-Picture", nullptr,
+                          tmp_.picture_in_picture)) {
+        tmp_.picture_in_picture = !tmp_.picture_in_picture;
+      }
       ImGui::EndMenu();
     }
+
     if (ImGui::BeginMenu("Plugins")) {
       // Placeholder menu item that will be populated by plugins later on. We
       // do this now in so that the menu is present at the right place.
@@ -1742,25 +2310,50 @@ void App::MainMenuGui() {
       if (ImGui::MenuItem("Help", "F1", tmp_.help)) {
         ToggleWindow(tmp_.help);
       }
-      if (ImGui::MenuItem("Stats", "F2", tmp_.stats)) {
-        ToggleWindow(tmp_.stats);
-      }
       ImGui::Separator();
-      if (ImGui::MenuItem("Style Editor", "", tmp_.style_editor)) {
-        tmp_.style_editor = !tmp_.style_editor;
-      }
-      ImGui::Separator();
-      if (ImGui::MenuItem("ImGui Demo")) {
-        tmp_.imgui_demo = !tmp_.imgui_demo;
-      }
-      if (ImGui::MenuItem("ImPlot Demo")) {
-        tmp_.implot_demo = !tmp_.implot_demo;
+      if (ImGui::BeginMenu("Developer")) {
+        if (ImGui::MenuItem("Style Editor", nullptr, tmp_.style_editor)) {
+          tmp_.style_editor = !tmp_.style_editor;
+        }
+        if (ImGui::MenuItem("ImGui Demo", nullptr, tmp_.imgui_demo)) {
+          tmp_.imgui_demo = !tmp_.imgui_demo;
+        }
+        if (ImGui::MenuItem("ImPlot Demo", nullptr, tmp_.implot_demo)) {
+          tmp_.implot_demo = !tmp_.implot_demo;
+        }
+        ImGui::EndMenu();
       }
       ImGui::Separator();
       std::string version = "Version " + std::string(mj_versionString());
       ImGui::MenuItem(version.c_str());
       ImGui::EndMenu();
     }
+
+    // Right-aligned cluster of view-display selectors followed by the theme
+    // selector. CameraSelectionGui is [copy button + combo]; the Label/Frame
+    // selectors are a single combo each (all combos use GetExpectedLabelWidth);
+    // the theme button is one frame wide. Pre-compute the cluster width so it
+    // hugs the right edge of the menu bar.
+    const ImGuiStyle& menu_style = ImGui::GetStyle();
+    const float frame_h = ImGui::GetFrameHeight();
+    const float label_w = platform::GetExpectedLabelWidth();
+    const float cluster_w =
+        2.0f * frame_h + 3.0f * label_w + 3.0f * menu_style.ItemSpacing.x;
+    ImGui::SameLine(ImGui::GetWindowWidth() - cluster_w -
+                    menu_style.FramePadding.x * 2.0f);
+
+    platform::CameraSelectionGui(model(), data(), camera_, ui_.camera_idx);
+    ImGui::SameLine();
+    platform::LabelSelectionGui(&vis_options_);
+    ImGui::SameLine();
+    platform::FrameSelectionGui(&vis_options_);
+    ImGui::SameLine();
+    // Theme selector: cycles Light -> Dark -> Classic and shows its icon.
+    if (platform::ThemeSelectGui(&ui_.theme, ImVec2(frame_h, 0))) {
+      platform::SetupTheme(ui_.theme);
+      ImGui::GetIO().WantSaveIniSettings = true;
+    }
+
     ImGui::EndMainMenuBar();
   }
 }

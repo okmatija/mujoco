@@ -16,11 +16,9 @@
 
 #include <algorithm>
 #include <cfloat>
-#include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <memory>
-#include <span>
 #include <utility>
 #include <vector>
 
@@ -29,9 +27,9 @@
 #include <math/vec3.h>
 #include <math/vec4.h>
 #include <mujoco/mujoco.h>
-#include "experimental/filament/filament_util.h"
-#include "experimental/filament/render_context_filament_cpp.h"
-#include "experimental/filament/render_context_filament.h"
+#include "render/filament/mjrfilament.h"
+#include "render/filament/mjrfilament_cpp.h"
+#include "render/filament/support/filament_util.h"
 
 namespace mujoco {
 
@@ -331,78 +329,7 @@ static int GetNumVertices(const mjModel* model, int id, MeshType mesh_type) {
   }
 }
 
-static std::span<const float> GetPositions(const mjModel* model,
-                                           const mjvScene* scene,
-                                           const mjvGeom& geom) {
-  if (geom.type == mjGEOM_FLEX) {
-    const int num = 9 * scene->flexfaceused[geom.objid];
-    const int addr = scene->flexfaceadr[geom.objid];
-    const float* ptr = scene->flexface + (9 * addr);
-    return {ptr, static_cast<size_t>(num)};
-  } else {
-    const int num = 3 * scene->skinvertnum[geom.objid];
-    const int addr = scene->skinvertadr[geom.objid];
-    const float* ptr = scene->skinvert + (3 * addr);
-    return {ptr, static_cast<size_t>(num)};
-  }
-}
-
-static std::span<const float> GetNormals(const mjModel* model,
-                                         const mjvScene* scene,
-                                         const mjvGeom& geom) {
-  if (geom.type == mjGEOM_FLEX) {
-    const int num = 9 * scene->flexfaceused[geom.objid];
-    const int addr = scene->flexfaceadr[geom.objid];
-    const float* ptr = scene->flexnormal + (9 * addr);
-    return {ptr, static_cast<size_t>(num)};
-  } else {
-    const int num = 3 * scene->skinvertnum[geom.objid];
-    const int addr = scene->skinvertadr[geom.objid];
-    const float* ptr = scene->skinnormal + (3 * addr);
-    return {ptr, static_cast<size_t>(num)};
-  }
-}
-
-static std::span<const float> GetUvs(const mjModel* model,
-                                     const mjvScene* scene,
-                                     const mjvGeom& geom) {
-  if (geom.type == mjGEOM_FLEX) {
-    if (geom.texcoord && geom.matid >= 0) {
-      const int num = 6 * scene->flexfaceused[geom.objid];
-      const int addr = scene->flexfaceadr[geom.objid];
-      const float* ptr = scene->flextexcoord + (6 * addr);
-      return {ptr, static_cast<size_t>(num)};
-    } else {
-      const float* ptr = nullptr;
-      return {ptr, 0};
-    }
-  } else {
-    if (model->skin_texcoordadr[geom.objid] >= 0) {
-      const int num = 3 * scene->skinvertnum[geom.objid];
-      const int addr = model->skin_texcoordadr[geom.objid];
-      const float* ptr = model->skin_texcoord + (2 * addr);
-      return {ptr, static_cast<size_t>(num)};
-    } else {
-      const float* ptr = nullptr;
-      return {ptr, 0};
-    }
-  }
-}
-
-static std::span<const int> GetIndices(const mjModel* model,
-                                       const mjvScene* scene,
-                                       const mjvGeom& geom) {
-  if (geom.type == mjGEOM_FLEX) {
-    const int* ptr = nullptr;
-    return {ptr, 0};
-  } else {
-    const int num = 3 * model->skin_facenum[geom.objid];
-    const int* ptr = model->skin_face + 3 * model->skin_faceadr[geom.objid];
-    return {ptr, static_cast<size_t>(num)};
-  }
-}
-
-static void UpdateMeshData(mjrMeshData* data, const mjModel* model, int id,
+static void UpdateMeshData(mjrfMeshData* data, const mjModel* model, int id,
                            MeshType mesh_type) {
   if (!IsValidIndex(model, id, mesh_type)) {
     mju_error("Invalid index %d for type %d", id, mesh_type);
@@ -414,7 +341,7 @@ static void UpdateMeshData(mjrMeshData* data, const mjModel* model, int id,
 
   MeshBuilder* builder = new MeshBuilder(num_vertices);
   data->user_data = builder;
-  data->release_callback = [](void* user_data) {
+  data->release = [](void* user_data) {
     delete static_cast<MeshBuilder*>(user_data);
   };
 
@@ -457,38 +384,6 @@ static void UpdateMeshData(mjrMeshData* data, const mjModel* model, int id,
   data->bounds_max[2] = builder->bounds_max.z;
 }
 
-void UpdateSkinFlexMeshData(mjrMeshData* data, const mjModel* model,
-                            const mjvScene* scene, const mjvGeom& geom) {
-  auto positions = GetPositions(model, scene, geom);
-  auto normals = GetNormals(model, scene, geom);
-  auto uvs = GetUvs(model, scene, geom);
-  auto indices = GetIndices(model, scene, geom);
-
-  int num_indices = indices.size();
-  if (num_indices == 0 && geom.type == mjGEOM_FLEX) {
-    num_indices = 3 * scene->flexfaceused[geom.objid];
-  }
-
-  data->nattributes = uvs.data() ? 3 : 2;
-  data->attributes[0].usage = mjVERTEX_ATTRIBUTE_USAGE_POSITION;
-  data->attributes[0].type = mjVERTEX_ATTRIBUTE_TYPE_FLOAT3;
-  data->attributes[0].bytes = positions.data();
-  data->attributes[1].usage = mjVERTEX_ATTRIBUTE_USAGE_NORMAL;
-  data->attributes[1].type = mjVERTEX_ATTRIBUTE_TYPE_FLOAT3;
-  data->attributes[1].bytes = normals.data();
-  data->attributes[2].usage = mjVERTEX_ATTRIBUTE_USAGE_UV;
-  data->attributes[2].type = mjVERTEX_ATTRIBUTE_TYPE_FLOAT2;
-  data->attributes[2].bytes = uvs.data();
-  data->nvertices = positions.size() / 3;
-  data->nindices = num_indices;
-  data->indices = indices.data();
-  data->index_type = mjINDEX_TYPE_U32;
-  data->primitive_type = mjMESH_PRIMITIVE_TYPE_TRIANGLES;
-  data->compute_bounds = true;
-  data->release_callback = nullptr;
-  data->user_data = nullptr;
-}
-
 ModelObjects::ModelObjects(const mjModel* model, mjrfContext* ctx)
     : model_(model), ctx_(ctx) {
 
@@ -520,14 +415,14 @@ void ModelObjects::UploadMesh(const mjModel* model, int id) {
   meshes_.erase(id);
   convex_hulls_.erase(id);
 
-  mjrMeshData data;
-  mjr_defaultMeshData(&data);
+  mjrfMeshData data;
+  mjrf_defaultMeshData(&data);
   UpdateMeshData(&data, model, id, MeshType::kNormal);
   meshes_.insert_or_assign(id, CreateMesh(ctx_, data));
 
   if (model->mesh_graphadr[id] >= 0) {
-    mjrMeshData convex_hull_data;
-    mjr_defaultMeshData(&convex_hull_data);
+    mjrfMeshData convex_hull_data;
+    mjrf_defaultMeshData(&convex_hull_data);
     UpdateMeshData(&convex_hull_data, model, id, MeshType::kConvexHull);
     convex_hulls_.insert_or_assign(id, CreateMesh(ctx_, convex_hull_data));
   }
@@ -541,8 +436,8 @@ void ModelObjects::UploadTexture(const mjModel* model, int id) {
     mju_error("Invalid texture index: %d", id);
   }
 
-  mjrTextureConfig config;
-  mjr_defaultTextureConfig(&config);
+  mjrfTextureConfig config;
+  mjrf_defaultTextureConfig(&config);
   config.width = model->tex_width[id];
   config.height = model->tex_height[id];
   config.sampler_type = (mjtTexture)model->tex_type[id];
@@ -565,14 +460,14 @@ void ModelObjects::UploadTexture(const mjModel* model, int id) {
     config.format = mjPIXEL_FORMAT_KTX;
   }
 
-  mjrTextureData payload;
-  mjr_defaultTextureData(&payload);
+  mjrfTextureData payload;
+  mjrf_defaultTextureData(&payload);
   payload.bytes = model->tex_data + model->tex_adr[id];
   payload.nbytes =
       model->tex_width[id] * model->tex_height[id] * model->tex_nchannel[id];
   // We assume that the model has the same lifetime as the engine.
   payload.user_data = nullptr;
-  payload.release_callback = nullptr;
+  payload.release = nullptr;
 
   auto texture = CreateTexture(ctx_, config);
   mjrf_setTextureData(texture.get(), &payload);
@@ -589,26 +484,13 @@ void ModelObjects::UploadHeightField(const mjModel* model, int id) {
 
   height_fields_.erase(id);
 
-  mjrMeshData data;
-  mjr_defaultMeshData(&data);
+  mjrfMeshData data;
+  mjrf_defaultMeshData(&data);
   UpdateMeshData(&data, model, id, MeshType::kHeightField);
   height_fields_.insert_or_assign(id, CreateMesh(ctx_, data));
 }
 
-void ModelObjects::CreateSkinFlexMesh(const mjvScene* scene, const mjvGeom& geom) {
-  mjrMeshData data;
-  mjr_defaultMeshData(&data);
-  UpdateSkinFlexMeshData(&data, model_, scene, geom);
-  if (geom.type == mjGEOM_FLEX) {
-    flexes_.insert_or_assign(geom.objid, CreateMesh(ctx_, data));
-  } else if (geom.type == mjGEOM_SKIN) {
-    skins_.insert_or_assign(geom.objid, CreateMesh(ctx_, data));
-  } else {
-    mju_error("Unsupported dynamic mesh type: %d", geom.type);
-  }
-}
-
-const mjrMesh* ModelObjects::GetMesh(int data_id) const {
+const mjrfMesh* ModelObjects::GetMesh(int data_id) const {
   // As defined by mjv_updateScene:
   //   original mesh: mesh_id * 2
   //   convex hull: (mesh_id * 2) + 1
@@ -622,7 +504,7 @@ const mjrMesh* ModelObjects::GetMesh(int data_id) const {
   }
 }
 
-const mjrMesh* ModelObjects::GetHeightField(int hfield_id) const {
+const mjrfMesh* ModelObjects::GetHeightField(int hfield_id) const {
   if (auto it = height_fields_.find(hfield_id); it != height_fields_.end()) {
     return it->second.get();
   }
@@ -630,23 +512,7 @@ const mjrMesh* ModelObjects::GetHeightField(int hfield_id) const {
   return nullptr;
 }
 
-const mjrMesh* ModelObjects::GetFlexMesh(int geom_id) const {
-  if (auto it = flexes_.find(geom_id); it != flexes_.end()) {
-    return it->second.get();
-  }
-  mju_error("Unknown flex mesh %d", geom_id);
-  return nullptr;
-}
-
-const mjrMesh* ModelObjects::GetSkinMesh(int geom_id) const {
-  if (auto it = skins_.find(geom_id); it != skins_.end()) {
-    return it->second.get();
-  }
-  mju_error("Unknown skin mesh %d", geom_id);
-  return nullptr;
-}
-
-const mjrTexture* ModelObjects::GetTexture(int tex_id) const {
+const mjrfTexture* ModelObjects::GetTexture(int tex_id) const {
   if (auto it = textures_.find(tex_id); it != textures_.end()) {
     return it->second.get();
   }
@@ -654,7 +520,7 @@ const mjrTexture* ModelObjects::GetTexture(int tex_id) const {
   return nullptr;
 }
 
-const mjrTexture* ModelObjects::GetSkyboxTexture() const {
+const mjrfTexture* ModelObjects::GetSkyboxTexture() const {
   for (auto& iter : textures_) {
     if (model_->tex_type[iter.first] == mjTEXTURE_SKYBOX) {
       return iter.second.get();

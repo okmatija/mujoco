@@ -1,0 +1,104 @@
+// Copyright 2025 DeepMind Technologies Limited
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+#ifndef MUJOCO_SRC_EXPERIMENTAL_STUDIO_COMMAND_PALETTE_H_
+#define MUJOCO_SRC_EXPERIMENTAL_STUDIO_COMMAND_PALETTE_H_
+
+#include <functional>
+#include <string>
+#include <vector>
+
+#include <imgui.h>
+
+namespace mujoco::studio {
+
+// A VS Code-style command palette. The owner opens it (e.g. on Ctrl+Shift+P) and
+// passes the available commands to Draw() each frame. The palette starts as a
+// single-line input; typing '>' switches to command mode, which grows the box
+// and shows a filtered, keyboard-navigable list. Selecting an entry runs its
+// callback.
+//
+// This widget is intentionally self-contained and knows nothing about the app:
+// commands are just {name, callback} pairs, so it is easy to move to its own
+// module or reuse elsewhere.
+class CommandPalette {
+ public:
+  struct Command {
+    std::string name;
+    std::function<void()> run;
+    // Optional one-line hint shown dimmed after the name in the completion list.
+    std::string description;
+  };
+
+  void Open();
+  // Opens the palette pre-filled with `text` (e.g. ">Physics"); used by the
+  // capture script to show command-mode interactions.
+  void OpenWith(const std::string& text);
+  // Replaces the input text without opening/closing (used by the capture script
+  // to "type" a question one character at a time).
+  void SetText(const std::string& text);
+  void Close();
+  void Toggle();
+  bool is_open() const { return open_; }
+  // Center of the palette window from the last Draw (for the capture cursor).
+  ImVec2 window_center() const { return center_; }
+
+  // Draws the palette (if open), horizontally centered near the top of `rect`
+  // (x, y, width, height). `commands` is searched in '>' command mode and
+  // `slash_commands` in '/' mode; both render the same completion list (name in
+  // normal text, `description` dimmed after it).
+  //
+  // Input that starts with neither '>' nor '/' is "ask" mode: pressing Enter
+  // calls `on_submit_plain(text)` (and clears the box, keeping it open), and
+  // `render_below` is invoked inside the palette window to draw the LLM
+  // conversation right in the command box. In '/' mode, choosing a completion
+  // submits its name via `on_submit_plain`, while typed text with arguments
+  // (e.g. "/model sonnet", which matches no completion) is submitted as-is.
+  // Both callbacks are optional.
+  void Draw(const std::vector<Command>& commands,
+            const std::vector<Command>& slash_commands, const ImVec4& rect,
+            const std::function<void()>& render_below = {},
+            const std::function<void(const std::string&)>& on_submit_plain = {});
+
+ private:
+  bool open_ = false;
+  bool focus_input_ = false;
+  // One-shot after Open(): on the frame the input gains focus, move the cursor
+  // to the end and clear the selection so the pre-filled ">" isn't select-all'd
+  // (and thus wiped by the first keystroke).
+  bool init_cursor_end_ = false;
+  int selection_ = 0;
+  char input_[256] = "";
+  ImVec2 center_{0.0f, 0.0f};
+
+  std::vector<std::string> prompt_history_;
+  int history_pos_ = -1;   // -1 = current (unsaved) input
+  std::string saved_input_;
+
+  // Filters `list` by `query`, runs Up/Down navigation, and draws the rows.
+  // Returns the chosen command (clicked, or Enter on the highlighted row) or
+  // nullptr. `entered` is the InputText's Enter result for this frame.
+  const Command* DrawCompletionList(const std::vector<Command>& list,
+                                    const std::string& query, bool entered);
+  // Records `text` in the history, calls `on_submit_plain`, then clears and
+  // refocuses the box (the shared "submit a line" path for ask and '/' modes).
+  void SubmitPlain(const std::string& text,
+                   const std::function<void(const std::string&)>& on_submit_plain);
+
+  static int InputTextCallback(ImGuiInputTextCallbackData* data);
+};
+
+}  // namespace mujoco::studio
+
+#endif  // MUJOCO_SRC_EXPERIMENTAL_STUDIO_COMMAND_PALETTE_H_

@@ -18,20 +18,20 @@
 #include <vector>
 
 #include "experimental/filament/compat/model_objects.h"
-#include "experimental/filament/render_context_filament.h"
-#include "experimental/filament/render_context_filament_cpp.h"
+#include "render/filament/mjrfilament.h"
+#include "render/filament/mjrfilament_cpp.h"
 
 namespace mujoco {
 
-// Manages Light entities for an mjrScene using data from an mjvScene.
+// Manages Light entities for an mjrfScene using data from an mjvScene.
 class LightManager {
  public:
-  LightManager(mjrfContext* ctx, mjrScene* scene, ModelObjects* model_objects);
+  LightManager(mjrfContext* ctx, mjrfScene* scene, ModelObjects* model_objects);
   ~LightManager();
 
   // Returns the light with the given index in the mjModel. Note that an extra
   // headlight is assigned of the index `nlight`.
-  mjrLight* GetLight(int index);
+  mjrfLight* GetLight(int index);
 
   LightManager(const LightManager&) = delete;
   LightManager& operator=(const LightManager&) = delete;
@@ -40,10 +40,10 @@ class LightManager {
   void Prepare(ModelObjects* model_objects);
 
   mjrfContext* ctx_ = nullptr;
-  mjrScene* scene_ = nullptr;
-  UniquePtr<mjrLight> fallback_ibl_{nullptr, nullptr};
-  UniquePtr<mjrTexture> fallback_ibl_texture_{nullptr, nullptr};
-  std::vector<UniquePtr<mjrLight>> lights_;
+  mjrfScene* scene_ = nullptr;
+  UniquePtr<mjrfLight> fallback_ibl_{nullptr, nullptr};
+  UniquePtr<mjrfTexture> fallback_ibl_texture_{nullptr, nullptr};
+  std::vector<UniquePtr<mjrfLight>> lights_;
   int default_shadow_map_size_ = 2048;
   float default_vsm_blur_width_ = 0.0f;
   float fallback_head_light_intensity_ = 0.f;

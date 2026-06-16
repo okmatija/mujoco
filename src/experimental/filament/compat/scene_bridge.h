@@ -26,8 +26,9 @@
 #include <mujoco/mujoco.h>
 #include "experimental/filament/compat/light_manager.h"
 #include "experimental/filament/compat/model_objects.h"
-#include "experimental/filament/render_context_filament.h"
-#include "experimental/filament/render_context_filament_cpp.h"
+#include "experimental/filament/compat/scene_objects.h"
+#include "render/filament/mjrfilament.h"
+#include "render/filament/mjrfilament_cpp.h"
 
 namespace mujoco {
 
@@ -50,7 +51,7 @@ class SceneBridge {
   void SetDrawTextFunction(DrawTextAtFn fn);
 
   // Returns the managed scene.
-  mjrScene* GetScene() const;
+  mjrfScene* GetScene() const;
   mjrCamera GetCamera() const;
 
   SceneBridge(const SceneBridge&) = delete;
@@ -64,11 +65,12 @@ class SceneBridge {
 
   mjrfContext* ctx_ = nullptr;
   std::unique_ptr<ModelObjects> model_objects_;
+  std::unique_ptr<SceneObjects> scene_objects_;
   std::unique_ptr<LightManager> light_manager_;
   mjrCamera camera_;
   DrawTextAtFn draw_text_callback_;
-  UniquePtr<mjrScene> scene_{nullptr, nullptr};
-  std::vector<UniquePtr<mjrRenderable>> renderables_;
+  UniquePtr<mjrfScene> scene_{nullptr, nullptr};
+  std::vector<UniquePtr<mjrfRenderable>> renderables_;
   filament::math::mat4 clip_from_world_;
 };
 

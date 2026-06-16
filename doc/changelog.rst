@@ -7,15 +7,30 @@ Upcoming version (not yet released)
 
 General
 ^^^^^^^
-- Improved primal solver convergence under float32. Improvements initially proposed by :github:user:`n3b` in
-  :issue:`2313` and :github:user:`denzeler-nvidia` in :doc:`MJWarp <mjwarp/index>` pull request
-  `1374 <https://github.com/google-deepmind/mujoco_warp/pull/1374>`__.
-- Added :ref:`mjs_makeFlex`, a new C API function equivalent to the :ref:`flexcomp<body-flexcomp>` element for
-  programmatically creating flex objects with auto-generated bodies, joints, and equality constraints. Exposed as
-  ``body.make_flex()`` in Python.
 - Added :ref:`mju_threadpool`, a new function for creating a thread pool on an ``mjData`` instance. When a thread pool
   is initialized, parts of the simulation pipeline, such as collision detection and constraint solving across islands,
   are parallelized. The thread pool is automatically destroyed when the ``mjData`` is freed.
+- Added a unified :ref:`logging API<siError>`:
+
+  - All errors, warnings, and informational messages are now routed through a single :ref:`mjfLogHandler` callback
+    receiving a structured :ref:`mjLogMessage`.
+  - Users can install a custom handler via :ref:`mju_setLogHandler`,
+    configure the default handler's behavior (console/file output, topic filtering) via :ref:`mju_setLogConfig`.
+  - Messages can be emitted via :ref:`mju_info` and :ref:`mju_message`.
+  - New types: :ref:`mjtLogLevel`, :ref:`mjtLogTopic`, :ref:`mjLogMessage`, :ref:`mjLogConfig`.
+  - The legacy callbacks :ref:`mju_user_error` and :ref:`mju_user_warning` are deprecated but remain functional.
+
+- Improved primal solver convergence under float32. Improvements initially proposed by :github:user:`n3b` in
+  :issue:`2313` and :github:user:`denzeler-nvidia` in :doc:`MJWarp <mjwarp/index>` pull request
+  `1374 <https://github.com/google-deepmind/mujoco_warp/pull/1374>`__.
+- The :ref:`CG solver<soAlgorithms>` now uses the Hager-Zhang conjugate direction update instead of the
+  Polak-Ribiere-Plus formula. This improves convergence and leads to a significant speedup under float32.
+- Added :ref:`mjs_makeFlex`, a new C API function equivalent to the :ref:`flexcomp<body-flexcomp>` element for
+  programmatically creating flex objects with auto-generated bodies, joints, and equality constraints. Exposed as
+  ``body.make_flex()`` in Python.
+- Added support for loading 1D flex components from OBJ line segments
+- Significantly improved the quality of coarse convex hulls produced by the :ref:`maxhullvert<asset-mesh-maxhullvert>`
+  attribute by invoking Qhull's `Q9 <http://www.qhull.org/html/qh-optq.htm#Q9>`__ option.
 
   .. admonition:: Breaking API changes
      :class: attention
@@ -39,6 +54,7 @@ General
 Bug fixes
 ^^^^^^^^^
 - Fixed a bug in the ``mjz`` :ref:`decoder <mjpDecoder>` where unnormalized paths would fail to be read.
+- Fixed a bug where the mesh compiler would produce non-unit convex hull polygon normals.
 
 Version 3.9.0 (May 27, 2026)
 ----------------------------

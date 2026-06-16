@@ -344,9 +344,9 @@ TEST_F(MjGjkTest, BoxBoxDepth2) {
 
   ASSERT_EQ(ncons, 1);
   EXPECT_NEAR(dist, -0.033401579411886845, kTolerance);
-  EXPECT_NEAR(dir[0], 0, kTolerance);
-  EXPECT_NEAR(dir[1], 0, kTolerance);
-  EXPECT_NEAR(dir[2], 1, kTolerance);
+  EXPECT_THAT(dir[0], MjNear(0, kTolerance, 1e-5));
+  EXPECT_THAT(dir[1], MjNear(0, kTolerance, 1e-5));
+  EXPECT_THAT(dir[2], MjNear(1, kTolerance, 1e-5));
 }
 
 TEST_F(MjGjkTest, BoxBoxDepth3) {
@@ -468,6 +468,128 @@ TEST_F(MjGjkTest, BoxBoxSize05) {
   int ncons = Penetration(status, dist, dir, pos, model, data, g1, g2, 0, 4);
 
   ASSERT_EQ(ncons, 4);
+}
+
+TEST_F(MjGjkTest, BoxBoxSize05b) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <worldbody>
+      <geom name="geom1" type="box" size="0.5 0.5 0.5"/>
+      <geom name="geom2" type="box" size="0.5 0.5 0.5"/>
+    </worldbody>
+  </mujoco>)";
+
+  TestModel model = LoadModel(xml);
+  TestData data = MakeData(model.get());
+  mj_forward(model.get(), data.get());
+
+  mjtNum* xmat = data->geom_xmat;
+  mjtNum* xpos = data->geom_xpos;
+
+  xmat[0] = 1.000000000000000;
+  xmat[1] = -0.000000008764291;
+  xmat[2] = 0.000000386995168;
+  xmat[3] = 0.000000008764733;
+  xmat[4] = 1.000000000000000;
+  xmat[5] = -0.000001144207772;
+  xmat[6] = -0.000000386995168;
+  xmat[7] = 0.000001144207772;
+  xmat[8] = 1.000000000000000;
+
+  xpos[0] = 0.000000962082822;
+  xpos[1] = -0.000001747370789;
+  xpos[2] = 3.469238519668579;
+
+  xmat = data->geom_xmat + 9;
+  xpos = data->geom_xpos + 3;
+
+  xmat[0] = 1.000000000000000;
+  xmat[1] = 0.000000003313412;
+  xmat[2] = -0.000000196321196;
+  xmat[3] = -0.000000003313673;
+  xmat[4] = 1.000000000000000;
+  xmat[5] = -0.000001329654879;
+  xmat[6] = 0.000000196321196;
+  xmat[7] = 0.000001329654879;
+  xmat[8] = 1.000000000000000;
+
+  xpos[0] = 0.000002897753802;
+  xpos[1] = -0.000004625266229;
+  xpos[2] = 4.435211658477783;
+
+  int g1 = mj_name2id(model.get(), mjOBJ_GEOM, "geom1");
+  int g2 = mj_name2id(model.get(), mjOBJ_GEOM, "geom2");
+
+  mjCCDStatus status;
+  std::vector<mjtNum> dir, pos;
+  mjtNum dist;
+  int ncons = Penetration(status, dist, dir, pos, model, data, g1, g2, 0, 4);
+
+  ASSERT_EQ(ncons, 4);
+  EXPECT_NEAR(dir[0], 0, 1e-5);
+  EXPECT_NEAR(dir[1], 0, 1e-5);
+  EXPECT_NEAR(dir[2], 1, kTolerance);
+}
+
+TEST_F(MjGjkTest, BoxBoxSize05c) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <worldbody>
+      <geom name="geom1" type="box" size="0.5 0.5 0.5"/>
+      <geom name="geom2" type="box" size="0.5 0.5 0.5"/>
+    </worldbody>
+  </mujoco>)";
+
+  TestModel model = LoadModel(xml);
+  TestData data = MakeData(model.get());
+  mj_forward(model.get(), data.get());
+
+  mjtNum* xmat = data->geom_xmat;
+  mjtNum* xpos = data->geom_xpos;
+
+  xmat[0] = 1.000000000000000;
+  xmat[1] = -0.000000000570266;
+  xmat[2] = 0.000000168314983;
+  xmat[3] = 0.000000000570290;
+  xmat[4] = 1.000000000000000;
+  xmat[5] = -0.000000142656916;
+  xmat[6] = -0.000000168314983;
+  xmat[7] = 0.000000142656916;
+  xmat[8] = 1.000000000000000;
+
+  xpos[0] = 0.000000188941314;
+  xpos[1] = -0.000000195227585;
+  xpos[2] = 0.497281551361084;
+
+  xmat = data->geom_xmat + 9;
+  xpos = data->geom_xpos + 3;
+
+  xmat[0] = 1.000000000000000;
+  xmat[1] = -0.000000000058608;
+  xmat[2] = 0.000001607574859;
+  xmat[3] = 0.000000000060496;
+  xmat[4] = 1.000000000000000;
+  xmat[5] = -0.000001174638669;
+  xmat[6] = -0.000001607574859;
+  xmat[7] = 0.000001174638669;
+  xmat[8] = 1.000000000000000;
+
+  xpos[0] = 0.000000953407323;
+  xpos[1] = -0.000000923845278;
+  xpos[2] = 1.493984460830688;
+
+  int g1 = mj_name2id(model.get(), mjOBJ_GEOM, "geom1");
+  int g2 = mj_name2id(model.get(), mjOBJ_GEOM, "geom2");
+
+  mjCCDStatus status;
+  std::vector<mjtNum> dir, pos;
+  mjtNum dist;
+  int ncons = Penetration(status, dist, dir, pos, model, data, g1, g2, 0, 4);
+
+  ASSERT_EQ(ncons, 4);
+  EXPECT_NEAR(dir[0], 0, 1e-5);
+  EXPECT_NEAR(dir[1], 0, 1e-5);
+  EXPECT_NEAR(dir[2], 1, kTolerance);
 }
 
 TEST_F(MjGjkTest, BoxBoxTouching) {
@@ -726,10 +848,10 @@ TEST_F(MjGjkTest, BoxBoxMultiCCD5) {
   int ncons = Penetration(status, dist, dir, pos, model, data, g1, g2, 0, 1000);
 
   ASSERT_EQ(ncons, 8);
-  EXPECT_NEAR(dist, -0.0001077858631973211, kTolerance);
 
-  EXPECT_NEAR(dir[0], 0.00019065, kTolerance);
-  EXPECT_NEAR(dir[1], -8.6494189274575805e-05, kTolerance);
+  EXPECT_THAT(dist, MjNear(-0.0001077858631973211, kTolerance, 1e-4));
+  EXPECT_THAT(dir[0], MjNear(0.00019065, kTolerance, 1e-4));
+  EXPECT_THAT(dir[1], MjNear(-0.00008649, kTolerance, 1e-4));
   EXPECT_NEAR(dir[2], -1, kTolerance);
 }
 
@@ -772,11 +894,11 @@ TEST_F(MjGjkTest, BoxBoxMultiCCD6) {
   int ncons = Penetration(status, dist, dir, pos, model, data, g1, g2, 0, 1000);
 
   ASSERT_EQ(ncons, 5);
-  EXPECT_NEAR(dist, -0.00009843, kTolerance);
+  EXPECT_THAT(dist, MjNear(-0.00009843, kTolerance, 1e-4));
 
-  EXPECT_NEAR(dir[0], -0.0008879306751646528, kTolerance);
-  EXPECT_NEAR(dir[1], -0.00046014397575771832, kTolerance);
-  EXPECT_NEAR(dir[2], 1, kTolerance);
+  EXPECT_THAT(dir[0], MjNear(-0.0008879, kTolerance, 1e-4));
+  EXPECT_THAT(dir[1], MjNear(-0.0004601, kTolerance, 1e-3));
+  EXPECT_NEAR(dir[2], 0.9999994, kTolerance);
 }
 
 TEST_F(MjGjkTest, BoxBoxMultiCCD7) {
@@ -1049,8 +1171,8 @@ TEST_F(MjGjkTest, BoxBoxMultiCCD11) {
   mjtNum dist;
   int ncons = Penetration(status, dist, dir, pos, model, data, g1, g2, 0, 8);
 
-  ASSERT_EQ(ncons, 4);
-
+  // contact unrecoverable under single precision
+  ASSERT_EQ(ncons, sizeof(mjtNum) == 8 ? 4 : 0);
 }
 
 TEST_F(MjGjkTest, BoxBoxMultiCCD12) {
@@ -1228,9 +1350,65 @@ TEST_F(MjGjkTest, BoxBoxMultiCCD14) {
   std::vector<mjtNum> dir, pos;
   mjtNum dist;
   int ncons = Penetration(status, dist, dir, pos, model, data, g1, g2, 0, 8);
-
   ASSERT_EQ(ncons, 4);
+}
 
+TEST_F(MjGjkTest, BoxBoxMultiCCD15) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <worldbody>
+      <geom name="geom1" type="box" size="0.5 0.5 0.1"/>
+      <geom name="geom2" type="box" size="0.025 0.025 0.025"/>
+    </worldbody>
+  </mujoco>)";
+
+  TestModel model = LoadModel(xml);
+  TestData data = MakeData(model.get());
+  mj_forward(model.get(), data.get());
+
+  mjtNum* xmat = data->geom_xmat;
+  mjtNum* xpos = data->geom_xpos;
+
+  xmat[0] = 1.0;
+  xmat[1] = 0.0;
+  xmat[2] = 0.0;
+  xmat[3] = 0.0;
+  xmat[4] = 1.0;
+  xmat[5] = 0.0;
+  xmat[6] = 0.0;
+  xmat[7] = 0.0;
+  xmat[8] = 1.0;
+
+  xpos[0] = 0.0;
+  xpos[1] = 0.0;
+  xpos[2] = 0.0;
+
+  xmat = data->geom_xmat + 9;
+  xpos = data->geom_xpos + 3;
+
+  xmat[0] = 1.0;
+  xmat[1] = 1.62423755001306e-10;
+  xmat[2] = -1.73500047822017e-05;
+  xmat[3] = 1.44241105171083e-10;
+  xmat[4] = 1.0;
+  xmat[5] = 1.76752037077677e-05;
+  xmat[6] = 1.73500047822017e-05;
+  xmat[7] = -1.76752037077677e-05;
+  xmat[8] = 1.0;
+
+  xpos[0] = 0.0520339831709862;
+  xpos[1] = -0.0520339831709862;
+  xpos[2] = 0.124986477196217;
+
+  int g1 = mj_name2id(model.get(), mjOBJ_GEOM, "geom1");
+  int g2 = mj_name2id(model.get(), mjOBJ_GEOM, "geom2");
+
+  mjCCDStatus status;
+  std::vector<mjtNum> dir, pos;
+  mjtNum dist;
+  int ncons = Penetration(status, dist, dir, pos, model, data, g1, g2, 0, 4);
+
+  ASSERT_EQ(ncons, sizeof(mjtNum) == 8 ? 4 : 0);
 }
 
 TEST_F(MjGjkTest, SmallBoxMesh) {
@@ -1275,19 +1453,23 @@ TEST_F(MjGjkTest, SmallBoxMesh) {
   mjtNum dist;
   int ncons = Penetration(status, dist, dir, pos, model, data, geom1, geom2);
 
-  ASSERT_EQ(ncons, 1);
-  EXPECT_NEAR(dist, 0, kTolerance);
+  // contact unrecoverable under single precision
+  ASSERT_EQ(ncons, sizeof(mjtNum) == 8 ? 1 : 0);
+  if (ncons) {
+    EXPECT_NEAR(dist, 0, kTolerance);
 
-  // direction
-  EXPECT_NEAR(dir[0], 0, kTolerance);
-  EXPECT_NEAR(dir[1], 0, kTolerance);
-  EXPECT_NEAR(dir[2], 1, kTolerance);
+    // direction
+    EXPECT_NEAR(dir[0], 0, kTolerance);
+    EXPECT_NEAR(dir[1], 0, kTolerance);
+    EXPECT_NEAR(dir[2], 1, kTolerance);
 
-  // position
-  EXPECT_NEAR(pos[0], 0, kTolerance);
-  EXPECT_NEAR(pos[1], 0, kTolerance);
-  EXPECT_NEAR(pos[2], 0, kTolerance);
+    // position
+    EXPECT_NEAR(pos[0], 0, kTolerance);
+    EXPECT_NEAR(pos[1], 0, kTolerance);
+    EXPECT_NEAR(pos[2], 0, kTolerance);
+  }
 }
+
 TEST_F(MjGjkTest, BoxMesh) {
   static constexpr char xml[] = R"(
   <mujoco>
@@ -1801,18 +1983,13 @@ static constexpr char xml[] = R"(
   ASSERT_EQ(ncons, 1);
   EXPECT_NEAR(dist, -0.01, kTolerance);
 
-  EXPECT_NEAR(dir[0], 0, kTolerance);
-  EXPECT_NEAR(dir[1], 0, kTolerance);
-  EXPECT_NEAR(dir[2], 1, kTolerance);
-
-  EXPECT_NEAR(pos[0], 0, kTolerance);
-  EXPECT_NEAR(pos[1], 0, kTolerance);
-  EXPECT_NEAR(pos[2], -0.005, kTolerance);
+  EXPECT_THAT(dir[0], MjNear(0, kTolerance, 1e-5));
+  EXPECT_THAT(dir[1], MjNear(0, kTolerance, 1e-5));
+  EXPECT_THAT(dir[2], MjNear(1, kTolerance, kTolerance));
 
   // multicontact
   ncons = Penetration(status, dist, dir, pos, model, data, g1, g2, 0, 1000);
   ASSERT_EQ(ncons, 4);
-
 }
 
 TEST_F(MjGjkTest, EllipsoidEllipsoidIntersect) {

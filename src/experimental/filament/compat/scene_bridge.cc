@@ -19,18 +19,19 @@
 #include <utility>
 
 #include <math/TMatHelpers.h>
+#include <math/TVecHelpers.h>
 #include <math/mat4.h>
 #include <math/mathfwd.h>
-#include <math/TVecHelpers.h>
 #include <math/vec3.h>
 #include <math/vec4.h>
 #include <mujoco/mujoco.h>
 #include "experimental/filament/compat/light_manager.h"
 #include "experimental/filament/compat/model_objects.h"
 #include "experimental/filament/compat/scene_geom_util.h"
-#include "experimental/filament/filament_util.h"
-#include "experimental/filament/render_context_filament_cpp.h"
-#include "experimental/filament/render_context_filament.h"
+#include "experimental/filament/compat/scene_objects.h"
+#include "render/filament/mjrfilament.h"
+#include "render/filament/mjrfilament_cpp.h"
+#include "render/filament/support/filament_util.h"
 
 namespace mujoco {
 
@@ -41,12 +42,11 @@ using filament::math::mat4;
 
 SceneBridge::SceneBridge(mjrfContext* ctx, const mjModel* model)
     : ctx_(ctx) {
-  mjrSceneParams params;
-  mjr_defaultSceneParams(&params);
-  params.layer_mask = mjCAT_ALL;
-  params.reflection_layer_mask = mjCAT_DYNAMIC | mjCAT_STATIC;
+  mjrfSceneParams params;
+  mjrf_defaultSceneParams(&params);
   scene_ = CreateScene(ctx_, params);
   model_objects_ = std::make_unique<ModelObjects>(model, ctx_);
+  scene_objects_ = std::make_unique<SceneObjects>(ctx_);
 
   mjrf_configureSceneFromModel(scene_.get(), model);
 
@@ -126,17 +126,18 @@ void SceneBridge::Update(const mjrRect& viewport, const mjvScene* scene) {
     }
 
     if (geom->type == mjGEOM_FLEX || geom->type == mjGEOM_SKIN) {
-      model_objects_->CreateSkinFlexMesh(scene, *geom);
+      scene_objects_->CreateSkinFlexMesh(scene, model_objects_->GetModel(),
+                                         *geom);
     }
 
-    UniquePtr<mjrRenderable> renderable =
-        CreateGeomRenderable(*geom, ctx_, model_objects_.get(), scene->flags);
+    UniquePtr<mjrfRenderable> renderable = CreateGeomRenderable(
+        *geom, ctx_, model_objects_.get(), scene_objects_.get(), scene->flags);
 
     mjrf_addRenderableToScene(scene_.get(), renderable.get());
     renderables_.push_back(std::move(renderable));
   }
 
-  mjrLight* headlight = nullptr;
+  mjrfLight* headlight = nullptr;
   bool headlight_enabled = false;
   for (int i = 0; i < scene->nlight; ++i) {
     const mjvLight& scene_light = scene->lights[i];
@@ -156,7 +157,7 @@ void SceneBridge::Update(const mjrRect& viewport, const mjvScene* scene) {
       mjrf_setLightColor(headlight, scene_light.diffuse);
       mjrf_setLightTransform(headlight, headpos, gazedir);
       continue;
-    } else if (mjrLight* light = light_manager_->GetLight(scene_light.id)) {
+    } else if (mjrfLight* light = light_manager_->GetLight(scene_light.id)) {
       mjrf_setLightColor(light, scene_light.diffuse);
       mjrf_setLightTransform(light, scene_light.pos, scene_light.dir);
     } else {
@@ -186,7 +187,7 @@ void SceneBridge::SetDrawTextFunction(DrawTextAtFn fn) {
   draw_text_callback_ = std::move(fn);
 }
 
-mjrScene* SceneBridge::GetScene() const { return scene_.get(); }
+mjrfScene* SceneBridge::GetScene() const { return scene_.get(); }
 
 mjrCamera SceneBridge::GetCamera() const { return camera_; }
 

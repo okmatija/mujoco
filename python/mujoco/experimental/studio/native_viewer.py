@@ -21,17 +21,19 @@ to use these classes.
 """
 
 import mujoco
-
 from mujoco.experimental.studio import native_viewer_cc as _viewer
 from mujoco.experimental.studio import ux
+from mujoco.experimental.studio import viewer_protocol
+from mujoco.experimental.dear_imgui import dear_imgui as imgui
 
 
-class NativeViewer:
+class NativeViewer(viewer_protocol.Viewer):
   """Simulation-agnostic native viewer for MuJoCo models."""
 
   def __init__(
       self,
       model: mujoco.MjModel,
+      *,
       camera: mujoco.MjvCamera | None = None,
       vis_options: mujoco.MjvOption | None = None,
       perturb: mujoco.MjvPerturb | None = None,
@@ -39,7 +41,7 @@ class NativeViewer:
       title: str = '',
       width: int = 1200,
       height: int = 800,
-      gfx: str = '',
+      gfx: str | None = None,
   ) -> None:
     """Initializes the NativeViewer.
 
@@ -55,12 +57,12 @@ class NativeViewer:
       title: Title of the viewer window.
       width: Initial width of the viewer window.
       height: Initial height of the viewer window.
-      gfx: Graphics mode.
+      gfx: Graphics mode. If None, uses the platform default.
     """
     self.camera = camera or mujoco.MjvCamera()
     self.perturb = perturb or mujoco.MjvPerturb()
     self.vis_options = vis_options or mujoco.MjvOption()
-    self._viewer = _viewer.Viewer(title, width, height, gfx)
+    self._viewer = _viewer.Viewer(title, width, height, gfx or '')
     self._viewer.InitRenderer(model)
     # This class does not own the model but we need to know if the model being
     # rendered has changed, so we store the unique python object id here so we
@@ -73,6 +75,10 @@ class NativeViewer:
       self.render_flags = ux.RenderFlags()
       # Initted to match mujoco/src/engine/engine_vis_init.c
       self.render_flags.flags = [1, 0, 1, 0, 1, 0, 1, 0, 0, 0, 1]
+
+    ctx = self._viewer.GetImGuiContext()
+    imgui.SetCurrentContext(ctx)
+    ux.set_imgui_context(ctx)
 
   def _sync_renderer(self, model: mujoco.MjModel) -> None:
     """Re-initializes the renderer if the model object has changed."""

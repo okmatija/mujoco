@@ -38,6 +38,11 @@
 #include "experimental/platform/ux/interaction.h"
 #include "experimental/platform/ux/picture_gui.h"
 #include "experimental/platform/ux/spec_editor.h"
+#include "experimental/studio/command_palette.h"
+#include "experimental/studio/llm/llm_panel.h"
+#include "experimental/studio/llm/test_runner.h"
+#include "experimental/studio/llm/ui_agent.h"
+#include "experimental/studio/ui_capture.h"
 
 namespace mujoco::studio {
 
@@ -61,9 +66,18 @@ class App {
 
     // The application title shown in the window title bar.
     std::string title = "MuJoCo Studio";
+
+    // If non-empty, the app runs to capture a single screenshot: once
+    // `screenshot_frame` frames have been rendered (giving the model and GUI
+    // time to settle), the full window framebuffer is written to this path as
+    // a binary PPM (P6) and the app exits. Requires a headless graphics mode
+    // so that the framebuffer is read back into CPU memory.
+    std::string screenshot_path;
+    int screenshot_frame = 30;
   };
 
   explicit App(Config config);
+  ~App();
 
   // Loads an empty mjModel.
   void InitEmptyModel();
@@ -89,6 +103,16 @@ class App {
 
   // Renders everything (e.g. the simulation and the GUI).
   void Render();
+
+  // Scripted, headless UI capture for GIFs (defined in ui_capture.cc). Begin a
+  // capture, then per frame call BuildGui()/Render()/SaveCaptureFrame() while
+  // capture_active() is true.
+  void StartCapture(const std::string& out_dir, int total_frames,
+                    CaptureScript script = CaptureScript::kTools,
+                    const std::string& llm_prompt = "",
+                    const std::string& llm_model = "");
+  bool capture_active() const { return capture_.active; }
+  bool SaveCaptureFrame();
 
  private:
   // The kind of model that is currently loaded.
@@ -129,22 +153,30 @@ class App {
 
     // Windows.
     bool help = false;
-    bool stats = false;
+    // When true, the sim/model metrics are pinned in the status bar (toggled by
+    // the stats icon at the bottom-right, or F2). Default off.
+    bool stats_in_statusbar = false;
     bool profiler = false;
     bool picture_in_picture = false;
+    bool agent_settings = false;  // the "/settings" window.
     bool options_panel = true;
-    bool inspector_panel = true;
     bool full_screen = false;
     bool style_editor = false;
     bool imgui_demo = false;
     bool implot_demo = false;
     float editor_split = -1;
     float explorer_split = -1;
+    // Bottom edge (in screen space) of the top transport overlay, recorded each
+    // frame so the command palette can sit just below it.
+    float top_overlay_bottom = 0;
 
     // Controls.
     bool perturb_active = false;
     int speed_index = 0;
     float cam_speed = 0.0f;
+    // The frame-history scrubber is merged into the top overlay and hidden
+    // behind a toggle; this tracks whether it is currently expanded.
+    bool scrubber_expanded = false;
 
     // Cached data.
     float expected_label_width = 0;
@@ -217,12 +249,57 @@ class App {
   void SetupTheme(platform::GuiTheme theme);
 
   void MainMenuGui();
+  void GraphicsModeMenu();
+  // The "/settings" window: agent model selection + test-engine playback knobs.
+  void AgentSettingsGui();
   void ToolBarGui();
-  void StatusBarGui();
   void HelpGui();
   void FileDialogGui();
-  void ModelOptionsGui();
-  void DataInspectorGui();
+
+  // A floating tool window surfaced as a rail button and a command-palette
+  // entry. Registering one is just appending {icon, title, render} to
+  // tool_windows_ (see RegisterToolWindows) -- this is the seam a future Python
+  // binding would use to add windows from script. `title` is reused as the
+  // button tooltip, the window title, and the command-palette name.
+  struct ToolWindow {
+    const char* icon = nullptr;
+    std::string title;
+    std::function<void()> render;
+    std::string description;  // one-line hint for the command palette
+    bool open = false;
+  };
+  void RegisterToolWindows();
+  // Registers the LLM tools (currently just open_tool_window) and their
+  // executor on ui_agent_. Call after RegisterToolWindows so titles exist.
+  void RegisterLlmTools();
+  std::vector<CommandPalette::Command> CollectCommands();
+  // The local "/..." slash commands shown as completions in the command box.
+  std::vector<CommandPalette::Command> CollectSlashCommands();
+  // Opens/closes a registered tool window by its title (used by the capture
+  // script and the command palette).
+  void ToggleToolWindowByName(const std::string& title);
+  // Runs the capture script + draws the synthetic cursor (called from BuildGui).
+  void CaptureStep();
+  // The LLM "ask in the Ctrl+P box" capture timeline (CaptureScript::kLlm).
+  void CaptureStepLlm();
+  // Like CaptureStepLlm but drives Ctrl+P / typing / Enter through the real
+  // input path via the test engine (CaptureScript::kLlmDemo).
+  void CaptureStepLlmDemo();
+
+  // Photoshop-style left rail of square icon buttons, and the floating tool
+  // windows they open.
+  void ToolRailGui(const ImVec4& workspace_rect);
+  void ToolWindowsGui(const ImVec4& workspace_rect);
+  // DCC-style translucent overlay drawn on top of the viewport: a top bar with
+  // the transport controls and the (collapsible) frame-history scrubber.
+  // RailWidth gives the left gutter so overlays don't overlap.
+  void TopOverlayGui(const ImVec4& workspace_rect);
+  // Inline frame-history scrubber controls (oldest/prev/slider/next/current),
+  // drawn inside the top overlay only when the scrubber is expanded.
+  void ScrubberControls();
+  // Bottom status bar, styled like the top menu bar (status text right-aligned).
+  void StatusBarGui();
+  float RailWidth() const;
   void SpecExplorerGui();
   void SpecEditorGui();
 
@@ -258,9 +335,39 @@ class App {
   std::vector<std::string> search_paths_;
   std::vector<std::byte> pixels_;
 
+  // Set each frame by StatusBarGui when the stats icon is hovered; drives the
+  // transient floating stats window (a hover peek). Transient, not persisted.
+  bool show_stats_window_ = false;
+
+  // Auto-screenshot capture (see Config::screenshot_path).
+  std::string screenshot_path_;
+  int screenshot_frame_ = 30;
+  int frame_count_ = 0;
+
   mjvCamera camera_;
   mjvPerturb perturb_;
   mjvOption vis_options_;
+
+  // Registered rail/tool windows and the Ctrl+P command palette.
+  std::vector<ToolWindow> tool_windows_;
+  CommandPalette command_palette_;
+
+  // LLM "ask" support: plain (non-'>') palette input is routed to ui_agent_ and
+  // the reply is rendered in the palette by llm_panel_. The model drives the UI
+  // exclusively through test_runner_ (the ImGui Test Engine), via the
+  // run_ui_program tool. Declared after window_ so it stops before the ImGui
+  // context (owned by the window) is destroyed.
+  TestRunner test_runner_;
+  UiAgent ui_agent_;
+  LlmPanel llm_panel_;
+  // Per-turn grep_source budget so the agent can't get stuck exploring.
+  int grep_calls_ = 0;
+
+  // Capture/GIF state and the on-screen rects the script aims the cursor at
+  // (recorded each frame): rail button centers and open tool-window rects.
+  CaptureState capture_;
+  std::unordered_map<std::string, ImVec2> rail_button_center_;
+  std::unordered_map<std::string, ImVec4> tool_window_rect_;
 
   UiState ui_;
   UiTempState tmp_;

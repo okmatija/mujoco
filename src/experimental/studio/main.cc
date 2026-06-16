@@ -23,16 +23,51 @@
 #include <string_view>
 #include <vector>
 
+#include <cstdio>
+
 #include <absl/flags/flag.h>
 #include <absl/flags/parse.h>
 #include <mujoco/mujoco.h>
 #include "experimental/platform/hal/graphics_mode.h"
 #include "experimental/studio/app.h"
+#include "experimental/studio/llm/llm_claude.h"
 
 ABSL_FLAG(int, window_width, 1400, "Window width");
 ABSL_FLAG(int, window_height, 720, "Window height");
 ABSL_FLAG(std::string, model_file, "", "MuJoCo model file.");
 ABSL_FLAG(std::string, gfx, "", "Graphics API");
+ABSL_FLAG(std::string, screenshot, "",
+          "If set, render headless and write the framebuffer to this path as a "
+          "binary PPM once the model has loaded, then exit.");
+ABSL_FLAG(int, screenshot_frame, 30,
+          "Frame index at which the screenshot is captured.");
+ABSL_FLAG(std::string, capture_gif, "",
+          "If set, render headless and write one framebuffer PPM per frame "
+          "(frame_%04d.ppm) into this directory while running the scripted UI "
+          "capture, then exit. Assemble into a GIF with e.g. ImageMagick.");
+ABSL_FLAG(int, capture_frames, 200, "Number of frames to capture.");
+ABSL_FLAG(std::string, capture_script, "tools",
+          "Which scripted interaction to record: 'tools' (rail/palette window "
+          "toggling) or 'llm' (ask the LLM a question in the Ctrl+P box).");
+ABSL_FLAG(std::string, capture_prompt, "",
+          "For --capture_script=llm: the question typed into the Ctrl+P box "
+          "(defaults to 'open the physics menu').");
+ABSL_FLAG(std::string, capture_prompt_demo, "",
+          "Like --capture_prompt but drives the whole interaction (open the "
+          "Ctrl+P box, type the prompt, press Enter) through the real input "
+          "path via the test engine, for a cooler demo gif.");
+ABSL_FLAG(std::string, capture_model, "",
+          "For the LLM capture scripts: switch the agent to this model first "
+          "(alias 'opus'/'sonnet'/'haiku'/'gemini'/... or a full id). Lets eval "
+          "runs pin a consistent model. Empty = keep the default.");
+ABSL_FLAG(std::string, llm_probe, "",
+          "If set, send this prompt to the real Claude provider (using "
+          "ANTHROPIC_API_KEY) and print the reply, then exit. Headless probe to "
+          "verify the live connection without launching the GUI.");
+ABSL_FLAG(std::string, llm_probe_model, "",
+          "For --llm_probe: switch the model first (alias 'opus'/'sonnet'/"
+          "'haiku' or a full id). Use opus/sonnet to exercise extended "
+          "thinking.");
 
 std::string Resolve(std::string_view path) {
   std::string_view subpath = path.substr(path.find(':') + 1);
@@ -73,7 +108,42 @@ class FileResource {
 };
 
 int main(int argc, char** argv, char** envp) {
+#ifdef _WIN32
+  // Headless runs (screenshots/captures) must never block on a Windows assert
+  // dialog: route assert/abort output to stderr instead of popping a modal box.
+  _set_error_mode(_OUT_TO_STDERR);
+#endif
+
   absl::ParseCommandLine(argc, argv);
+
+  // Headless probe of the live Claude provider (no window/graphics needed).
+  const std::string llm_probe = absl::GetFlag(FLAGS_llm_probe);
+  if (!llm_probe.empty()) {
+    std::string key = mujoco::studio::ClaudeProvider::KeyFromEnv();
+    if (key.empty()) {
+      std::fprintf(stderr, "[llm_probe] ANTHROPIC_API_KEY is not set.\n");
+      return 1;
+    }
+    mujoco::studio::ClaudeProvider provider(std::move(key));
+    if (const std::string m = absl::GetFlag(FLAGS_llm_probe_model); !m.empty()) {
+      const std::string id = provider.SetModel(m);
+      std::fprintf(stderr, "[llm_probe] model: %s\n",
+                   id.empty() ? "(unrecognized, using default)" : id.c_str());
+    }
+    mujoco::studio::LlmResult r = provider.Send(
+        "You are a terse assistant. Answer in one short sentence.",
+        {{"user", llm_probe}}, /*tools=*/{},
+        [](const std::string&, const std::string&) { return std::string(); });
+    if (r.ok) {
+      if (!r.thinking.empty()) {
+        std::fprintf(stderr, "[llm_probe] THINKING: %s\n", r.thinking.c_str());
+      }
+      std::fprintf(stderr, "[llm_probe] OK: %s\n", r.text.c_str());
+      return 0;
+    }
+    std::fprintf(stderr, "[llm_probe] ERROR: %s\n", r.error.c_str());
+    return 2;
+  }
 
   const char* home = std::getenv("HOME");
   const std::string ini_path = std::string(home ? home : ".") + "/.mujoco.ini";
@@ -84,6 +154,10 @@ int main(int argc, char** argv, char** envp) {
   resource_provider.open = [](mjResource* resource) {
     const std::string resolved_path = Resolve(resource->name);
     FileResource* f = new FileResource(resolved_path);
+    if (f->Size() == 0) {
+      delete f;
+      return 0;
+    }
     resource->data = f;
     return f->Size();
   };
@@ -102,6 +176,15 @@ int main(int argc, char** argv, char** envp) {
   mjp_registerResourceProvider(&resource_provider);
 
   std::string gfx = absl::GetFlag(FLAGS_gfx);
+
+  // Screenshot capture reads the framebuffer back from CPU memory, which only
+  // happens in a headless graphics mode. Default to headless OpenGL if the
+  // caller requested a screenshot without specifying a graphics mode.
+  const std::string screenshot = absl::GetFlag(FLAGS_screenshot);
+  const std::string capture_gif = absl::GetFlag(FLAGS_capture_gif);
+  if ((!screenshot.empty() || !capture_gif.empty()) && gfx.empty()) {
+    gfx = "opengl_headless";
+  }
 
   const char* session_type = std::getenv("XDG_SESSION_TYPE");
   const char* wayland_display = std::getenv("WAYLAND_DISPLAY");
@@ -128,6 +211,8 @@ int main(int argc, char** argv, char** envp) {
     .height = height,
     .ini_path = ini_path,
     .gfx_mode = gfx_mode,
+    .screenshot_path = screenshot,
+    .screenshot_frame = absl::GetFlag(FLAGS_screenshot_frame),
   });
 
   // If the model file is not specified, try to load it from the first argument
@@ -138,6 +223,32 @@ int main(int argc, char** argv, char** envp) {
     app.InitEmptyModel();
   } else {
     app.LoadModelFromFile(model_file);
+  }
+
+  // Scripted GIF capture: run the UI script headless, writing one PPM/frame.
+  if (!capture_gif.empty()) {
+    const std::string demo_prompt = absl::GetFlag(FLAGS_capture_prompt_demo);
+    const std::string script = absl::GetFlag(FLAGS_capture_script);
+    mujoco::studio::CaptureScript capture_script;
+    std::string capture_prompt;
+    if (!demo_prompt.empty()) {
+      capture_script = mujoco::studio::CaptureScript::kLlmDemo;
+      capture_prompt = demo_prompt;
+    } else if (script == "llm") {
+      capture_script = mujoco::studio::CaptureScript::kLlm;
+      capture_prompt = absl::GetFlag(FLAGS_capture_prompt);
+    } else {
+      capture_script = mujoco::studio::CaptureScript::kTools;
+    }
+    app.StartCapture(capture_gif, absl::GetFlag(FLAGS_capture_frames),
+                     capture_script, capture_prompt,
+                     absl::GetFlag(FLAGS_capture_model));
+    while (app.Update() && app.capture_active()) {
+      app.BuildGui();
+      app.Render();
+      app.SaveCaptureFrame();
+    }
+    return 0;
   }
 
   while (app.Update()) {

@@ -58,12 +58,11 @@ target_sources(${MUJOCO_PLATFORM_TARGET_NAME}
         ux/spec_editor.h
 )
 
-if(NOT WIN32)
-  target_sources(${MUJOCO_PLATFORM_TARGET_NAME}
-      PUBLIC
-          ux/object_launcher_plugin.cc
-  )
-endif()
+target_sources(${MUJOCO_PLATFORM_TARGET_NAME}
+    PUBLIC
+        ux/object_launcher_plugin.cc
+        ux/xml_editor_plugin.cc
+)
 
 if(APPLE)
     set_source_files_properties(hal/window_osx.mm PROPERTIES
@@ -104,6 +103,7 @@ target_link_libraries(${MUJOCO_PLATFORM_TARGET_NAME}
     dear_imgui_stdlib
     implot
     mujoco::filament
+    mujoco::filament_experimental
     webp
     SDL2::SDL2-static
     ${MUJOCO_PLATFORM_RENDER_DEPS}

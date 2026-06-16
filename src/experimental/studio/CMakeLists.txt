@@ -15,6 +15,7 @@
 cmake_minimum_required(VERSION 3.16)
 
 include(third_party_deps/dear_imgui)
+include(third_party_deps/imgui_test_engine)
 include(third_party_deps/implot)
 include(third_party_deps/opensans)
 include(third_party_deps/font_awesome)
@@ -25,6 +26,31 @@ function(configure_studio_target TARGET_NAME)
         PRIVATE
             app.cc
             app.h
+            command_palette.cc
+            command_palette.h
+            mujoco_logo.h
+            ui_capture.cc
+            ui_capture.h
+            llm/llm_claude.cc
+            llm/llm_claude.h
+            llm/llm_gemini.cc
+            llm/llm_gemini.h
+            llm/llm_mock.h
+            llm/llm_panel.cc
+            llm/llm_panel.h
+            llm/llm_provider.h
+            llm/source_search.cc
+            llm/source_search.h
+            llm/test_runner.cc
+            llm/test_runner.h
+            llm/ui_agent.cc
+            llm/ui_agent.h
+    )
+
+    # Lets the grep_source LLM tool search the Studio sources at runtime.
+    target_compile_definitions(${TARGET_NAME}
+        PRIVATE
+            MUJOCO_STUDIO_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/.."
     )
 
     target_include_directories(${TARGET_NAME}
@@ -42,6 +68,8 @@ function(configure_studio_target TARGET_NAME)
             PROPERTIES
                 VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}"
         )
+        # WinHTTP transport for the Claude provider (llm/llm_claude.cc).
+        target_link_libraries(${TARGET_NAME} PRIVATE winhttp)
     endif()
 
     target_link_libraries(${TARGET_NAME}
@@ -49,6 +77,7 @@ function(configure_studio_target TARGET_NAME)
             absl::flags
             absl::flags_parse
             dear_imgui
+            imgui_test_engine
             implot
             mujoco::mujoco
             mujoco::platform
@@ -82,7 +111,7 @@ function(configure_studio_target TARGET_NAME)
             POST_BUILD
             COMMAND ${CMAKE_COMMAND}
                 -E copy_directory
-                    ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/../src/experimental/filament/assets
+                    ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/../src/render/filament/assets
                     ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/assets
             COMMENT "Copying Filament assets to build directory"
         )
@@ -94,6 +123,15 @@ if(NOT EMSCRIPTEN)
     add_executable(mujoco_studio)
     target_sources(mujoco_studio PRIVATE main.cc)
     configure_studio_target(mujoco_studio)
+    install(
+      TARGETS mujoco_studio
+      RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}" COMPONENT studio
+      BUNDLE DESTINATION "${CMAKE_INSTALL_BINDIR}" COMPONENT studio
+    )
+    install(
+      DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/assets"
+      DESTINATION "${CMAKE_INSTALL_BINDIR}" COMPONENT studio
+    )
 endif()
 
 # WASM Live target.

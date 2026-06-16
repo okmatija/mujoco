@@ -19,37 +19,50 @@
 
 #include <mujoco/mjmodel.h>
 #include <mujoco/mujoco.h>
-#include "experimental/filament/render_context_filament.h"
-#include "experimental/filament/render_context_filament_cpp.h"
+#include "render/filament/mjrfilament.h"
+#include "render/filament/mjrfilament_cpp.h"
 
 namespace mujoco {
 
-// Creates and owns various filament objects based on the mjModel.
+// Creates and owns meshes and textures read from an mjModel.
 class ModelObjects {
  public:
   ModelObjects(const mjModel* model, mjrfContext* ctx);
 
+  // Uploads a new mesh from the model with the given id.
   void UploadMesh(const mjModel* model, int id);
 
+  // Uploads a new texture from the model with the given id.
   void UploadTexture(const mjModel* model, int id);
 
+  // Uploads a new height field from the model with the given id.
   void UploadHeightField(const mjModel* model, int id);
 
-  void CreateSkinFlexMesh(const mjvScene* scene, const mjvGeom& geom);
+  // Returns the mjModel mesh with the given data_id. The data_id is the
+  // mesh_id * 2 of the mesh in the mjModel.
+  const mjrfMesh* GetMesh(int data_id) const;
 
-  // Returns the cached instance of a filament object created from the mjModel.
-  const mjrMesh* GetMesh(int data_id) const;
-  const mjrMesh* GetHeightField(int hfield_id) const;
-  const mjrMesh* GetSkinMesh(int geom_id) const;
-  const mjrMesh* GetFlexMesh(int geom_id) const;
-  const mjrTexture* GetTexture(int tex_id) const;
-  const mjrTexture* GetSkyboxTexture() const;
+  // Returns the mjModel convex hulll mesh with the given data_id. The data_id
+  // is the (mesh_id * 2) + 1 of the mesh in the mjModel.
+  const mjrfMesh* GetConvexHull(int data_id) const;
 
+  // Returns the mjModel height field mesh with the given id.
+  const mjrfMesh* GetHeightField(int hfield_id) const;
+
+  // Returns the mjModel texture with the given id.
+  const mjrfTexture* GetTexture(int tex_id) const;
+
+  // Returns the skybox texture in the mjModel.
+  const mjrfTexture* GetSkyboxTexture() const;
+
+  // Returns the mjModel from which the Model Objects are created.
+  const mjModel* GetModel() const { return model_; }
+
+  // Returns the multipliers used for mapping legacy material properties to
+  // filament material properties.
   float GetSpecularMultiplier() const { return specular_multiplier_; }
   float GetShininessMultiplier() const { return shininess_multiplier_; }
   float GetEmissiveMultiplier() const { return emissive_multiplier_; }
-
-  const mjModel* GetModel() const { return model_; }
 
   ModelObjects(const ModelObjects&) = delete;
   ModelObjects& operator=(const ModelObjects&) = delete;
@@ -57,12 +70,10 @@ class ModelObjects {
  private:
   const mjModel* model_ = nullptr;
   mjrfContext* ctx_ = nullptr;
-  std::unordered_map<int, UniquePtr<mjrMesh>> meshes_;
-  std::unordered_map<int, UniquePtr<mjrMesh>> convex_hulls_;
-  std::unordered_map<int, UniquePtr<mjrMesh>> height_fields_;
-  std::unordered_map<int, UniquePtr<mjrMesh>> skins_;
-  std::unordered_map<int, UniquePtr<mjrMesh>> flexes_;
-  std::unordered_map<int, UniquePtr<mjrTexture>> textures_;
+  std::unordered_map<int, UniquePtr<mjrfMesh>> meshes_;
+  std::unordered_map<int, UniquePtr<mjrfMesh>> convex_hulls_;
+  std::unordered_map<int, UniquePtr<mjrfMesh>> height_fields_;
+  std::unordered_map<int, UniquePtr<mjrfTexture>> textures_;
   float specular_multiplier_ = 0.2f;
   float shininess_multiplier_ = 0.1f;
   float emissive_multiplier_ = 0.3f;

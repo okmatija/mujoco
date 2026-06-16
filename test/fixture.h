@@ -34,8 +34,7 @@
 #include <mujoco/mujoco.h>
 
 extern "C" {
-MJAPI void _mjPRIVATE__set_tls_error_fn(decltype(mju_user_error));
-MJAPI decltype(mju_user_error) _mjPRIVATE__get_tls_error_fn();
+MJAPI mjfLogHandler _mjPRIVATE_setTlsLogHandler(mjfLogHandler handler);
 }
 
 namespace mujoco {
@@ -136,23 +135,22 @@ class MujocoTest : public ::testing::Test {
 template <typename Return, typename... Args>
 auto MjuErrorMessageFrom(Return (*func)(Args...)) {
   thread_local std::jmp_buf current_jmp_buf;
-  thread_local char err_msg[1000];
+  thread_local char err_msg[2048];
 
-  auto* old_error_handler = _mjPRIVATE__get_tls_error_fn();
-  auto* new_error_handler = +[](const char* msg) -> void {
-    std::strncpy(err_msg, msg, sizeof(err_msg));
+  auto new_error_handler = +[](const mjLogMessage* msg) -> void {
+    if (msg->level != mjLOG_ERROR) return;
+    std::snprintf(err_msg, sizeof(err_msg), "%s", msg->subject);
     std::longjmp(current_jmp_buf, 1);
   };
 
-  return [func, old_error_handler,
-          new_error_handler](Args... args) -> std::string {
+  return [func, new_error_handler](Args... args) -> std::string {
+    auto old_handler = _mjPRIVATE_setTlsLogHandler(new_error_handler);
     if (setjmp(current_jmp_buf) == 0) {
       err_msg[0] = '\0';
-      _mjPRIVATE__set_tls_error_fn(new_error_handler);
       func(args...);
     }
 
-    _mjPRIVATE__set_tls_error_fn(old_error_handler);
+    _mjPRIVATE_setTlsLogHandler(old_handler);
     return err_msg;
   };
 }
@@ -182,9 +180,6 @@ std::string SaveAndReadXml(const mjSpec* spec);
 std::vector<mjtNum> GetCtrlNoise(const mjModel* m, int nsteps,
                                  mjtNum ctrlnoise = 0.01);
 
-// Compares all fields of two mjModels.
-// Returns the name of the different field and the max difference.
-mjtNum CompareModel(const mjModel* m1, const mjModel* m2, std::string& field);
 
 // Returns a vector containing the elements of the array.
 template <typename T>

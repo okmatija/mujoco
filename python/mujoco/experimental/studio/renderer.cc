@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "third_party/mujoco/src/experimental/platform/hal/renderer.h"
+#include <mujoco/experimental/platform/hal/renderer.h>
 
 #include <cstddef>
 #include <memory>
@@ -21,7 +21,7 @@
 #include <vector>
 
 #include <mujoco/mujoco.h>
-#include "third_party/mujoco/src/experimental/platform/hal/graphics_mode.h"
+#include <mujoco/experimental/platform/hal/graphics_mode.h>
 #include "structs.h"
 #include <pybind11/eval.h>
 #include <pybind11/pybind11.h>
@@ -36,12 +36,16 @@ class Renderer {
   using GraphicsMode = mujoco::platform::GraphicsMode;
 
   Renderer(const std::string& graphics_mode_str) {
+    py::gil_scoped_release no_gil;
     const GraphicsMode mode = mujoco::platform::GraphicsModeFromString(
         graphics_mode_str, GraphicsMode::FilamentOpenGl);
     impl_ = std::make_unique<RendererImpl>(nullptr, mode);
   }
 
-  void Init(const MjModelWrapper& model) { impl_->Init(model.get()); }
+  void Init(const MjModelWrapper& model) {
+    py::gil_scoped_release no_gil;
+    impl_->Init(model.get());
+  }
 
   pybind11::bytes Render(const MjModelWrapper& model, MjDataWrapper& data,
                          std::optional<MjvPerturbWrapper>& perturb,
@@ -49,10 +53,13 @@ class Renderer {
                          std::optional<MjvOptionWrapper>& vis_option, int width,
                          int height) {
     std::vector<std::byte> pixels(width * height * 3);
-    impl_->Render(
-        model.get(), data.get(), perturb ? perturb.value().get() : nullptr,
-        camera ? camera.value().get() : nullptr,
-        vis_option ? vis_option.value().get() : nullptr, width, height, pixels);
+    {
+      py::gil_scoped_release no_gil;
+      impl_->Render(
+          model.get(), data.get(), perturb ? perturb.value().get() : nullptr,
+          camera ? camera.value().get() : nullptr,
+          vis_option ? vis_option.value().get() : nullptr, width, height, pixels);
+    }
     return pybind11::bytes((const char*)pixels.data(), pixels.size());
   }
 
@@ -69,6 +76,7 @@ class Renderer {
 }  // namespace mujoco::python
 
 PYBIND11_MODULE(renderer, m) {
+  pybind11::module_::import("mujoco._structs");
   pybind11::class_<mujoco::python::Renderer>(m, "Renderer")
       .def(pybind11::init<const std::string&>())
       .def("Init", &mujoco::python::Renderer::Init)

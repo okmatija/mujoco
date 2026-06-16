@@ -36,26 +36,45 @@ namespace mujoco::platform {
 // FontAwesome icon codes.
 static constexpr const char ICON_FA_ADJUST[] = "\xEF\x81\x82";
 static constexpr const char ICON_FA_ARROWS[] = "\xEF\x81\x87";
+static constexpr const char ICON_FA_BAR_CHART[] = "\xEF\x82\x80";
+static constexpr const char ICON_FA_BINOCULARS[] = "\xEF\x87\xA5";
 static constexpr const char ICON_FA_CAMERA[] = "\xEF\x80\xBD";
+static constexpr const char ICON_FA_CARET_DOWN[] = "\xEF\x83\x97";
 static constexpr const char ICON_FA_CARET_LEFT[] = "\xEF\x83\x99";
 static constexpr const char ICON_FA_CARET_RIGHT[] = "\xEF\x83\x9A";
+static constexpr const char ICON_FA_CARET_UP[] = "\xEF\x83\x98";
 static constexpr const char ICON_FA_CHECK_SQUARE_O[] = "\xEF\x81\x9D";
 static constexpr const char ICON_FA_CIRCLE_O[] = "\xEF\x84\x8C";
 static constexpr const char ICON_FA_CIRCLE[] = "\xEF\x84\x91";
+static constexpr const char ICON_FA_CLONE[] = "\xEF\x89\x8D";
+static constexpr const char ICON_FA_COGS[] = "\xEF\x82\x85";
 static constexpr const char ICON_FA_COMMENT[] = "\xEF\x83\xA5";
 static constexpr const char ICON_FA_COPY[] = "\xEF\x83\x85";
+static constexpr const char ICON_FA_CUBE[] = "\xEF\x86\xB2";
 static constexpr const char ICON_FA_DIAMOND[] = "\xEF\x88\x99";
 static constexpr const char ICON_FA_EJECT[] = "\xEF\x81\x92";
+static constexpr const char ICON_FA_EYE[] = "\xEF\x81\xAE";
+static constexpr const char ICON_FA_FAST_BACKWARD[] = "\xEF\x81\x89";
 static constexpr const char ICON_FA_FAST_FORWARD[] = "\xEF\x81\x90";
+static constexpr const char ICON_FA_HISTORY[] = "\xEF\x87\x9A";
+static constexpr const char ICON_FA_LINK[] = "\xEF\x83\x81";
 static constexpr const char ICON_FA_MAGIC[] = "\xEF\x83\x90";
 static constexpr const char ICON_FA_MOON[] = "\xEF\x86\x86";
+static constexpr const char ICON_FA_OBJECT_GROUP[] = "\xEF\x89\x87";
 static constexpr const char ICON_FA_PAUSE[] = "\xEF\x81\x8C";
+static constexpr const char ICON_FA_PENCIL[] = "\xEF\x81\x80";
 static constexpr const char ICON_FA_PLAY[] = "\xEF\x81\x8B";
 static constexpr const char ICON_FA_PLUS[] = "\xEF\x81\xA7";
+static constexpr const char ICON_FA_QUESTION_CIRCLE[] = "\xEF\x81\x99";
 static constexpr const char ICON_FA_REFRESH[] = "\xEF\x80\xA1";
 static constexpr const char ICON_FA_REPEAT[] = "\xEF\x80\x9E";
+static constexpr const char ICON_FA_ROCKET[] = "\xEF\x84\xB5";
+static constexpr const char ICON_FA_RSS[] = "\xEF\x82\x9E";
+static constexpr const char ICON_FA_SITEMAP[] = "\xEF\x83\xA8";
+static constexpr const char ICON_FA_SLIDERS[] = "\xEF\x87\x9E";
 static constexpr const char ICON_FA_SQUARE_O[] = "\xEF\x87\x9B";
 static constexpr const char ICON_FA_SUN[] = "\xEF\x86\x85";
+static constexpr const char ICON_FA_TABLE[] = "\xEF\x83\x8E";
 static constexpr const char ICON_FA_TACHOMETER[] = "\xEF\x83\xA4";
 static constexpr const char ICON_FA_TRASH_CAN[] = "\xEF\x87\xB8";
 static constexpr const char ICON_FA_UNDO[] = "\xEF\x83\xA2";
@@ -427,17 +446,37 @@ bool ImGui_ButtonToggle(const char* label, T* boolean,
   style.Color(ImGuiCol_Button, ImGui::GetStyle().Colors[color]);
   style.Var(ImGuiStyleVar_ButtonTextAlign, ImVec2(0.0f, 0.5f));
 
-  const std::string txt =
-      std::string(" ") +
-      std::string(*boolean ? ICON_FA_CHECK_SQUARE_O : ICON_FA_SQUARE_O) + "  " +
-      label;
-  if (ImGui::Button(txt.c_str(), size)) {
+  // The label is the button text *and* its ImGui id, verbatim -- so the id is
+  // the exact flag name (e.g. "Contact Force"), greppable and addressable as
+  // "**/<label>" or by its numeric id from inspect_ui. We deliberately do NOT
+  // prefix a state-dependent checkbox glyph: a glyph that changed with the
+  // toggle state would mutate the id on every toggle and would force a
+  // "<label>###<label>" duplication to pin it -- which overflows the test
+  // engine's 32-byte DebugLabel for longer names and truncates the label that
+  // inspect_ui shows. On/off is shown by the button fill colour instead.
+  const bool clicked = ImGui::Button(label, size);
+  // Report a checkable/checked status to the test engine (exactly as
+  // ImGui::Checkbox does) so the agent can read this toggle's on/off state in
+  // inspect_ui and SET it idempotently via item_check / item_uncheck, rather
+  // than only blind-flipping it with item_click.
+  ImGuiContext& g = *ImGui::GetCurrentContext();
+  IMGUI_TEST_ENGINE_ITEM_INFO(
+      g.LastItemData.ID, label,
+      g.LastItemData.StatusFlags | ImGuiItemStatusFlags_Checkable |
+          (*boolean ? ImGuiItemStatusFlags_Checked : 0));
+  if (clicked) {
     *boolean = !(*boolean);
     return true;
   }
   return false;
 }
 
+// TODO(matijak): the test engine / LLM agent can't drive this -- it's a boolean
+// toggle rendered as a NoInput SliderInt, so it isn't checkable (item_check N/A),
+// set_int's text path is blocked, and a positional click doesn't cleanly flip it.
+// Make it a real clickable toggle (flip on click + report Checkable/Checked like
+// ImGui_ButtonToggle), or render the call sites (Orthographic, headlight Active)
+// as ImGui_ButtonToggle / ImGui_Checkbox instead.
 template <typename T>
 bool ImGui_SwitchToggle(const char* label, T* boolean,
                         const ImVec2& size = ImVec2(0, 0)) {
@@ -534,6 +573,52 @@ inline bool ImGui_IsChordJustPressed(ImGuiKeyChord chord) {
   return ImGui::IsKeyChordPressed(chord, 0);
 }
 
+// Lowest-level square icon "checkbox": a toggle button drawn from `label` (use
+// a stable "icon###Name" label so it keeps an addressable id while only the icon
+// glyph shows). When `active` it rests in the "active" colour and keeps it on
+// hover (no hover change); when inactive it uses the normal button colours, so
+// it shows the normal hover highlight. Returns true when clicked (the caller
+// flips its own state). `size` is the square side; 0 uses GetFrameHeight(). No
+// tooltip -- add one at the call site if needed.
+inline bool ImGui_IconCheckbox(const char* label, bool active,
+                               float size = 0.0f) {
+  int n = 0;
+  if (active) {
+    const ImVec4 c = ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive);
+    ImGui::PushStyleColor(ImGuiCol_Button, c);
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, c);
+    n = 2;
+  }
+  if (size <= 0.0f) size = ImGui::GetFrameHeight();
+  const bool clicked = ImGui::Button(label, ImVec2(size, size));
+  // Report checkable/checked status to the test engine (as in ImGui_ButtonToggle)
+  // so the agent can read this toggle's state in inspect_ui and SET it
+  // idempotently via item_check / item_uncheck. For the rail panel buttons this
+  // means "open the Physics panel" is a safe item_check rather than a blind
+  // item_click that would CLOSE an already-open panel.
+  ImGuiContext& g = *ImGui::GetCurrentContext();
+  IMGUI_TEST_ENGINE_ITEM_INFO(
+      g.LastItemData.ID, label,
+      g.LastItemData.StatusFlags | ImGuiItemStatusFlags_Checkable |
+          (active ? ImGuiItemStatusFlags_Checked : 0));
+  if (n > 0) {
+    ImGui::PopStyleColor(n);
+  }
+  return clicked;
+}
+
+// A square icon button for an icon rail, for a one-shot action (not a toggle).
+// `label` should be a stable "icon###Name". Returns true when clicked.
+inline bool ImGui_RailButton(const char* label, float size) {
+  return ImGui::Button(label, ImVec2(size, size));
+}
+
+// A rail toggle button -- just a larger icon checkbox (see ImGui_IconCheckbox).
+// Returns true when clicked (the caller flips its own state).
+inline bool ImGui_RailCheckbox(const char* label, bool active, float size) {
+  return ImGui_IconCheckbox(label, active, size);
+}
+
 // Stateful button that displays the given color when active, and shows a
 // semi-transparent hover color (controlled by hover_alpha) when inactive.
 inline bool ImGui_ColorButton(const char* label, bool active, ImColor color,
@@ -593,10 +678,14 @@ inline bool ImGui_ColorButtonEx(const char* label, bool active, ImColor color,
                 s.FrameRounding, corners, s.FrameBorderSize);
   }
 
-  // Draw label centered.
+  // Draw label centered. Only the visible portion (before "##") is drawn, so a
+  // stable "icon###id" label gives the test engine a usable id without showing
+  // the id text. label_size above was likewise measured up to "##".
+  const char* text_end = label;
+  while (*text_end && !(text_end[0] == '#' && text_end[1] == '#')) ++text_end;
   const ImVec2 text_pos(pos.x + (btn_size.x - label_size.x) * 0.5f,
                         pos.y + (btn_size.y - label_size.y) * 0.5f);
-  dl->AddText(text_pos, ImGui::GetColorU32(ImGuiCol_Text), label);
+  dl->AddText(text_pos, ImGui::GetColorU32(ImGuiCol_Text), label, text_end);
 
   return clicked;
 }

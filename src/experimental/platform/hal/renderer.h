@@ -23,10 +23,10 @@
 
 #include <mujoco/mujoco.h>
 #include "experimental/filament/compat/scene_bridge.h"
-#include "experimental/filament/render_context_filament.h"
-#include "experimental/filament/render_context_filament_cpp.h"
 #include "experimental/platform/hal/graphics_mode.h"
 #include "experimental/platform/ux/imgui_bridge.h"
+#include "render/filament/mjrfilament.h"
+#include "render/filament/mjrfilament_cpp.h"
 
 namespace mujoco::platform {
 
@@ -89,6 +89,11 @@ class Renderer {
 
   // Rendering flags.
   mjtByte* GetRenderFlags() { return scene_.flags; }
+
+  // The graphics mode this renderer was created with. Headless modes can't do
+  // the extra offscreen render-to-texture pass that e.g. picture-in-picture
+  // needs, so callers should skip those previews when this is headless.
+  GraphicsMode GetGraphicsMode() const { return gfx_; }
 
   // Returns the current frame rate.
   double GetFps();

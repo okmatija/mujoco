@@ -24,6 +24,7 @@
 // mjvOption, etc. But, some functions take additional arguments as needed.
 
 #include <array>
+#include <string>
 #include <vector>
 
 #include <imgui.h>
@@ -47,26 +48,25 @@ void SetupTheme(GuiTheme theme);
 void RescaleDock(float ratio);
 
 // Configures the ImGui docking module to the standard layout used by Studio.
-// This includes the following named sections:
-//   "ToolBar": fixed size bar spanning the top of the window; for placing
-//       buttons and other controls that are always needed.
-//   "StatusBar": fixed size bar spanning the bottom of the window; for
-//       placing information and controls that are always needed.
-//   "Options": resizable section of the left; designed for GUI elements that
-//       are used to configure the simulation (e.g. PhysicsGui).
-//   "Inspector": resizable section of the right; designed for inspecting
-//       or manipulating mjData elements (e.g. ControlsGui).
-//   "Explorer": secondary tab connected to the Inspector; designed for
-//       displaying the tree of mjSpec elements.
-//   "Stats": resizable section below the options; designed for displaying
-//       basic simulation statistics (e.g. StatsGui); hidden by default.
-//   "Properties": resizable section below the explorer; designed for displaying
-//       properties of mjSpec elements (e.g. BodyPropertiesGui); hidden by
-//       default.
+// A right-hand dock zone (22% of the width) is split off the dock space and each
+// name in `dock_right_windows` is docked into it by default; whatever remains is
+// the central node ("DockCenter"), kept empty and passthrough so the 3D viewport
+// shows behind it.
 //
-// Returns the size and position of the remaining workspace area which can then
-// be used to place additional elements (e.g. floating charts).
-ImVec4 ConfigureDockingLayout();
+// The central node carries ImGuiDockNodeFlags_NoDockingOverCentralNode, so a
+// window can never be dropped *over* the viewport (it would cover it); the user
+// can still dock windows *alongside* it by dragging to an edge, which is how the
+// left/bottom zones are created on demand (an empty dock node is invisible and
+// not a drop target, so those edges are not pre-created). Standard ImGui
+// drag-to-edge / split docking is otherwise enabled.
+//
+// The layout is built once per launch (Studio keeps no .ini), establishing the
+// default split before any window is submitted.
+//
+// Returns the size and position of the central (DockCenter) workspace area,
+// which can then be used to place additional elements (e.g. floating charts).
+ImVec4 ConfigureDockingLayout(
+    const std::vector<std::string>& dock_right_windows = {});
 
 // logarithmically spaced real-time slow-down coefficients (percent)
 // clang-format off
@@ -80,9 +80,16 @@ static constexpr std::array<const char*, 31> kPercentRealTime = {
 
 // UX for controlling the simulation stepping. `speed_index` is an index into
 // kPercentRealTime, an array of available speeds (indices in range [0, 30] map
-// to real-time percentages in range [100%, 0.1%]).
-void StepControlGui(const mjModel* model, StepControl* step_control,
-                    int& speed_index);
+// to real-time percentages in range [100%, 0.1%]). The transport buttons and the
+// speed dial are also available separately (e.g. so a caller can place other
+// controls between them):
+
+// The transport buttons (Normal Pause / Viscous Pause / Play) only, drawn on one
+// row.
+void TransportButtonsGui(StepControl* step_control);
+
+// The simulation-speed dial (combo) only. Pairs with TransportButtonsGui.
+void SpeedControlGui(StepControl* step_control, int& speed_index);
 
 // Sets the simulation speed index and updates the StepControl object.
 void SetSpeedIndex(StepControl* step_control, int& speed_index,

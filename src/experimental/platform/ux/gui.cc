@@ -232,61 +232,51 @@ void RescaleDock(float ratio) {
   }
 }
 
-ImVec4 ConfigureDockingLayout() {
+ImVec4 ConfigureDockingLayout(const std::vector<std::string>& dock_right_windows) {
   ImGuiViewport* viewport = ImGui::GetMainViewport();
-  const float scale = ImGui::GetWindowDpiScale();
-  const float font_scale = ImGui::GetIO().FontGlobalScale;
 
-  const float kOptionsRelWidth = 0.22f;
-  const float kInspectorRelWidth = 0.22f;
-  const float kStatsRelHeight = 0.3f;
-  const float kToolsBarHeight = 36.f * scale * font_scale;
-  const float kStatusBarHeight = 32.f * scale * font_scale;
+  // Width of the right-hand dock zone, as a fraction of the total width.
+  const float kRightRelWidth = 0.22f;
+  // The toolbar is a translucent overlay on the viewport (App::TopOverlayGui),
+  // so no top strip is reserved. The status bar is a real bar pinned to the
+  // bottom (App::StatusBarGui), so reserve a strip the height of one frame for
+  // it; the dockspace fills the area between the menu bar and the status bar.
+  const float kStatusBarHeight = ImGui::GetFrameHeight();
 
-  const ImVec2 dockspace_pos{viewport->WorkPos.x,
-                             viewport->WorkPos.y + kToolsBarHeight};
-  const ImVec2 dockspace_size{
-      viewport->WorkSize.x,
-      viewport->WorkSize.y - kToolsBarHeight - kStatusBarHeight};
+  const ImVec2 dockspace_pos{viewport->WorkPos.x, viewport->WorkPos.y};
+  const ImVec2 dockspace_size{viewport->WorkSize.x,
+                              viewport->WorkSize.y - kStatusBarHeight};
 
   ImGuiID root = ImGui::GetID("Root");
-  const bool first_time = (ImGui::DockBuilderGetNode(root) == nullptr);
+
+  // Rebuild the programmatic layout once per launch. There is no .ini in Studio
+  // (io.IniFilename is null), so every launch starts fresh anyway; this just
+  // establishes the default split before any window is submitted.
+  static bool built = false;
+  const bool first_time = !built;
+  built = true;
 
   if (first_time) {
     ImGui::DockBuilderRemoveNode(root);
     ImGui::DockBuilderAddNode(root, ImGuiDockNodeFlags_DockSpace);
     ImGui::DockBuilderSetNodeSize(root, dockspace_size);
 
-    // Slice up the main dock space.
-    ImGuiID main = root;
+    // Split a right-hand zone off the dock space and default-dock the tool
+    // windows into it; whatever remains is the central node (DockCenter), kept
+    // empty + passthrough so the 3D viewport shows behind it. The other edges
+    // (left/bottom) are not pre-created: an empty dock node is invisible and not
+    // a drop target, so it would serve no purpose -- instead the user creates
+    // those zones on demand by dragging a window to that edge (ImGui shows the
+    // drop preview and splits there). The central node is tab-protected by the
+    // NoDockingOverCentralNode flag on the dock space below, so the viewport can
+    // never be covered, though windows can be docked alongside it.
+    ImGuiID dock_right = 0;
+    ImGui::DockBuilderSplitNode(root, ImGuiDir_Right, kRightRelWidth, &dock_right,
+                                nullptr);
+    for (const std::string& w : dock_right_windows) {
+      ImGui::DockBuilderDockWindow(w.c_str(), dock_right);
+    }
 
-    ImGuiID options = 0;
-    ImGui::DockBuilderSplitNode(main, ImGuiDir_Left, kOptionsRelWidth, &options,
-                                &main);
-
-    ImGuiID inspector = 0;
-    ImGui::DockBuilderSplitNode(main, ImGuiDir_Right, kInspectorRelWidth,
-                                &inspector, &main);
-
-    ImGuiID stats = 0;
-    ImGui::DockBuilderSplitNode(options, ImGuiDir_Down, kStatsRelHeight, &stats,
-                                &options);
-
-    ImGuiID properties = 0;
-    ImGui::DockBuilderSplitNode(inspector, ImGuiDir_Down, kStatsRelHeight,
-                                &properties, &inspector);
-
-    ImGuiID profiler = 0;
-    ImGui::DockBuilderSplitNode(main, ImGuiDir_Right, 0.42f, &profiler, &main);
-
-    ImGui::DockBuilderDockWindow("Dockspace", main);
-    ImGui::DockBuilderDockWindow("Options", options);
-    ImGui::DockBuilderDockWindow("Explorer", inspector);
-    ImGui::DockBuilderDockWindow("Editor", inspector);
-    ImGui::DockBuilderDockWindow("Inspector", inspector);
-    ImGui::DockBuilderDockWindow("Properties", properties);
-    ImGui::DockBuilderDockWindow("Stats", stats);
-    ImGui::DockBuilderDockWindow("Profiler", profiler);
     ImGui::DockBuilderFinish(root);
   }
 
@@ -302,11 +292,6 @@ ImVec4 ConfigureDockingLayout() {
       ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoBringToFrontOnFocus |
       ImGuiWindowFlags_NoNavFocus | ImGuiWindowFlags_NoBackground;
 
-  const ImGuiWindowFlags kFixedFlags =
-      ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoMove |
-      ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoScrollbar |
-      ImGuiWindowFlags_NoDocking;
-
   // Main workspace area in which we can dock other windows.
   {
     platform::ScopedStyle style;
@@ -321,52 +306,21 @@ ImVec4 ConfigureDockingLayout() {
     ImGui::End();
   }
 
-  // Toolbar is fixed at the top.
-  {
-    platform::ScopedStyle style;
-    style.Var(ImGuiStyleVar_WindowBorderSize, 1.0f);
-    style.Var(ImGuiStyleVar_WindowRounding, 0.0f);
-    style.Var(ImGuiStyleVar_WindowMinSize, ImVec2(1, 1));
-    const float toolbar_vpad =
-        std::max(0.f, (kToolsBarHeight - ImGui::GetFrameHeight()) * 0.5f);
-    style.Var(ImGuiStyleVar_WindowPadding, ImVec2(4 * scale, toolbar_vpad));
-    ImGui::SetNextWindowPos(viewport->WorkPos, ImGuiCond_Always);
-    ImGui::SetNextWindowSize(ImVec2(viewport->Size.x, kToolsBarHeight),
-                             ImGuiCond_Always);
-    ImGui::Begin("ToolBar", nullptr, kFixedFlags);
-    ImGui::End();
-  }
-
-  // StatusBar is fixed at the bottom.
-  {
-    platform::ScopedStyle style;
-    style.Var(ImGuiStyleVar_WindowBorderSize, 1.0f);
-    style.Var(ImGuiStyleVar_WindowRounding, 0.0f);
-    style.Var(ImGuiStyleVar_WindowMinSize, ImVec2(1, 1));
-    ImGui::SetNextWindowPos(ImVec2(0, viewport->Size.y - kStatusBarHeight),
-                            ImGuiCond_Always);
-    ImGui::SetNextWindowSize(ImVec2(viewport->Size.x, kStatusBarHeight),
-                             ImGuiCond_Always);
-    ImGui::Begin("StatusBar", nullptr, kFixedFlags);
-    ImGui::End();
-  }
-
   ImGuiDockNode* central = ImGui::DockBuilderGetCentralNode(root);
   if (central) {
     return ImVec4(central->Pos.x, central->Pos.y,
                   central->Size.x, central->Size.y);
   }
-  const int settings_width = dockspace_size.x * kOptionsRelWidth;
-  const int inspector_width = dockspace_size.x * kInspectorRelWidth;
-  const float workspace_x = dockspace_pos.x + settings_width;
+  // Fallback: estimate the central (DockCenter) rect, leaving room for the
+  // right-hand zone.
+  const float workspace_x = dockspace_pos.x;
   const float workspace_y = dockspace_pos.y;
-  const float workspace_w = dockspace_size.x - settings_width - inspector_width;
+  const float workspace_w = dockspace_size.x * (1.0f - kRightRelWidth);
   const float workspace_h = dockspace_size.y;
   return ImVec4(workspace_x, workspace_y, workspace_w, workspace_h);
 }
 
-void StepControlGui(const mjModel* model, StepControl* step_control,
-                    int& speed_index) {
+void TransportButtonsGui(StepControl* step_control) {
   platform::ScopedStyle style;
   style.Var(ImGuiStyleVar_FrameRounding, 8.f * ImGui::GetStyle().FontScaleDpi);
 
@@ -384,7 +338,11 @@ void StepControlGui(const mjModel* model, StepControl* step_control,
       size.x = w * width_scale;
     }
     bool active = step_control->GetPauseState() == target_state;
-    if (ImGui_ColorButtonEx(icon, active, color, corners, size, hover_alpha)) {
+    // Stable, self-describing "icon###<name>" id (the name doubles as tooltip)
+    // so the test engine / agent can recognise and operate these icon buttons.
+    const std::string label = std::string(icon) + "###" + tooltip;
+    if (ImGui_ColorButtonEx(label.c_str(), active, color, corners, size,
+                            hover_alpha)) {
       step_control->SetPauseState(target_state);
     }
     if (!std::string_view(tooltip).empty()) {
@@ -399,11 +357,10 @@ void StepControlGui(const mjModel* model, StepControl* step_control,
               ImDrawFlags_RoundCornersNone, "Viscous Pause", .3f, 1.3f);
   ImGui::SameLine(0.f, 0.f);
   make_button(ICON_FA_PLAY, StepControl::PauseState::kUnpaused, green,
-              ImDrawFlags_RoundCornersRight, "", .3f, 1.6f);
+              ImDrawFlags_RoundCornersRight, "Play", .3f, 1.6f);
+}
 
-  // Speed selection.
-  style.Reset();
-  ImGui::SameLine(0, ImGui::GetFrameHeight() * .6f);
+void SpeedControlGui(StepControl* step_control, int& speed_index) {
   ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,
                       ImVec2(ImGui::GetStyle().FramePadding.x +
                                  5.f * ImGui::GetStyle().FontScaleDpi,
@@ -421,7 +378,7 @@ void StepControlGui(const mjModel* model, StepControl* step_control,
 
   ImGui::SetNextItemWidth(ImGui::CalcTextSize(speed_preview).x +
                           ImGui::GetStyle().FramePadding.x * 2.f);
-  if (ImGui::BeginCombo("##Speed", speed_preview,
+  if (ImGui::BeginCombo("###Speed", speed_preview,
                         ImGuiComboFlags_NoArrowButton)) {
     for (int n = 0; n < kPercentRealTime.size(); n++) {
       if (ImGui::Selectable(kPercentRealTime[n], (speed_index == n))) {
@@ -480,7 +437,7 @@ bool LabelSelectionGui(mjvOption* opts) {
       opts->label == 0 ? std::string(ICON_LABEL) + " Label"
                        : std::string(ICON_LABEL) + " " + kLabelNames[opts->label];
   ImGui::SetNextItemWidth(GetExpectedLabelWidth());
-  if (ImGui::BeginCombo("##Label", label_preview.c_str(),
+  if (ImGui::BeginCombo("###Label", label_preview.c_str(),
                         ImGuiComboFlags_NoArrowButton)) {
     for (int n = 0; n < IM_ARRAYSIZE(kLabelNames); n++) {
       if (ImGui::Selectable(kLabelNames[n], (opts->label == n))) {
@@ -504,7 +461,7 @@ bool FrameSelectionGui(mjvOption* opts) {
       opts->frame == 0 ? std::string(ICON_FRAME) + " Frame"
                        : std::string(ICON_FRAME) + " " + kFrameNames[opts->frame];
   ImGui::SetNextItemWidth(GetExpectedLabelWidth());
-  if (ImGui::BeginCombo("##Frame", frame_preview.c_str(),
+  if (ImGui::BeginCombo("###Frame", frame_preview.c_str(),
                         ImGuiComboFlags_NoArrowButton)) {
     for (int n = 0; n < IM_ARRAYSIZE(kFrameNames); n++) {
       if (ImGui::Selectable(kFrameNames[n], (opts->frame == n))) {
@@ -545,7 +502,8 @@ bool CameraSelectionGui(const mjModel* model, mjData* data, mjvCamera& camera,
   // Copy camera button.
   const float btn_size = ImGui::GetFrameHeight();
   const ImVec2 square_size(btn_size, btn_size);
-  if (ImGui::Button(ICON_COPY_CAMERA, square_size)) {
+  if (ImGui::Button((std::string(ICON_COPY_CAMERA) + "###Copy camera").c_str(),
+                    square_size)) {
     std::string camera_string = CameraToString(data, &camera);
     MaybeSaveToClipboard(camera_string);
   }
@@ -566,7 +524,7 @@ bool CameraSelectionGui(const mjModel* model, mjData* data, mjvCamera& camera,
 
   const std::string preview =
       std::string(ICON_CAMERA) + " " + GetCameraName(model, camera, index);
-  if (ImGui::BeginCombo("##Camera", preview.c_str(),
+  if (ImGui::BeginCombo("###Camera", preview.c_str(),
                         ImGuiComboFlags_NoArrowButton)) {
     if (select(kTumbleCameraIdx, index)) {
       index = SetCamera(model, &camera, kTumbleCameraIdx);

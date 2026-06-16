@@ -1359,6 +1359,36 @@ typedef enum mjtFont_ {           // font type, used at each text operation
   mjFONT_SHADOW,                  // normal font with shadow (for higher contrast)
   mjFONT_BIG                      // big font (for user alerts)
 } mjtFont;
+typedef enum mjrPixelFormat_ {    // pixel format for textures
+  mjPIXEL_FORMAT_UNKNOWN = 0,     // unknown/unspecified
+  mjPIXEL_FORMAT_R8,              // 1 channel, 8 bit
+  mjPIXEL_FORMAT_RGB8,            // 3 channels, 8 bits per channel
+  mjPIXEL_FORMAT_RGBA8,           // 4 channels, 8 bits per channel
+  mjPIXEL_FORMAT_R32F,            // 1 channel, 32 bit float
+  mjPIXEL_FORMAT_DEPTH32F,        // 1 channel, 32 bit float, for depth buffers
+  mjPIXEL_FORMAT_KTX,             // ktx compressed data
+} mjrPixelFormat;
+typedef enum mjrVertexAttributeUsage_ {   // usage/purpose of a vertex attribute
+  mjVERTEX_ATTRIBUTE_USAGE_POSITION = 0,  // vertex position
+  mjVERTEX_ATTRIBUTE_USAGE_NORMAL,        // vertex normal
+  mjVERTEX_ATTRIBUTE_USAGE_TANGENTS,      // vertex tangents
+  mjVERTEX_ATTRIBUTE_USAGE_UV,            // vertex texture coordinates
+  mjVERTEX_ATTRIBUTE_USAGE_COLOR,         // vertex color
+} mjrVertexAttributeUsage;
+typedef enum mjrVertexAttributeType_ {  // data format of a vertex attribute
+  mjVERTEX_ATTRIBUTE_TYPE_FLOAT2 = 0,   // 2D 32-bit float vector
+  mjVERTEX_ATTRIBUTE_TYPE_FLOAT3,       // 3D 32-bit float vector
+  mjVERTEX_ATTRIBUTE_TYPE_FLOAT4,       // 4D 32-bit float vector
+  mjVERTEX_ATTRIBUTE_TYPE_UBYTE4,       // 4D unsigned 8-bit byte vector
+} mjrVertexAttributeType;
+typedef enum mjrIndexType_ {  // data type of index buffer data
+  mjINDEX_TYPE_U16 = 0,       // 16-bit unsigned integer
+  mjINDEX_TYPE_U32,           // 32-bit unsigned integer
+} mjrIndexType;
+typedef enum mjrMeshPrimitiveType_ {    // type of mesh primitive
+  mjMESH_PRIMITIVE_TYPE_TRIANGLES = 0,  // triangles
+  mjMESH_PRIMITIVE_TYPE_LINES,          // lines
+} mjrMeshPrimitiveType;
 struct mjrRect_ {                 // OpenGL rectangle
   int left;                       // left (usually 0)
   int bottom;                     // bottom (usually 0)
@@ -1366,6 +1396,12 @@ struct mjrRect_ {                 // OpenGL rectangle
   int height;                     // height (usually buffer height)
 };
 typedef struct mjrRect_ mjrRect;
+struct mjrVertexAttribute_ {      // vertex attribute format specification
+  const void* bytes;              // vertex data
+  int usage;                      // mjrVertexAttributeUsage; e.g. position, normal, etc.
+  int type;                       // mjrVertexAttributeType; e.g. float3, ubyte4, etc.
+};
+typedef struct mjrVertexAttribute_ mjrVertexAttribute;
 struct mjrContext_ {                // custom OpenGL context
   // parameters copied from mjVisual
   float lineWidth;                  // line width for wireframe rendering
@@ -2583,6 +2619,38 @@ typedef enum mjtSleepState_ {       // sleep state of an object
   mjS_ASLEEP = 0,                   // object is asleep
   mjS_AWAKE  = 1                    // object is awake
 } mjtSleepState;
+typedef enum mjtLogLevel_ {       // log message severity
+  mjLOG_DEBUG       = 0,          // internal engine debug trace (opt-in via topic filtering)
+  mjLOG_INFO,                     // informational (opt-in via topic filtering)
+  mjLOG_WARNING,                  // warning
+  mjLOG_ERROR,                    // error
+} mjtLogLevel;
+typedef enum mjtLogTopic_ {       // log topic identifiers
+  mjTOPIC_NONE     = 0,           // no topic (always passes filtering)
+                                  // INFO topics:
+  mjTOPIC_TIME_STP = 1,           // timing diagnostics (step)
+  mjTOPIC_TIME_CMP = 2,           // timing diagnostics (compile)
+                                  // DEBUG topics:
+  mjTOPIC_SLEEP    = 3,           // sleep/wake events
+
+  mjNTOPIC         = 3            // number of filterable topics
+} mjtLogTopic;
+typedef struct mjLogMessage_ {    // structured log message
+  int level;                      // mjtLogLevel
+  int topic;                      // mjtLogTopic (0 for error/warning/user)
+  char subject[1024];             // message subject (one-liner, printf-formatted)
+  const char* body;               // message body (multi-line detail, or NULL)
+  const char* func;               // __func__ or NULL
+  const char* file;               // __FILE__ or NULL
+  int line;                       // __LINE__ or 0
+  mjtBool timestamp;              // prepend timestamp to output
+} mjLogMessage;
+typedef struct mjLogConfig_ {     // log handler default configuration
+  mjtBool logto_console;          // print to console (default: true)
+  mjtBool logto_file;             // print to log file (default: true)
+  char logfile[1024];             // log file path (default: "MUJOCO_LOG.TXT")
+  int topics;                     // enabled info topic bitmask (default: 0)
+} mjLogConfig;
 typedef enum mjtButton_ {         // mouse button
   mjBUTTON_NONE = 0,              // no button
   mjBUTTON_LEFT,                  // left button
@@ -3459,6 +3527,11 @@ void mjui_render(mjUI* ui, const mjuiState* state, const mjrContext* con);
 void mju_error(const char* msg, ...) mjPRINTFLIKE(1, 2);
 void mju_warning(const char* msg, ...) mjPRINTFLIKE(1, 2);
 void mju_clearHandlers(void);
+mjfLogHandler mju_setLogHandler(mjfLogHandler handler);
+mjLogConfig mju_getLogConfig(void);
+void mju_setLogConfig(mjLogConfig config);
+void mju_info(int topic, const char* msg, ...) mjPRINTFLIKE(2, 3);
+void mju_message(const mjLogMessage* msg);
 void* mju_malloc(size_t size);
 void mju_free(void* ptr);
 void mj_warning(mjData* d, int warning, int info);

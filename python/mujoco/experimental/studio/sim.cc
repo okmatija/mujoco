@@ -15,7 +15,7 @@
 // Python bindings for MuJoCo platform simulation components.
 
 #include <mujoco/mujoco.h>
-#include "third_party/mujoco/src/experimental/platform/sim/step_control.h"
+#include <mujoco/experimental/platform/sim/step_control.h>
 #include "structs.h"
 #include <pybind11/pybind11.h>
 
@@ -24,6 +24,7 @@ namespace py = pybind11;
 using StepControl = mujoco::platform::StepControl;
 
 PYBIND11_MODULE(sim, m) {
+  py::module_::import("mujoco._structs");
   m.doc() = "MuJoCo platform simulation bindings for Link.";
 
   py::enum_<StepControl::Status>(m, "StepStatus")
@@ -47,6 +48,7 @@ PYBIND11_MODULE(sim, m) {
             auto& model = py::cast<mujoco::python::MjModelWrapper&>(model_obj);
             auto& data = py::cast<mujoco::python::MjDataWrapper&>(data_obj);
             if (step_fn.is_none()) {
+              py::gil_scoped_release no_gil;
               return self.Advance(model.get(), data.get());
             } else {
               return self.Advance(

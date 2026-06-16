@@ -56,6 +56,17 @@ class TileSet:
   adr: np.ndarray
   size: int
 
+  def __eq__(self, other) -> bool:
+    if self.__class__ is not other.__class__:
+      return NotImplemented
+    return self.size == other.size and np.array_equal(
+        np.asarray(self.adr), np.asarray(other.adr)
+    )
+
+  def __hash__(self) -> int:
+    adr = np.asarray(self.adr)
+    return hash((self.size, adr.dtype.str, adr.shape, adr.tobytes()))
+
   def tree_flatten(self):
     children = list((getattr(self, k) for k in self.__dataclass_fields__))
     return (children, None)
@@ -93,6 +104,10 @@ class BlockDim:
     update_gradient_JTDAJ_dense: update gradient JTDAJ dense block dimension
       (solver)
     linesearch_iterative: linesearch iterative block dimension (solver)
+    update_gradient_grad: update gradient grad block dimension (solver)
+    solve_beta_accumulate: solve beta accumulate block dimension (solver)
+    solve_search_update_cg: solve search update CG block dimension (solver)
+    solve_init_search_cg: solve init search CG block dimension (solver)
     contact_jac_tiled: contact Jacobian tiled block dimension (solver)
     qderiv_actuator_dense: qderiv actuator dense block dimension (derivative)
     render: render block dimension (render)
@@ -111,10 +126,14 @@ class BlockDim:
   render: int
   segmented_sort: int
   solve_LD_sparse_fused: int
+  solve_beta_accumulate: int
+  solve_init_search_cg: int
+  solve_search_update_cg: int
   update_gradient_JTDAJ_dense: int
   update_gradient_JTDAJ_sparse: int
   update_gradient_cholesky: int
   update_gradient_cholesky_blocked: int
+  update_gradient_grad: int
 
   def tree_flatten(self):
     children = list((getattr(self, k) for k in self.__dataclass_fields__))
@@ -140,11 +159,10 @@ class OptionWarp(PyTreeNode):
   graph_conditional: bool
   graph_mode: GraphMode
   impratio_invsqrt: jax.Array
-  ls_parallel: bool
-  ls_parallel_min_step: float
   run_collision_detection: bool
   sdf_initpoints: int
   sdf_iterations: int
+  sleep_tolerance: jax.Array
 
 class ModelWarp(PyTreeNode):
   """Derived fields from Model."""
@@ -178,6 +196,7 @@ class ModelWarp(PyTreeNode):
   callback: Callback
   cam_projection: np.ndarray
   collision_sensor_adr: np.ndarray
+  dof_length: np.ndarray
   dof_tri_col: np.ndarray
   dof_tri_row: np.ndarray
   eq_connect_adr: np.ndarray
@@ -231,6 +250,7 @@ class ModelWarp(PyTreeNode):
   is_sparse: bool
   jnt_limited_ball_adr: np.ndarray
   jnt_limited_slide_hinge_adr: np.ndarray
+  jtcj_max_pairs: int
   light_bodyid: np.ndarray
   light_targetbodyid: np.ndarray
   mapD2M: np.ndarray
@@ -321,6 +341,7 @@ class ModelWarp(PyTreeNode):
   tree_bodynum: np.ndarray
   tree_dofadr: np.ndarray
   tree_dofnum: np.ndarray
+  tree_sleep_policy: np.ndarray
   wrap_geom_adr: np.ndarray
   wrap_jnt_adr: np.ndarray
   wrap_pulley_scale: np.ndarray
@@ -332,6 +353,8 @@ class DataWarp(PyTreeNode):
   M: jax.Array
   actuator_moment: jax.Array
   actuator_velocity: jax.Array
+  body_awake: jax.Array
+  body_awake_ind: jax.Array
   cacc: jax.Array
   cfrc_ext: jax.Array
   cfrc_int: jax.Array
@@ -353,6 +376,7 @@ class DataWarp(PyTreeNode):
   contact__vert: jax.Array
   contact__worldid: jax.Array
   crb: jax.Array
+  dof_awake_ind: jax.Array
   dof_island: jax.Array
   dof_islandid: jax.Array
   efc__D: jax.Array
@@ -395,6 +419,7 @@ class DataWarp(PyTreeNode):
   iqfrc_smooth: jax.Array
   island_dofadr: jax.Array
   island_efcadr: jax.Array
+  island_idofadr: jax.Array
   island_ne: jax.Array
   island_nefc: jax.Array
   island_nf: jax.Array
@@ -411,6 +436,7 @@ class DataWarp(PyTreeNode):
   naccdmax: int
   nacon: jax.Array
   naconmax: int
+  nbody_awake: jax.Array
   ncollision: jax.Array
   ne: jax.Array
   nefc: jax.Array
@@ -421,6 +447,8 @@ class DataWarp(PyTreeNode):
   njmax_nnz: int
   njmax_pad: int
   nl: jax.Array
+  ntree_awake: jax.Array
+  nv_awake: jax.Array
   nworld: int
   qLD: jax.Array
   qLDiagInv: jax.Array
@@ -434,6 +462,8 @@ class DataWarp(PyTreeNode):
   ten_velocity: jax.Array
   ten_wrapadr: jax.Array
   ten_wrapnum: jax.Array
+  tree_asleep: jax.Array
+  tree_awake: jax.Array
   tree_island: jax.Array
   wrap_obj: jax.Array
   wrap_xpos: jax.Array
@@ -499,6 +529,8 @@ _NDIM = {
         'actuator_length': 2,
         'actuator_moment': 2,
         'actuator_velocity': 2,
+        'body_awake': 2,
+        'body_awake_ind': 2,
         'cacc': 3,
         'cam_xmat': 4,
         'cam_xpos': 3,
@@ -526,6 +558,7 @@ _NDIM = {
         'crb': 3,
         'ctrl': 2,
         'cvel': 3,
+        'dof_awake_ind': 2,
         'dof_island': 2,
         'dof_islandid': 2,
         'efc__D': 2,
@@ -572,6 +605,7 @@ _NDIM = {
         'iqfrc_smooth': 2,
         'island_dofadr': 2,
         'island_efcadr': 2,
+        'island_idofadr': 2,
         'island_ne': 2,
         'island_nefc': 2,
         'island_nf': 2,
@@ -590,6 +624,7 @@ _NDIM = {
         'naccdmax': 0,
         'nacon': 1,
         'naconmax': 0,
+        'nbody_awake': 1,
         'ncollision': 1,
         'ne': 1,
         'nefc': 1,
@@ -600,6 +635,8 @@ _NDIM = {
         'njmax_nnz': 0,
         'njmax_pad': 0,
         'nl': 1,
+        'ntree_awake': 1,
+        'nv_awake': 1,
         'nworld': 0,
         'qLD': 3,
         'qLDiagInv': 2,
@@ -633,6 +670,8 @@ _NDIM = {
         'ten_wrapadr': 2,
         'ten_wrapnum': 2,
         'time': 1,
+        'tree_asleep': 2,
+        'tree_awake': 2,
         'tree_island': 2,
         'wrap_obj': 3,
         'wrap_xpos': 3,
@@ -702,10 +741,14 @@ _NDIM = {
         'block_dim__render': 0,
         'block_dim__segmented_sort': 0,
         'block_dim__solve_LD_sparse_fused': 0,
+        'block_dim__solve_beta_accumulate': 0,
+        'block_dim__solve_init_search_cg': 0,
+        'block_dim__solve_search_update_cg': 0,
         'block_dim__update_gradient_JTDAJ_dense': 0,
         'block_dim__update_gradient_JTDAJ_sparse': 0,
         'block_dim__update_gradient_cholesky': 0,
         'block_dim__update_gradient_cholesky_blocked': 0,
+        'block_dim__update_gradient_grad': 0,
         'body_branch_start': 1,
         'body_branches': 1,
         'body_conaffinity': 1,
@@ -755,6 +798,7 @@ _NDIM = {
         'dof_frictionloss': 2,
         'dof_invweight0': 2,
         'dof_jntid': 1,
+        'dof_length': 1,
         'dof_parentid': 1,
         'dof_solimp': 3,
         'dof_solref': 3,
@@ -866,21 +910,31 @@ _NDIM = {
         'jnt_stiffness': 2,
         'jnt_stiffnesspoly': 3,
         'jnt_type': 1,
+        'jtcj_max_pairs': 0,
         'light_active': 2,
+        'light_ambient': 3,
+        'light_attenuation': 3,
         'light_bodyid': 1,
         'light_castshadow': 2,
+        'light_cutoff': 2,
+        'light_diffuse': 3,
         'light_dir': 3,
         'light_dir0': 3,
+        'light_exponent': 2,
         'light_mode': 1,
         'light_pos': 3,
         'light_pos0': 3,
         'light_poscom0': 3,
+        'light_specular': 3,
         'light_targetbodyid': 1,
         'light_type': 2,
         'mapD2M': 1,
         'mapM2D': 1,
         'mapM2M': 1,
+        'mat_emission': 2,
         'mat_rgba': 3,
+        'mat_shininess': 2,
+        'mat_specular': 2,
         'mat_texid': 3,
         'mat_texrepeat': 3,
         'max_ten_J_rownnz': 0,
@@ -986,13 +1040,12 @@ _NDIM = {
         'opt__integrator': 0,
         'opt__iterations': 0,
         'opt__ls_iterations': 0,
-        'opt__ls_parallel': 0,
-        'opt__ls_parallel_min_step': 0,
         'opt__ls_tolerance': 1,
         'opt__magnetic': 2,
         'opt__run_collision_detection': 0,
         'opt__sdf_initpoints': 0,
         'opt__sdf_iterations': 0,
+        'opt__sleep_tolerance': 1,
         'opt__solver': 0,
         'opt__timestep': 1,
         'opt__tolerance': 1,
@@ -1088,6 +1141,7 @@ _NDIM = {
         'tree_bodynum': 1,
         'tree_dofadr': 1,
         'tree_dofnum': 1,
+        'tree_sleep_policy': 1,
         'wrap_geom_adr': 1,
         'wrap_jnt_adr': 1,
         'wrap_objid': 1,
@@ -1111,13 +1165,12 @@ _NDIM = {
         'integrator': 0,
         'iterations': 0,
         'ls_iterations': 0,
-        'ls_parallel': 0,
-        'ls_parallel_min_step': 0,
         'ls_tolerance': 1,
         'magnetic': 2,
         'run_collision_detection': 0,
         'sdf_initpoints': 0,
         'sdf_iterations': 0,
+        'sleep_tolerance': 1,
         'solver': 0,
         'timestep': 1,
         'tolerance': 1,
@@ -1135,6 +1188,8 @@ _BATCH_DIM = {
         'actuator_length': True,
         'actuator_moment': True,
         'actuator_velocity': True,
+        'body_awake': True,
+        'body_awake_ind': True,
         'cacc': True,
         'cam_xmat': True,
         'cam_xpos': True,
@@ -1162,6 +1217,7 @@ _BATCH_DIM = {
         'crb': True,
         'ctrl': True,
         'cvel': True,
+        'dof_awake_ind': True,
         'dof_island': True,
         'dof_islandid': True,
         'efc__D': True,
@@ -1208,6 +1264,7 @@ _BATCH_DIM = {
         'iqfrc_smooth': True,
         'island_dofadr': True,
         'island_efcadr': True,
+        'island_idofadr': True,
         'island_ne': True,
         'island_nefc': True,
         'island_nf': True,
@@ -1226,6 +1283,7 @@ _BATCH_DIM = {
         'naccdmax': False,
         'nacon': False,
         'naconmax': False,
+        'nbody_awake': True,
         'ncollision': False,
         'ne': True,
         'nefc': True,
@@ -1236,6 +1294,8 @@ _BATCH_DIM = {
         'njmax_nnz': False,
         'njmax_pad': False,
         'nl': True,
+        'ntree_awake': True,
+        'nv_awake': True,
         'nworld': False,
         'qLD': True,
         'qLDiagInv': True,
@@ -1269,6 +1329,8 @@ _BATCH_DIM = {
         'ten_wrapadr': True,
         'ten_wrapnum': True,
         'time': True,
+        'tree_asleep': True,
+        'tree_awake': True,
         'tree_island': True,
         'wrap_obj': True,
         'wrap_xpos': True,
@@ -1338,10 +1400,14 @@ _BATCH_DIM = {
         'block_dim__render': False,
         'block_dim__segmented_sort': False,
         'block_dim__solve_LD_sparse_fused': False,
+        'block_dim__solve_beta_accumulate': False,
+        'block_dim__solve_init_search_cg': False,
+        'block_dim__solve_search_update_cg': False,
         'block_dim__update_gradient_JTDAJ_dense': False,
         'block_dim__update_gradient_JTDAJ_sparse': False,
         'block_dim__update_gradient_cholesky': False,
         'block_dim__update_gradient_cholesky_blocked': False,
+        'block_dim__update_gradient_grad': False,
         'body_branch_start': False,
         'body_branches': False,
         'body_conaffinity': False,
@@ -1391,6 +1457,7 @@ _BATCH_DIM = {
         'dof_frictionloss': True,
         'dof_invweight0': True,
         'dof_jntid': False,
+        'dof_length': False,
         'dof_parentid': False,
         'dof_solimp': True,
         'dof_solref': True,
@@ -1502,21 +1569,31 @@ _BATCH_DIM = {
         'jnt_stiffness': True,
         'jnt_stiffnesspoly': True,
         'jnt_type': False,
+        'jtcj_max_pairs': False,
         'light_active': True,
+        'light_ambient': True,
+        'light_attenuation': True,
         'light_bodyid': False,
         'light_castshadow': True,
+        'light_cutoff': True,
+        'light_diffuse': True,
         'light_dir': True,
         'light_dir0': True,
+        'light_exponent': True,
         'light_mode': False,
         'light_pos': True,
         'light_pos0': True,
         'light_poscom0': True,
+        'light_specular': True,
         'light_targetbodyid': False,
         'light_type': True,
         'mapD2M': False,
         'mapM2D': False,
         'mapM2M': False,
+        'mat_emission': True,
         'mat_rgba': True,
+        'mat_shininess': True,
+        'mat_specular': True,
         'mat_texid': True,
         'mat_texrepeat': True,
         'max_ten_J_rownnz': False,
@@ -1622,13 +1699,12 @@ _BATCH_DIM = {
         'opt__integrator': False,
         'opt__iterations': False,
         'opt__ls_iterations': False,
-        'opt__ls_parallel': False,
-        'opt__ls_parallel_min_step': False,
         'opt__ls_tolerance': True,
         'opt__magnetic': True,
         'opt__run_collision_detection': False,
         'opt__sdf_initpoints': False,
         'opt__sdf_iterations': False,
+        'opt__sleep_tolerance': True,
         'opt__solver': False,
         'opt__timestep': True,
         'opt__tolerance': True,
@@ -1724,6 +1800,7 @@ _BATCH_DIM = {
         'tree_bodynum': False,
         'tree_dofadr': False,
         'tree_dofnum': False,
+        'tree_sleep_policy': False,
         'wrap_geom_adr': False,
         'wrap_jnt_adr': False,
         'wrap_objid': False,
@@ -1747,13 +1824,12 @@ _BATCH_DIM = {
         'integrator': False,
         'iterations': False,
         'ls_iterations': False,
-        'ls_parallel': False,
-        'ls_parallel_min_step': False,
         'ls_tolerance': True,
         'magnetic': True,
         'run_collision_detection': False,
         'sdf_initpoints': False,
         'sdf_iterations': False,
+        'sleep_tolerance': True,
         'solver': False,
         'timestep': True,
         'tolerance': True,
