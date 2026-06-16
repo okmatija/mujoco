@@ -357,9 +357,9 @@ class App {
   // exclusively through test_runner_ (the ImGui Test Engine), via the
   // run_ui_program tool. Declared after window_ so it stops before the ImGui
   // context (owned by the window) is destroyed.
-  TestRunner test_runner_;
-  UiAgent ui_agent_;
-  LlmPanel llm_panel_;
+  agent_imgui::TestRunner test_runner_;
+  agent_imgui::UiAgent ui_agent_;
+  agent_imgui::LlmPanel llm_panel_;
   // Per-turn grep_source budget so the agent can't get stuck exploring.
   int grep_calls_ = 0;
 

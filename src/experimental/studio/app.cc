@@ -52,6 +52,10 @@
 
 namespace mujoco::studio {
 
+// The LLM agent UI lives in the agent_imgui dependency; pull its symbols into
+// scope so the wiring below reads the same as before the extraction.
+using namespace agent_imgui;  // NOLINT(build/namespaces)
+
 using PauseState = platform::StepControl::PauseState;
 
 static void ToggleFlag(mjtByte& flag) { flag = flag ? 0 : 1; }

@@ -119,18 +119,18 @@ int main(int argc, char** argv, char** envp) {
   // Headless probe of the live Claude provider (no window/graphics needed).
   const std::string llm_probe = absl::GetFlag(FLAGS_llm_probe);
   if (!llm_probe.empty()) {
-    std::string key = mujoco::studio::ClaudeProvider::KeyFromEnv();
+    std::string key = agent_imgui::ClaudeProvider::KeyFromEnv();
     if (key.empty()) {
       std::fprintf(stderr, "[llm_probe] ANTHROPIC_API_KEY is not set.\n");
       return 1;
     }
-    mujoco::studio::ClaudeProvider provider(std::move(key));
+    agent_imgui::ClaudeProvider provider(std::move(key));
     if (const std::string m = absl::GetFlag(FLAGS_llm_probe_model); !m.empty()) {
       const std::string id = provider.SetModel(m);
       std::fprintf(stderr, "[llm_probe] model: %s\n",
                    id.empty() ? "(unrecognized, using default)" : id.c_str());
     }
-    mujoco::studio::LlmResult r = provider.Send(
+    agent_imgui::LlmResult r = provider.Send(
         "You are a terse assistant. Answer in one short sentence.",
         {{"user", llm_probe}}, /*tools=*/{},
         [](const std::string&, const std::string&) { return std::string(); });
