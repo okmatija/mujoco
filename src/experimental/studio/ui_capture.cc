@@ -102,8 +102,10 @@ void App::CaptureStepLlm() {
   const int type_frames = (n + kCharsPerFrame - 1) / kCharsPerFrame;
   const int submit = kTypeStart + type_frames + 6;
 
-  // Open the palette and "type" the question a couple of chars per frame.
-  if (f == 8) command_palette_.Open();
+  // Open the palette and "type" the question a couple of chars per frame. Clear
+  // the box right after opening: Open() pre-fills ">" (command mode) for
+  // interactive use, but here we animate typing a plain-text (ask-mode) prompt.
+  if (f == 8) { command_palette_.Open(); command_palette_.SetText(""); }
   if (f >= kTypeStart && f < kTypeStart + type_frames) {
     const int chars = std::min(n, (f - kTypeStart + 1) * kCharsPerFrame);
     command_palette_.SetText(kQuestion.substr(0, chars));
@@ -165,8 +167,10 @@ void App::CaptureStepLlmDemo() {
   const int type_frames = (n + kCharsPerFrame - 1) / kCharsPerFrame;
   const int submit = kTypeStart + type_frames + 8;
 
-  // Open the command palette (the app's Ctrl+Shift+P action).
-  if (f == kOpen) command_palette_.Open();
+  // Open the command palette (the app's Ctrl+Shift+P action). Clear the box
+  // after opening: Open() pre-fills ">" (command mode) for interactive use, but
+  // the capture animates typing a plain-text (ask-mode) prompt.
+  if (f == kOpen) { command_palette_.Open(); command_palette_.SetText(""); }
 
   // Type the prompt into the box a couple of characters per frame.
   if (f >= kTypeStart && f < kTypeStart + type_frames) {

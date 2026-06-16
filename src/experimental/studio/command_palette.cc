@@ -57,8 +57,21 @@ bool CompletionRow(const CommandPalette::Command& cmd, bool selected,
 
 }  // namespace
 
-int CommandPalette::HistoryCallback(ImGuiInputTextCallbackData* data) {
+int CommandPalette::InputTextCallback(ImGuiInputTextCallbackData* data) {
   auto* self = static_cast<CommandPalette*>(data->UserData);
+
+  // CallbackAlways: one-shot after Open() to undo the select-all that focus
+  // applies, so the pre-filled ">" stays put and the cursor sits after it. This
+  // fires on the activation frame, after InputText's select-all, so it wins.
+  if (data->EventFlag == ImGuiInputTextFlags_CallbackAlways) {
+    if (self->init_cursor_end_) {
+      data->CursorPos = data->BufTextLen;
+      data->SelectionStart = data->SelectionEnd = data->CursorPos;
+      self->init_cursor_end_ = false;
+    }
+    return 0;
+  }
+
   // In list modes ('>' commands, '/' slash commands) leave Up/Down for the
   // filtered list navigation below.
   if (data->BufTextLen > 0 && (data->Buf[0] == '>' || data->Buf[0] == '/')) {
@@ -93,7 +106,11 @@ void CommandPalette::Open() {
   selection_ = 0;
   history_pos_ = -1;
   saved_input_.clear();
-  input_[0] = '\0';
+  // Start in '>' command mode so the tool/command list is shown by default; the
+  // cursor is parked after the '>' (see init_cursor_end_) so typing filters it.
+  input_[0] = '>';
+  input_[1] = '\0';
+  init_cursor_end_ = true;
 }
 
 void CommandPalette::OpenWith(const std::string& text) {
@@ -227,8 +244,10 @@ void CommandPalette::Draw(
     const bool entered = ImGui::InputTextWithHint(
         "##cmdinput", "Use > for app commands or / for agent commands", input_,
         sizeof(input_),
-        ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_CallbackHistory,
-        HistoryCallback, this);
+        ImGuiInputTextFlags_EnterReturnsTrue |
+            ImGuiInputTextFlags_CallbackHistory |
+            ImGuiInputTextFlags_CallbackAlways,
+        InputTextCallback, this);
 
     const bool command_mode = (input_[0] == '>');
     const bool slash_mode = (input_[0] == '/');

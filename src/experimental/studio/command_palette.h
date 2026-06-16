@@ -74,6 +74,10 @@ class CommandPalette {
  private:
   bool open_ = false;
   bool focus_input_ = false;
+  // One-shot after Open(): on the frame the input gains focus, move the cursor
+  // to the end and clear the selection so the pre-filled ">" isn't select-all'd
+  // (and thus wiped by the first keystroke).
+  bool init_cursor_end_ = false;
   int selection_ = 0;
   char input_[256] = "";
   ImVec2 center_{0.0f, 0.0f};
@@ -92,7 +96,7 @@ class CommandPalette {
   void SubmitPlain(const std::string& text,
                    const std::function<void(const std::string&)>& on_submit_plain);
 
-  static int HistoryCallback(ImGuiInputTextCallbackData* data);
+  static int InputTextCallback(ImGuiInputTextCallbackData* data);
 };
 
 }  // namespace mujoco::studio
