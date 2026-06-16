@@ -30,7 +30,7 @@
 #include <mujoco/mujoco.h>
 #include "experimental/platform/hal/graphics_mode.h"
 #include "experimental/studio/app.h"
-#include "experimental/studio/llm/llm_claude.h"
+#include "agent_imgui/llm_claude.h"
 
 ABSL_FLAG(int, window_width, 1400, "Window width");
 ABSL_FLAG(int, window_height, 720, "Window height");

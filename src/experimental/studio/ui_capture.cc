@@ -26,7 +26,7 @@
 
 #include <imgui.h>
 
-#include "experimental/studio/llm/llm_mock.h"
+#include "agent_imgui/llm_mock.h"
 
 namespace mujoco::studio {
 

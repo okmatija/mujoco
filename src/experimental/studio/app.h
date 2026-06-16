@@ -39,9 +39,9 @@
 #include "experimental/platform/ux/picture_gui.h"
 #include "experimental/platform/ux/spec_editor.h"
 #include "experimental/studio/command_palette.h"
-#include "experimental/studio/llm/llm_panel.h"
-#include "experimental/studio/llm/test_runner.h"
-#include "experimental/studio/llm/ui_agent.h"
+#include "agent_imgui/llm_panel.h"
+#include "agent_imgui/test_runner.h"
+#include "agent_imgui/ui_agent.h"
 #include "experimental/studio/ui_capture.h"
 
 namespace mujoco::studio {

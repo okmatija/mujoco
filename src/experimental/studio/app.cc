@@ -48,7 +48,7 @@
 #include "experimental/platform/ux/interaction.h"
 #include "experimental/platform/ux/picture_gui.h"
 #include "experimental/platform/ux/plugin.h"
-#include "experimental/studio/llm/source_search.h"
+#include "agent_imgui/source_search.h"
 
 namespace mujoco::studio {
 
