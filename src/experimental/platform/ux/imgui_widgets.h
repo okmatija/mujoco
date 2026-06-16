@@ -454,13 +454,29 @@ bool ImGui_ButtonToggle(const char* label, T* boolean,
   // "<label>###<label>" duplication to pin it -- which overflows the test
   // engine's 32-byte DebugLabel for longer names and truncates the label that
   // inspect_ui shows. On/off is shown by the button fill colour instead.
-  if (ImGui::Button(label, size)) {
+  const bool clicked = ImGui::Button(label, size);
+  // Report a checkable/checked status to the test engine (exactly as
+  // ImGui::Checkbox does) so the agent can read this toggle's on/off state in
+  // inspect_ui and SET it idempotently via item_check / item_uncheck, rather
+  // than only blind-flipping it with item_click.
+  ImGuiContext& g = *ImGui::GetCurrentContext();
+  IMGUI_TEST_ENGINE_ITEM_INFO(
+      g.LastItemData.ID, label,
+      g.LastItemData.StatusFlags | ImGuiItemStatusFlags_Checkable |
+          (*boolean ? ImGuiItemStatusFlags_Checked : 0));
+  if (clicked) {
     *boolean = !(*boolean);
     return true;
   }
   return false;
 }
 
+// TODO(matijak): the test engine / LLM agent can't drive this -- it's a boolean
+// toggle rendered as a NoInput SliderInt, so it isn't checkable (item_check N/A),
+// set_int's text path is blocked, and a positional click doesn't cleanly flip it.
+// Make it a real clickable toggle (flip on click + report Checkable/Checked like
+// ImGui_ButtonToggle), or render the call sites (Orthographic, headlight Active)
+// as ImGui_ButtonToggle / ImGui_Checkbox instead.
 template <typename T>
 bool ImGui_SwitchToggle(const char* label, T* boolean,
                         const ImVec2& size = ImVec2(0, 0)) {
@@ -575,6 +591,16 @@ inline bool ImGui_IconCheckbox(const char* label, bool active,
   }
   if (size <= 0.0f) size = ImGui::GetFrameHeight();
   const bool clicked = ImGui::Button(label, ImVec2(size, size));
+  // Report checkable/checked status to the test engine (as in ImGui_ButtonToggle)
+  // so the agent can read this toggle's state in inspect_ui and SET it
+  // idempotently via item_check / item_uncheck. For the rail panel buttons this
+  // means "open the Physics panel" is a safe item_check rather than a blind
+  // item_click that would CLOSE an already-open panel.
+  ImGuiContext& g = *ImGui::GetCurrentContext();
+  IMGUI_TEST_ENGINE_ITEM_INFO(
+      g.LastItemData.ID, label,
+      g.LastItemData.StatusFlags | ImGuiItemStatusFlags_Checkable |
+          (active ? ImGuiItemStatusFlags_Checked : 0));
   if (n > 0) {
     ImGui::PopStyleColor(n);
   }

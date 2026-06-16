@@ -474,8 +474,15 @@ void TestRunner::DoGather(ImGuiTestContext* ctx,
         const size_t dbl = label.find("##");
         if (dbl != std::string::npos) label = label.substr(0, dbl);
       }
-      lines += std::string("  ") + label + "  [id=" + std::to_string(it->ID) +
-               "]\n";
+      // Show on/off for checkable toggles (flag / visibility-group buttons) so
+      // the agent can see current state and set it with item_check/item_uncheck.
+      const char* state =
+          (it->StatusFlags & ImGuiItemStatusFlags_Checkable)
+              ? ((it->StatusFlags & ImGuiItemStatusFlags_Checked) ? " [on]"
+                                                                  : " [off]")
+              : "";
+      lines += std::string("  ") + label + state + "  [id=" +
+               std::to_string(it->ID) + "]\n";
       ++total;
       // Per-window cap high enough to list a dense panel in full (the Rendering
       // panel alone has ~48 flag toggles); a section cut short here would hide a

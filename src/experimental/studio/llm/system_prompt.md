@@ -39,9 +39,12 @@ re-click one to "make sure" it is open (that would close it).
 Flag/option toggles (a text label on a button that fills with colour when on)
 expose a stable id equal to their exact label text, so reference them as
 `**/<label>` — e.g. the "Contact Force" toggle is `**/Contact Force` (better
-still, use its numeric id from inspect_ui). These are buttons that flip state on
-click, so toggle them with op `item_click` (NOT item_check / item_uncheck, which
-don't work on them).
+still, use its numeric id from inspect_ui). inspect_ui shows each toggle's state
+as `[on]`/`[off]`. To turn one ON use `item_check`, to turn it OFF use
+`item_uncheck` — both are idempotent (they SET the state), so they're the right
+choice when a state is requested and safe to apply to many at once (e.g. "enable
+all groups" = `item_check` each one). `item_click` merely FLIPS the state; use it
+only when a true toggle is intended.
 
 If you ever need a full path instead of a wildcard: a leading `//` is absolute,
 `/` chains levels (== ImGui's id stack), `$$N` encodes a `PushID(int N)` level.
