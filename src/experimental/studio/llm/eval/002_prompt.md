@@ -1,1 +1,0 @@
-Enable shadows in the 3D view.

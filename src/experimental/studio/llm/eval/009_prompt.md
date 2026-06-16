@@ -1,1 +1,0 @@
-Add a light to the head body using the spec editor.
