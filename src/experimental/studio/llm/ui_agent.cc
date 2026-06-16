@@ -195,7 +195,17 @@ void UiAgent::Ask(const std::string& question) {
             (t.role == "user")
                 ? "You"
                 : (t.model.empty() ? "Agent" : ("Agent (" + t.model + ")"));
-        transcript += who + ": " + t.text + "\n\n";
+        if (t.thinking.empty()) {
+          transcript += who + ": " + t.text + "\n\n";
+        } else {
+          // Thoughts come BEFORE the reply: the agent reasons (across the whole
+          // tool-use loop) before producing its final text, and the conversation
+          // UI shows the "Thoughts" section above the reply -- keep the copied
+          // order the same. This also surfaces the reasoning on failed/cancelled
+          // turns, whose visible reply is only "[error] ..."/"[cancelled]".
+          transcript +=
+              who + ":\n[thoughts]\n" + t.thinking + "\n\n" + t.text + "\n\n";
+        }
       }
       std::string msg;
       if (transcript.empty()) {
