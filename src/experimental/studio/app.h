@@ -272,6 +272,9 @@ class App {
   // Registers the LLM tools (currently just open_tool_window) and their
   // executor on ui_agent_. Call after RegisterToolWindows so titles exist.
   void RegisterLlmTools();
+  // Handles the local "/record <label>" command (makes a status-bar replay
+  // button from the agent's recorded ops). Returns true if `text` was consumed.
+  bool HandleRecordCommand(const std::string& text);
   std::vector<CommandPalette::Command> CollectCommands();
   // The local "/..." slash commands shown as completions in the command box.
   std::vector<CommandPalette::Command> CollectSlashCommands();
@@ -362,6 +365,10 @@ class App {
   agent_imgui::LlmPanel llm_panel_;
   // Per-turn grep_source budget so the agent can't get stuck exploring.
   int grep_calls_ = 0;
+
+  // "/record <label>" macros: {button label, recorded ops program}. Each shows
+  // as a replay button on the status bar (App::StatusBarGui).
+  std::vector<std::pair<std::string, std::string>> recorded_macros_;
 
   // Capture/GIF state and the on-screen rects the script aims the cursor at
   // (recorded each frame): rail button centers and open tool-window rects.

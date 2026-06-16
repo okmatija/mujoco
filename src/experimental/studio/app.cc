@@ -1075,7 +1075,11 @@ void App::BuildGui() {
     command_palette_.Draw(
         CollectCommands(), CollectSlashCommands(), palette_rect,
         [this] { llm_panel_.Render(ui_agent_); },
-        [this](const std::string& q) { ui_agent_.Ask(q); });
+        [this](const std::string& q) {
+          // "/record <label>" is handled locally (status-bar replay button);
+          // everything else goes to the agent.
+          if (!HandleRecordCommand(q)) ui_agent_.Ask(q);
+        });
   }
 
   // Scripted GIF capture: advance the script and draw the synthetic cursor.
@@ -1421,6 +1425,7 @@ std::vector<CommandPalette::Command> App::CollectSlashCommands() {
       {"/clear", {}, "Clear the conversation history"},
       {"/copy", {}, "Copy the conversation to the clipboard"},
       {"/model", {}, "Switch or show the active model"},
+      {"/record", {}, "Make a status-bar button that replays the agent's ops"},
       {"/settings", {}, "Open the agent settings window"},
   };
 }
@@ -1546,6 +1551,30 @@ void App::RegisterLlmTools() {
       [](const std::string& text) { ImGui::SetClipboardText(text.c_str()); });
   ui_agent_.set_settings_handler(
       [this] { tmp_.agent_settings = !tmp_.agent_settings; });
+}
+
+// Handles the studio-local "/record <label>" command (not sent to the model):
+// snapshots the ops the agent has run so far into a status-bar replay button,
+// then clears the recording so the next /record captures a fresh sequence.
+// Returns true if `text` was a /record command (and was consumed).
+bool App::HandleRecordCommand(const std::string& text) {
+  size_t b = text.find_first_not_of(" \t");
+  if (b == std::string::npos) return false;
+  const std::string trimmed = text.substr(b);
+  if (trimmed.rfind("/record", 0) != 0) return false;
+  // Extract the label argument (everything after "/record").
+  std::string label = trimmed.substr(std::string("/record").size());
+  const size_t lb = label.find_first_not_of(" \t");
+  const size_t le = label.find_last_not_of(" \t");
+  label = (lb == std::string::npos) ? "" : label.substr(lb, le - lb + 1);
+  if (label.empty()) return true;  // "/record" with no label: ignore, but consume
+
+  std::string ops = test_runner_.GetRecording();
+  if (!ops.empty()) {
+    recorded_macros_.push_back({label, std::move(ops)});
+    test_runner_.ClearRecording();
+  }
+  return true;
 }
 
 void App::SpecExplorerGui() {
@@ -2059,6 +2088,21 @@ void App::StatusBarGui() {
   if (ImGui::Begin("##StatusBar", nullptr, flags)) {
     // Status message on the left.
     ImGui::TextUnformatted(left.c_str());
+
+    // Replay buttons for any "/record <label>" macros, after the status text.
+    for (size_t i = 0; i < recorded_macros_.size(); ++i) {
+      ImGui::SameLine();
+      const std::string id =
+          recorded_macros_[i].first + "###macro" + std::to_string(i);
+      if (ImGui::SmallButton(id.c_str())) {
+        test_runner_.Replay(recorded_macros_[i].second,
+                            agent_imgui::TestRunner::Speed::kNormal);
+      }
+      if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Replay the \"%s\" recording",
+                          recorded_macros_[i].first.c_str());
+      }
+    }
 
     // Right side, right-aligned: the metrics (only when pinned) followed by the
     // stats toggle (the shared icon-checkbox: pressed/"on" frame while pinned).
