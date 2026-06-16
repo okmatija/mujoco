@@ -44,6 +44,11 @@ using ToolExecutor =
     std::function<std::string(const std::string& name,
                               const std::string& json_args)>;
 
+// Optional progress callback, invoked on the worker thread as extended-thinking
+// accumulates across the tool-use loop. Lets a UI show partial reasoning (e.g.
+// the thinking-so-far when the user cancels). `thinking_so_far` is cumulative.
+using ProgressCallback = std::function<void(const std::string& thinking_so_far)>;
+
 // The outcome of a request (after any tool-use round trips).
 struct LlmResult {
   bool ok = false;
@@ -66,7 +71,8 @@ class LlmProvider {
   virtual LlmResult Send(const std::string& system,
                          const std::vector<LlmMessage>& messages,
                          const std::vector<ToolDef>& tools,
-                         const ToolExecutor& exec) = 0;
+                         const ToolExecutor& exec,
+                         const ProgressCallback& on_thinking = {}) = 0;
 
   // Short name for the status line (e.g. "Claude", "mock").
   virtual const char* name() const = 0;

@@ -99,14 +99,24 @@ void UiAgent::Clear() {
 }
 
 void UiAgent::Cancel() {
-  if (!busy_) return;
-  // Drop our handle to the pending result so Poll() ignores it when the worker
-  // finishes (the worker keeps its own shared_ptr, so writing the result stays
-  // safe). Both Cancel() and Poll() run on the UI thread, so there is no race
-  // between them.
+  if (!busy_ || !pending_) {
+    busy_ = false;
+    return;
+  }
+  // Mark cancelled so the worker's guarded executor stops applying actions, and
+  // grab the thinking accumulated so far to show in the cancelled turn.
+  std::string partial;
+  {
+    std::lock_guard<std::mutex> lk(pending_->mu);
+    pending_->cancelled.store(true);
+    partial = pending_->partial_thinking;
+  }
+  // Drop our handle so Poll() ignores the eventual result (the worker keeps its
+  // own shared_ptr, so it stays safe). Both Cancel() and Poll() run on the UI
+  // thread, so there is no race between them.
   pending_.reset();
   busy_ = false;
-  history_.push_back({"assistant", "[cancelled]"});
+  history_.push_back({"assistant", "[cancelled]", partial, provider_->Model()});
 }
 
 std::string UiAgent::SwitchModel(const std::string& arg) {
@@ -257,7 +267,7 @@ void UiAgent::Ask(const std::string& question) {
   if (synchronous_) {
     LlmResult r = provider_->Send(system_, messages, tools_, executor_);
     history_.push_back({"assistant", r.ok ? r.text : ("[error] " + r.error),
-                        r.ok ? r.thinking : "", provider_->Model()});
+                        r.thinking, provider_->Model()});
     busy_ = false;
     return;
   }
@@ -268,8 +278,20 @@ void UiAgent::Ask(const std::string& question) {
   std::string system = system_;
   std::vector<ToolDef> tools = tools_;
   ToolExecutor exec = executor_;
-  std::thread([provider, pending, system, messages, tools, exec] {
-    LlmResult r = provider->Send(system, messages, tools, exec);
+  // Guard the executor: once cancelled, drop any further tool actions so nothing
+  // from this abandoned request touches the UI.
+  ToolExecutor guarded = [exec, pending](const std::string& name,
+                                         const std::string& args) -> std::string {
+    if (pending->cancelled.load()) return "(request cancelled)";
+    return exec ? exec(name, args) : std::string();
+  };
+  // Stream thinking-so-far into the shared state for Cancel() to surface.
+  ProgressCallback on_thinking = [pending](const std::string& thinking) {
+    std::lock_guard<std::mutex> lk(pending->mu);
+    pending->partial_thinking = thinking;
+  };
+  std::thread([provider, pending, system, messages, tools, guarded, on_thinking] {
+    LlmResult r = provider->Send(system, messages, tools, guarded, on_thinking);
     std::lock_guard<std::mutex> lk(pending->mu);
     pending->result = std::move(r);
     pending->done = true;
@@ -283,7 +305,7 @@ void UiAgent::Poll() {
   if (!pending->done) return;
   const LlmResult& r = pending->result;
   history_.push_back({"assistant", r.ok ? r.text : ("[error] " + r.error),
-                      r.ok ? r.thinking : "", provider_->Model()});
+                      r.thinking, provider_->Model()});
   busy_ = false;
   pending_.reset();
 }

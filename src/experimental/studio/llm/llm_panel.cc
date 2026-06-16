@@ -75,11 +75,12 @@ void LlmPanel::Render(UiAgent& agent) {
         ImGui::TextDisabled("Agent");
       }
 
-      // Collapsible extended-thinking section (closed by default), shown only
-      // for assistant turns that actually produced reasoning.
+      // Collapsible extended-thinking section, shown for assistant turns that
+      // produced reasoning. An unframed tree node, closed by default -- open it
+      // manually (this also applies to [error]/[cancelled] turns).
       if (!is_user && !turn.thinking.empty()) {
         ImGui::PushID(i);
-        if (ImGui::CollapsingHeader("Thoughts")) {
+        if (ImGui::TreeNodeEx("Thoughts", ImGuiTreeNodeFlags_NoTreePushOnOpen)) {
           ImGui::PushStyleColor(ImGuiCol_Text,
                                 ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
           ImGui::TextWrapped("%s", turn.thinking.c_str());

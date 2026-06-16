@@ -126,6 +126,12 @@ class UiAgent {
     std::mutex mu;
     bool done = false;
     LlmResult result;
+    // Set on cancel: the worker's tool executor turns into a no-op so no further
+    // actions from this (abandoned) request are applied.
+    std::atomic<bool> cancelled{false};
+    // Extended-thinking accumulated so far, streamed from the worker (under mu)
+    // so Cancel() can surface what the agent was thinking.
+    std::string partial_thinking;
   };
   std::shared_ptr<Pending> pending_;
 };

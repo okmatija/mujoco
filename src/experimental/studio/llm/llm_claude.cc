@@ -434,7 +434,8 @@ bool HttpsPost(const std::string& headers, const std::string& body,
 LlmResult ClaudeProvider::Send(const std::string& system,
                                const std::vector<LlmMessage>& messages,
                                const std::vector<ToolDef>& tools,
-                               const ToolExecutor& exec) {
+                               const ToolExecutor& exec,
+                               const ProgressCallback& on_thinking) {
   LlmResult r;
   if (api_key_.empty()) {
     r.error = "ANTHROPIC_API_KEY is not set.";
@@ -468,18 +469,21 @@ LlmResult ClaudeProvider::Send(const std::string& system,
     std::string response, err;
     if (!HttpsPost(headers, body, status, response, err)) {
       r.error = err;
+      r.thinking = thinking_acc;  // surface reasoning so far on failure
       return r;
     }
     if (status != 200) {
       std::string msg = ExtractErrorMessage(response);
       r.error = "HTTP " + std::to_string(status) +
                 (msg.empty() ? (": " + response) : (": " + msg));
+      r.thinking = thinking_acc;
       return r;
     }
 
     if (const std::string think = ExtractThinkingText(response); !think.empty()) {
       if (!thinking_acc.empty()) thinking_acc += "\n\n";
       thinking_acc += think;
+      if (on_thinking) on_thinking(thinking_acc);  // stream progress to the UI
       if (verbose) {
         std::fprintf(stderr, "\n===== thinking (turn %d) =====\n%s\n", iter,
                      think.c_str());
@@ -499,6 +503,7 @@ LlmResult ClaudeProvider::Send(const std::string& system,
       r.text = ExtractAssistantText(response);
       if (r.text.empty()) {
         r.error = "Empty response from Claude.";
+        r.thinking = thinking_acc;
         return r;
       }
       r.thinking = thinking_acc;
@@ -515,6 +520,7 @@ LlmResult ClaudeProvider::Send(const std::string& system,
     const std::string raw_content = ExtractRawContentArray(response);
     if (raw_content.empty()) {
       r.error = "Could not parse tool_use content.";
+      r.thinking = thinking_acc;
       return r;
     }
     extra += ",{\"role\":\"assistant\",\"content\":" + raw_content + "}";
@@ -541,6 +547,7 @@ LlmResult ClaudeProvider::Send(const std::string& system,
   }
 
   r.error = "Tool-use loop did not converge.";
+  r.thinking = thinking_acc;
   return r;
 }
 
@@ -553,7 +560,8 @@ namespace mujoco::studio {
 LlmResult ClaudeProvider::Send(const std::string& /*system*/,
                                const std::vector<LlmMessage>& /*messages*/,
                                const std::vector<ToolDef>& /*tools*/,
-                               const ToolExecutor& /*exec*/) {
+                               const ToolExecutor& /*exec*/,
+                               const ProgressCallback& /*on_thinking*/) {
   LlmResult r;
   r.error =
       "Claude transport is only implemented for Windows (WinHTTP) in this "

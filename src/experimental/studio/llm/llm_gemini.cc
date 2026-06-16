@@ -379,7 +379,8 @@ bool HttpsPost(const std::string& host, const std::string& path,
 LlmResult GeminiProvider::Send(const std::string& system,
                                const std::vector<LlmMessage>& messages,
                                const std::vector<ToolDef>& tools,
-                               const ToolExecutor& exec) {
+                               const ToolExecutor& exec,
+                               const ProgressCallback& /*on_thinking*/) {
   LlmResult r;
   if (api_key_.empty()) {
     r.error = "GEMINI_API_KEY is not set.";
@@ -500,7 +501,8 @@ namespace mujoco::studio {
 LlmResult GeminiProvider::Send(const std::string& /*system*/,
                                const std::vector<LlmMessage>& /*messages*/,
                                const std::vector<ToolDef>& /*tools*/,
-                               const ToolExecutor& /*exec*/) {
+                               const ToolExecutor& /*exec*/,
+                               const ProgressCallback& /*on_thinking*/) {
   LlmResult r;
   r.error =
       "Gemini transport is only implemented for Windows (WinHTTP) in this "

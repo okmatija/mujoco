@@ -43,7 +43,8 @@ class GeminiProvider : public LlmProvider {
   LlmResult Send(const std::string& system,
                  const std::vector<LlmMessage>& messages,
                  const std::vector<ToolDef>& tools,
-                 const ToolExecutor& exec) override;
+                 const ToolExecutor& exec,
+                 const ProgressCallback& on_thinking = {}) override;
 
   const char* name() const override { return "Gemini"; }
 
