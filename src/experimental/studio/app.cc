@@ -30,12 +30,14 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
 #include <imgui.h>
 #include <implot.h>
 #include <mujoco/mujoco.h>
+#include <mujoco/mjxmacro.h>
 #include "experimental/platform/hal/graphics_mode.h"
 #include "experimental/platform/hal/renderer.h"
 #include "experimental/platform/hal/window.h"
@@ -1436,11 +1438,11 @@ std::vector<CommandPalette::Command> App::CollectCommands() {
 
 std::vector<CommandPalette::Command> App::CollectModelCommands() {
   // The '.' entries: visualization and model/data fields, named as the dotted
-  // code path (e.g. ".mjModel.opt.disableflags.WARMSTART") so fuzzy-completing a
-  // field reads like navigating the struct. Names come from MuJoCo's own tables
-  // (leaf upper-cased, spaces dropped, no enum prefix). Flags show on/off;
-  // selecting or Left/Right toggles. A '*' marks a value that differs from its
-  // default.
+  // code path (e.g. ".mjModel.opt.gravity") so fuzzy-completing a field reads
+  // like navigating the struct. The value column is an editable widget bound to
+  // the field -- a checkbox for booleans, a numeric input (or N-input) for
+  // scalars/vectors -- and a '*' marks a value that differs from its default.
+  // (The solver/integrator enums stay as cyclable text.)
   std::vector<CommandPalette::Command> commands;
 
   // Build a constant-style identifier from a table name: "Convex Hull" -> CONVEXHULL.
@@ -1454,24 +1456,43 @@ std::vector<CommandPalette::Command> App::CollectModelCommands() {
     return out;
   };
 
+  // Appends " *" to a field's display name when its value differs from the
+  // default, so the change shows and typing "*" filters to all changed fields.
+  // The value widget's id uses the unmarked path so editing isn't disrupted when
+  // the marker appears/disappears.
+  auto marked = [](const std::string& path, bool modified) {
+    return modified ? path + " *" : path;
+  };
+
+  // Pushes a boolean field: a checkbox in the value column, plus run/cycle
+  // (Enter / Left-Right), all driven by `toggle`.
+  auto add_flag = [&](const std::string& path, std::function<bool()> get,
+                      std::function<void()> toggle, bool modified) {
+    const std::string id = "###" + path;
+    auto checkbox = [id, get, toggle] {
+      bool b = get();
+      if (ImGui::Checkbox(id.c_str(), &b)) toggle();
+    };
+    commands.push_back({marked(path, modified), toggle, "",
+                        [toggle](int) { toggle(); }, checkbox});
+  };
+
   // Visualization element flags (mjvOption) and render-effect flags (mjvScene).
   // These don't require a loaded model. Column [1] of each table is the default.
   for (int i = 0; i < mjNVISFLAG; ++i) {
-    auto toggle = [this, i] { ToggleFlag(vis_options_.flags[i]); };
-    const bool cur = vis_options_.flags[i] != 0;
-    const bool dflt = mjVISSTRING[i][1][0] == '1';
-    commands.push_back({".mjvOption.flags." + ident(mjVISSTRING[i][0]), toggle,
-                        cur ? "on" : "off", [toggle](int) { toggle(); },
-                        cur != dflt});
+    add_flag(
+        ".mjvOption.flags." + ident(mjVISSTRING[i][0]),
+        [this, i] { return vis_options_.flags[i] != 0; },
+        [this, i] { ToggleFlag(vis_options_.flags[i]); },
+        (vis_options_.flags[i] != 0) != (mjVISSTRING[i][1][0] == '1'));
   }
   const mjtByte* render_flags = renderer_->GetRenderFlags();
   for (int i = 0; i < mjNRNDFLAG; ++i) {
-    auto toggle = [this, i] { ToggleFlag(renderer_->GetRenderFlags()[i]); };
-    const bool cur = render_flags[i] != 0;
-    const bool dflt = mjRNDSTRING[i][1][0] == '1';
-    commands.push_back({".mjvScene.flags." + ident(mjRNDSTRING[i][0]), toggle,
-                        cur ? "on" : "off", [toggle](int) { toggle(); },
-                        cur != dflt});
+    add_flag(
+        ".mjvScene.flags." + ident(mjRNDSTRING[i][0]),
+        [this, i] { return renderer_->GetRenderFlags()[i] != 0; },
+        [this, i] { ToggleFlag(renderer_->GetRenderFlags()[i]); },
+        (render_flags[i] != 0) != (mjRNDSTRING[i][1][0] == '1'));
   }
 
   // The remaining fields live in mjModel; '*' marks a value that differs from
@@ -1484,35 +1505,39 @@ std::vector<CommandPalette::Command> App::CollectModelCommands() {
   mj_defaultOption(&def);
 
   for (int i = 0; i < mjNDISABLE; ++i) {
-    auto toggle = [this, i] { model()->opt.disableflags ^= (1 << i); };
-    const bool cur = (opt.disableflags >> i) & 1;
-    const bool dflt = (def.disableflags >> i) & 1;
-    commands.push_back({".mjModel.opt.disableflags." + ident(mjDISABLESTRING[i]),
-                        toggle, cur ? "on" : "off", [toggle](int) { toggle(); },
-                        cur != dflt});
+    add_flag(
+        ".mjModel.opt.disableflags." + ident(mjDISABLESTRING[i]),
+        [this, i] { return ((model()->opt.disableflags >> i) & 1) != 0; },
+        [this, i] { model()->opt.disableflags ^= (1 << i); },
+        ((opt.disableflags >> i) & 1) != ((def.disableflags >> i) & 1));
   }
   for (int i = 0; i < mjNENABLE; ++i) {
-    auto toggle = [this, i] { model()->opt.enableflags ^= (1 << i); };
-    const bool cur = (opt.enableflags >> i) & 1;
-    const bool dflt = (def.enableflags >> i) & 1;
-    commands.push_back({".mjModel.opt.enableflags." + ident(mjENABLESTRING[i]),
-                        toggle, cur ? "on" : "off", [toggle](int) { toggle(); },
-                        cur != dflt});
+    add_flag(
+        ".mjModel.opt.enableflags." + ident(mjENABLESTRING[i]),
+        [this, i] { return ((model()->opt.enableflags >> i) & 1) != 0; },
+        [this, i] { model()->opt.enableflags ^= (1 << i); },
+        ((opt.enableflags >> i) & 1) != ((def.enableflags >> i) & 1));
   }
 
-  // Solver/integrator enums: Enter advances to the next value; Left/Right cycle
-  // in place. The description shows the current value; '*' marks non-default.
-  auto add_enum = [&](const char* path, int mjOption::*field,
+  // Solver/integrator enums: a combo in the value column (also Enter advances /
+  // Left-Right cycles via `cyc`).
+  auto add_enum = [&](const std::string& path, int mjOption::*field,
                       std::vector<const char*> names, int def_val) {
     const int n = static_cast<int>(names.size());
+    const int cur = model()->opt.*field;
     auto cyc = [this, field, n](int delta) {
       int& v = model()->opt.*field;
       v = ((v + delta) % n + n) % n;
     };
-    const int cur = model()->opt.*field;
-    commands.push_back({path, [cyc] { cyc(1); },
-                        (cur >= 0 && cur < n) ? std::string(names[cur]) : "?",
-                        cyc, cur != def_val});
+    const std::string id = "###" + path;
+    auto combo = [this, field, names, n, id] {
+      int v = model()->opt.*field;
+      if (ImGui::Combo(id.c_str(), &v, names.data(), n)) {
+        model()->opt.*field = v;
+      }
+    };
+    commands.push_back(
+        {marked(path, cur != def_val), [cyc] { cyc(1); }, "", cyc, combo});
   };
   add_enum(".mjModel.opt.integrator", &mjOption::integrator,
            {"Euler", "RK4", "implicit", "implicitfast"}, def.integrator);
@@ -1523,17 +1548,58 @@ std::vector<CommandPalette::Command> App::CollectModelCommands() {
   add_enum(".mjModel.opt.solver", &mjOption::solver, {"PGS", "CG", "Newton"},
            def.solver);
 
-  // A model.vis (mjVisual) field: the camera projection toggle. Example of the
-  // ".mjModel.vis..." path; more mjVisual fields can be added the same way.
-  {
-    auto toggle = [this] {
-      int& v = model()->vis.global.orthographic;
-      v = v ? 0 : 1;
-    };
-    const bool cur = model()->vis.global.orthographic != 0;
-    commands.push_back({".mjModel.vis.global.orthographic", toggle,
-                        cur ? "on" : "off", [toggle](int) { toggle(); }, cur});
-  }
+  // The remaining scalar/vector mjOption fields, generated from the mjxmacro so
+  // the list tracks the struct. Each gets a numeric input bound to the field
+  // (valid this frame -- the command list is rebuilt every frame). The
+  // enum/bitfield ints handled above are skipped.
+  auto add_scalar = [&](const std::string& path, auto* ptr, auto def_val) {
+    using T = std::remove_reference_t<decltype(*ptr)>;
+    const ImGuiDataType dt = std::is_same_v<T, int>     ? ImGuiDataType_S32
+                             : std::is_same_v<T, float> ? ImGuiDataType_Float
+                                                        : ImGuiDataType_Double;
+    const std::string id = "###" + path;
+    commands.push_back(
+        {marked(path, *ptr != def_val), {}, "", {},
+         [id, ptr, dt] { ImGui::InputScalar(id.c_str(), dt, ptr); }});
+  };
+  auto add_vector = [&](const std::string& path, auto* ptr, int n,
+                        const auto* def_ptr) {
+    using T = std::remove_reference_t<decltype(*ptr)>;
+    const ImGuiDataType dt = std::is_same_v<T, int>     ? ImGuiDataType_S32
+                             : std::is_same_v<T, float> ? ImGuiDataType_Float
+                                                        : ImGuiDataType_Double;
+    bool modified = false;
+    for (int k = 0; k < n; ++k) modified |= (ptr[k] != def_ptr[k]);
+    const std::string id = "###" + path;
+    commands.push_back(
+        {marked(path, modified), {}, "", {},
+         [id, ptr, dt, n] { ImGui::InputScalarN(id.c_str(), dt, ptr, n); }});
+  };
+  auto special = [](const char* name) {
+    for (const char* s : {"integrator", "cone", "jacobian", "solver",
+                          "disableflags", "enableflags", "disableactuator"}) {
+      if (std::strcmp(name, s) == 0) return true;
+    }
+    return false;
+  };
+#define X(TYPE, NAME, SZ)                                              \
+  if (!special(#NAME))                                                 \
+    add_scalar(".mjModel.opt." #NAME, &model()->opt.NAME, def.NAME);
+#define XVEC(TYPE, NAME, SZ) \
+  add_vector(".mjModel.opt." #NAME, model()->opt.NAME, SZ, def.NAME);
+  MJOPTION_FIELDS
+#undef X
+#undef XVEC
+
+  // A model.vis (mjVisual) field: the camera projection toggle (boolean).
+  add_flag(
+      ".mjModel.vis.global.orthographic",
+      [this] { return model()->vis.global.orthographic != 0; },
+      [this] {
+        int& v = model()->vis.global.orthographic;
+        v = v ? 0 : 1;
+      },
+      model()->vis.global.orthographic != 0);
   return commands;
 }
 

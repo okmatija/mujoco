@@ -46,8 +46,10 @@ class CommandPalette {
     // for commands backed by a value -- e.g. a flag toggle cycles on/off. Commands
     // without it ignore Left/Right.
     std::function<void(int delta)> cycle;
-    // When true, a '*' is shown by the entry (e.g. value changed from default).
-    bool modified = false;
+    // Optional: draws an editable widget for the value (checkbox, input, ...) in
+    // the value column. When set it supersedes `description` there; the row's
+    // selectable allows it to overlap so the widget receives the clicks.
+    std::function<void()> draw_value;
   };
 
   // How the typed text is matched against command names.

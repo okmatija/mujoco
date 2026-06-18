@@ -164,18 +164,20 @@ float HighlightedName(ImDrawList* dl, ImVec2 pos, const std::string& name,
 // ===========================================================================
 
 // Draws one completion row: a full-width selectable for the background /
-// highlight / click, then a '*' at `marker_x` if modified, then the description
-// at `desc_x` -- both window-local x's so they line up in columns. The
-// description is dimmed, except the literal "on"/"off" which are green/red. If
-// `match_font` is non-null the name is drawn with the matched characters in that
-// bold font (the selectable then draws no label); otherwise the selectable draws
-// the name plainly. Returns which column was clicked this frame (kNone if not
-// clicked): the value column is everything from the description onward, the name
-// column the rest.
+// highlight / click, then the value at `desc_x` (a window-local x so values line
+// up in a column) -- either `draw_value`'s widget or the `description` text
+// (dimmed, except "on"/"off" which are green/red). If `match_font` is non-null
+// the name is drawn with the matched characters in that bold font (the
+// selectable then draws no label); otherwise the selectable draws the name
+// plainly. Returns which column was clicked this frame (kNone if not clicked):
+// the value column is everything from the value onward, the name column the rest.
 RowHit CompletionRow(const CommandPalette::Command& cmd, bool selected,
-                     float marker_x, float desc_x, const std::string& query,
+                     float desc_x, const std::string& query,
                      CommandPalette::SearchMode mode, bool case_insensitive,
                      ImFont* match_font) {
+  // AllowOverlap so an editable value widget (draw_value) drawn on top of the
+  // row's selectable still receives its clicks.
+  const ImGuiSelectableFlags sel_flags = ImGuiSelectableFlags_AllowOverlap;
   bool clicked;
   if (match_font != nullptr) {
     // Match-highlighting path: an empty selectable provides the row background /
@@ -184,7 +186,7 @@ RowHit CompletionRow(const CommandPalette::Command& cmd, bool selected,
     const ImVec2 name_pos = ImGui::GetCursorScreenPos();
     ImGui::PushID(cmd.name.c_str());
     clicked = ImGui::Selectable(
-        "##row", selected, 0,
+        "##row", selected, sel_flags,
         ImVec2(ImGui::GetContentRegionAvail().x, ImGui::GetTextLineHeight()));
     ImGui::PopID();
     const std::vector<bool> hit =
@@ -194,15 +196,17 @@ RowHit CompletionRow(const CommandPalette::Command& cmd, bool selected,
                     ImGui::GetColorU32(ImGuiCol_Text));
   } else {
     // Plain path: the selectable draws the name as its own label.
-    clicked = ImGui::Selectable(cmd.name.c_str(), selected);
+    clicked = ImGui::Selectable(cmd.name.c_str(), selected, sel_flags);
   }
 
-  if (cmd.modified) {
-    ImGui::SameLine(marker_x);
-    ImGui::TextUnformatted("*");
-  }
   float value_x = FLT_MAX;  // screen-x where the value column begins.
-  if (!cmd.description.empty()) {
+  if (cmd.draw_value) {
+    // An editable widget (checkbox / numeric input) fills the value column.
+    ImGui::SameLine(desc_x);
+    value_x = ImGui::GetCursorScreenPos().x;
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    cmd.draw_value();
+  } else if (!cmd.description.empty()) {
     ImGui::SameLine(desc_x);
     value_x = ImGui::GetCursorScreenPos().x;
     if (cmd.description == "on") {
@@ -417,7 +421,7 @@ const CommandPalette::Command* CommandPalette::DrawCompletionList(
   ImFont* match_font =
       (highlight_matches_ && fonts.Size > 1) ? fonts[1] : nullptr;
 
-  // Column layout: '*' marker just past the widest name, descriptions past that.
+  // Column layout: the value column begins just past the widest name.
   const float spacing = ImGui::GetStyle().ItemSpacing.x;
   float name_w = 0.0f;
   for (const Command* command : matches) {
@@ -433,8 +437,7 @@ const CommandPalette::Command* CommandPalette::DrawCompletionList(
     }
     name_w = std::max(name_w, w);
   }
-  const float marker_x = name_w + spacing * 2.0f;
-  const float desc_x = marker_x + ImGui::CalcTextSize("*").x + spacing * 2.0f;
+  const float desc_x = name_w + spacing * 3.0f;
 
   ImGui::Separator();
 
@@ -457,8 +460,8 @@ const CommandPalette::Command* CommandPalette::DrawCompletionList(
       // Only highlight once the user has entered the list (in_list_); before
       // that the selection is invisible but still the Enter target (top match).
       const RowHit hit = CompletionRow(
-          *command, in_list_ && at_selection, marker_x, desc_x, query,
-          search_mode_, case_insensitive_, match_font);
+          *command, in_list_ && at_selection, desc_x, query, search_mode_,
+          case_insensitive_, match_font);
       if (hit != RowHit::kNone) {
         // A click moves the list focus to this row (and refocuses the input so
         // typing keeps working); it never runs or closes the palette. A click on
