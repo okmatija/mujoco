@@ -50,6 +50,13 @@ class CommandPalette {
     // the value column. When set it supersedes `description` there; the row's
     // selectable allows it to overlap so the widget receives the clicks.
     std::function<void()> draw_value;
+    // Optional: restores the value to its default. When set (and `modified`),
+    // a revert button is shown in a column on the right.
+    std::function<void()> reset;
+    // Whether the value differs from its default (gates the revert button).
+    bool modified = false;
+    // The default value as text, shown on a second line of the revert tooltip.
+    std::string default_text;
   };
 
   // How the typed text is matched against command names.

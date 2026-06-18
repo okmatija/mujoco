@@ -1454,17 +1454,36 @@ std::vector<CommandPalette::Command> App::CollectModelCommands() {
     return modified ? path + "*" : path;
   };
 
+  // Formats a scalar value for the revert tooltip ("%g" for floats, plain for
+  // ints).
+  auto numstr = [](auto v) -> std::string {
+    if constexpr (std::is_integral_v<decltype(v)>) {
+      return std::to_string(v);
+    } else {
+      char buf[32];
+      std::snprintf(buf, sizeof(buf), "%g", static_cast<double>(v));
+      return std::string(buf);
+    }
+  };
+
   // Pushes a boolean field: a checkbox in the value column, plus run/cycle
   // (Enter / Left-Right), all driven by `toggle`.
+  // Pushes a boolean field, deriving everything from `get`/`set` and the default
+  // `dflt`: a checkbox value, run/cycle (Enter / Left-Right) toggling, a
+  // revert-to-default button, and the '*' marker.
   auto add_flag = [&](const std::string& path, std::function<bool()> get,
-                      std::function<void()> toggle, bool modified) {
+                      std::function<void(bool)> set, bool dflt) {
+    const bool modified = get() != dflt;
     const std::string id = "###" + path;
-    auto checkbox = [id, get, toggle] {
+    auto toggle = [get, set] { set(!get()); };
+    auto checkbox = [id, get, set] {
       bool b = get();
-      if (ImGui::Checkbox(id.c_str(), &b)) toggle();
+      if (ImGui::Checkbox(id.c_str(), &b)) set(b);
     };
+    auto reset = [set, dflt] { set(dflt); };
     commands.push_back({marked(path, modified), toggle, "",
-                        [toggle](int) { toggle(); }, checkbox});
+                        [toggle](int) { toggle(); }, checkbox, reset, modified,
+                        dflt ? "on" : "off"});
   };
 
   // Visualization element flags (mjvOption) and render-effect flags (mjvScene).
@@ -1473,16 +1492,15 @@ std::vector<CommandPalette::Command> App::CollectModelCommands() {
     add_flag(
         ".mjvOption.flags." + ident(mjVISSTRING[i][0]),
         [this, i] { return vis_options_.flags[i] != 0; },
-        [this, i] { ToggleFlag(vis_options_.flags[i]); },
-        (vis_options_.flags[i] != 0) != (mjVISSTRING[i][1][0] == '1'));
+        [this, i](bool b) { vis_options_.flags[i] = b; },
+        mjVISSTRING[i][1][0] == '1');
   }
-  const mjtByte* render_flags = renderer_->GetRenderFlags();
   for (int i = 0; i < mjNRNDFLAG; ++i) {
     add_flag(
         ".mjvScene.flags." + ident(mjRNDSTRING[i][0]),
         [this, i] { return renderer_->GetRenderFlags()[i] != 0; },
-        [this, i] { ToggleFlag(renderer_->GetRenderFlags()[i]); },
-        (render_flags[i] != 0) != (mjRNDSTRING[i][1][0] == '1'));
+        [this, i](bool b) { renderer_->GetRenderFlags()[i] = b; },
+        mjRNDSTRING[i][1][0] == '1');
   }
 
   // The remaining fields live in mjModel; '*' marks a value that differs from
@@ -1490,7 +1508,6 @@ std::vector<CommandPalette::Command> App::CollectModelCommands() {
   if (!has_model()) {
     return commands;
   }
-  const mjOption& opt = model()->opt;
   mjOption def;
   mj_defaultOption(&def);
 
@@ -1498,15 +1515,27 @@ std::vector<CommandPalette::Command> App::CollectModelCommands() {
     add_flag(
         ".mjModel.opt.disableflags." + ident(mjDISABLESTRING[i]),
         [this, i] { return ((model()->opt.disableflags >> i) & 1) != 0; },
-        [this, i] { model()->opt.disableflags ^= (1 << i); },
-        ((opt.disableflags >> i) & 1) != ((def.disableflags >> i) & 1));
+        [this, i](bool b) {
+          if (b) {
+            model()->opt.disableflags |= (1 << i);
+          } else {
+            model()->opt.disableflags &= ~(1 << i);
+          }
+        },
+        ((def.disableflags >> i) & 1) != 0);
   }
   for (int i = 0; i < mjNENABLE; ++i) {
     add_flag(
         ".mjModel.opt.enableflags." + ident(mjENABLESTRING[i]),
         [this, i] { return ((model()->opt.enableflags >> i) & 1) != 0; },
-        [this, i] { model()->opt.enableflags ^= (1 << i); },
-        ((opt.enableflags >> i) & 1) != ((def.enableflags >> i) & 1));
+        [this, i](bool b) {
+          if (b) {
+            model()->opt.enableflags |= (1 << i);
+          } else {
+            model()->opt.enableflags &= ~(1 << i);
+          }
+        },
+        ((def.enableflags >> i) & 1) != 0);
   }
 
   // Solver/integrator enums: a combo in the value column (also Enter advances /
@@ -1526,8 +1555,11 @@ std::vector<CommandPalette::Command> App::CollectModelCommands() {
         model()->opt.*field = v;
       }
     };
-    commands.push_back(
-        {marked(path, cur != def_val), [cyc] { cyc(1); }, "", cyc, combo});
+    auto reset = [this, field, def_val] { model()->opt.*field = def_val; };
+    const std::string def_text =
+        (def_val >= 0 && def_val < n) ? names[def_val] : std::string();
+    commands.push_back({marked(path, cur != def_val), [cyc] { cyc(1); }, "", cyc,
+                        combo, reset, cur != def_val, def_text});
   };
   add_enum(".mjModel.opt.integrator", &mjOption::integrator,
            {"Euler", "RK4", "implicit", "implicitfast"}, def.integrator);
@@ -1548,9 +1580,12 @@ std::vector<CommandPalette::Command> App::CollectModelCommands() {
                              : std::is_same_v<T, float> ? ImGuiDataType_Float
                                                         : ImGuiDataType_Double;
     const std::string id = "###" + path;
+    const bool modified = *ptr != def_val;
+    auto reset = [ptr, def_val] { *ptr = def_val; };
     commands.push_back(
-        {marked(path, *ptr != def_val), {}, "", {},
-         [id, ptr, dt] { ImGui::InputScalar(id.c_str(), dt, ptr); }});
+        {marked(path, modified), {}, "", {},
+         [id, ptr, dt] { ImGui::InputScalar(id.c_str(), dt, ptr); }, reset,
+         modified, numstr(def_val)});
   };
   auto add_vector = [&](const std::string& path, auto* ptr, int n,
                         const auto* def_ptr) {
@@ -1558,12 +1593,23 @@ std::vector<CommandPalette::Command> App::CollectModelCommands() {
     const ImGuiDataType dt = std::is_same_v<T, int>     ? ImGuiDataType_S32
                              : std::is_same_v<T, float> ? ImGuiDataType_Float
                                                         : ImGuiDataType_Double;
+    // Copy the defaults by value: `def` is a per-frame local, but reset runs
+    // later (on a click), so it can't hold a pointer into it.
+    const std::vector<T> defs(def_ptr, def_ptr + n);
     bool modified = false;
-    for (int k = 0; k < n; ++k) modified |= (ptr[k] != def_ptr[k]);
+    std::string def_text;
+    for (int k = 0; k < n; ++k) {
+      modified |= (ptr[k] != defs[k]);
+      def_text += (k ? ", " : "") + numstr(defs[k]);
+    }
     const std::string id = "###" + path;
+    auto reset = [ptr, defs] {
+      for (std::size_t k = 0; k < defs.size(); ++k) ptr[k] = defs[k];
+    };
     commands.push_back(
         {marked(path, modified), {}, "", {},
-         [id, ptr, dt, n] { ImGui::InputScalarN(id.c_str(), dt, ptr, n); }});
+         [id, ptr, dt, n] { ImGui::InputScalarN(id.c_str(), dt, ptr, n); }, reset,
+         modified, def_text});
   };
   auto special = [](const char* name) {
     for (const char* s : {"integrator", "cone", "jacobian", "solver",
@@ -1585,11 +1631,7 @@ std::vector<CommandPalette::Command> App::CollectModelCommands() {
   add_flag(
       ".mjModel.vis.global.orthographic",
       [this] { return model()->vis.global.orthographic != 0; },
-      [this] {
-        int& v = model()->vis.global.orthographic;
-        v = v ? 0 : 1;
-      },
-      model()->vis.global.orthographic != 0);
+      [this](bool b) { model()->vis.global.orthographic = b; }, false);
   return commands;
 }
 

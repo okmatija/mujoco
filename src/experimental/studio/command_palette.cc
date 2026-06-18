@@ -30,6 +30,8 @@ namespace {
 
 // FontAwesome 4 "fa-cog" (U+F013); in the 0xf000-0xf3ff range the studio merges.
 constexpr char kCogIcon[] = "\xEF\x80\x93";
+// FontAwesome 4 "fa-undo" (U+F0E2), the revert/restore-default button glyph.
+constexpr char kRevertIcon[] = "\xEF\x83\xA2";
 
 // Does `text` match `query` under the given search mode? An empty query always
 // matches.
@@ -201,14 +203,39 @@ RowHit CompletionRow(const CommandPalette::Command& cmd, bool selected,
 
   float value_x = FLT_MAX;  // screen-x where the value column begins.
   if (cmd.draw_value) {
-    // An editable widget (checkbox / numeric input) fills the value column.
+    // An editable widget (checkbox / numeric input) fills the value column,
+    // reserving a revert-button column on the right for fields that can revert.
     ImGui::SameLine(desc_x);
     value_x = ImGui::GetCursorScreenPos().x;
-    ImGui::SetNextItemWidth(-FLT_MIN);
+    const float revert_w =
+        cmd.reset ? ImGui::CalcTextSize(kRevertIcon).x +
+                        ImGui::GetStyle().FramePadding.x * 2.0f
+                  : 0.0f;
+    ImGui::SetNextItemWidth(
+        revert_w > 0.0f ? -(revert_w + ImGui::GetStyle().ItemSpacing.x)
+                        : -FLT_MIN);
     if (focus_value) {
       ImGui::SetKeyboardFocusHere();  // Right entered the widget; focus it.
     }
     cmd.draw_value();
+    // Revert-to-default button, shown only when the value differs from default.
+    // Right-aligned into a fixed last column so every revert button lines up,
+    // regardless of the value widget's width (e.g. narrow checkboxes).
+    if (cmd.modified && cmd.reset) {
+      ImGui::SameLine();
+      const float avail = ImGui::GetContentRegionAvail().x;
+      if (avail > revert_w) {
+        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + avail - revert_w);
+      }
+      if (ImGui::Button((std::string(kRevertIcon) + "##revert" + cmd.name).c_str())) {
+        cmd.reset();
+      }
+      if (cmd.default_text.empty()) {
+        ImGui::SetItemTooltip("Restore default");
+      } else {
+        ImGui::SetItemTooltip("Restore default\n(%s)", cmd.default_text.c_str());
+      }
+    }
   } else if (!cmd.description.empty()) {
     ImGui::SameLine(desc_x);
     value_x = ImGui::GetCursorScreenPos().x;
