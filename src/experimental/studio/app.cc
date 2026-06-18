@@ -242,6 +242,10 @@ void App::OnModelLoaded(std::string filename, ModelKind model_kind) {
   const int state_size = mj_stateSize(model, mjSTATE_INTEGRATION);
   sim_history_.Init(state_size);
 
+  // Snapshot the compiled statistics as the baseline for the command palette's
+  // mjModel.stat.* fields (see stat_default_).
+  stat_default_ = model->stat;
+
   if (!preserve_camera_on_load_) {
     const int model_cam = model->vis.global.cameraid;
     if (model_cam >= 0 && model_cam < model->ncam) {
@@ -1428,12 +1432,14 @@ std::vector<CommandPalette::Command> App::CollectCommands() {
 }
 
 std::vector<CommandPalette::Command> App::CollectModelCommands() {
-  // The '.' entries: visualization and model/data fields, named as the dotted
-  // code path (e.g. "mjModel.opt.gravity") so fuzzy-completing a field reads
-  // like navigating the struct. The value column is an editable widget bound to
-  // the field -- a checkbox for booleans, a numeric input (or N-input) for
+  // The field-editing entries, named as the dotted code path (e.g.
+  // "mjModel.opt.gravity") so fuzzy-completing a field reads like navigating the
+  // struct. Wherever MuJoCo ships an mjxmacro the list is generated from it, so
+  // it tracks the headers: mjModel.opt (mjOption), mjModel.vis (mjVisual),
+  // mjModel.stat (mjStatistic), plus the mjvOption/mjvScene render state, which
+  // have no xmacro. The value column is an editable widget bound to the field --
+  // a checkbox for booleans, a combo for enums, a numeric input (or N-input) for
   // scalars/vectors -- and a '*' marks a value that differs from its default.
-  // (The solver/integrator enums stay as cyclable text.)
   std::vector<CommandPalette::Command> commands;
 
   // Build a constant-style identifier from a table name: "Convex Hull" -> CONVEXHULL.
@@ -1504,6 +1510,55 @@ std::vector<CommandPalette::Command> App::CollectModelCommands() {
         mjRNDSTRING[i][1][0] == '1');
   }
 
+  // Per-group visibility toggles (mjvOption). MuJoCo has no xmacro for mjvOption,
+  // so list its group arrays here; each is mjtByte[mjNGROUP], and
+  // mjv_defaultOption shows groups 0-2, hides 3-5. vis_options_ is a stable
+  // member, so the arrays can be captured by pointer.
+#define MJV_GROUP_ARRAYS(X)                                  \
+  X(geomgroup) X(sitegroup) X(jointgroup) X(tendongroup)     \
+  X(actuatorgroup) X(flexgroup) X(skingroup)
+#define X(NAME)                                                          \
+  {                                                                      \
+    mjtByte* arr = vis_options_.NAME;                                    \
+    for (int i = 0; i < mjNGROUP; ++i) {                                 \
+      add_flag("mjvOption." #NAME "." + std::to_string(i),               \
+               [arr, i] { return arr[i] != 0; },                         \
+               [arr, i](bool b) { arr[i] = static_cast<mjtByte>(b); },   \
+               i < 3);                                                   \
+    }                                                                    \
+  }
+  MJV_GROUP_ARRAYS(X)
+#undef X
+#undef MJV_GROUP_ARRAYS
+
+  // Control noise applied before each step (studio StepControl; default 0). The
+  // value is reached only through Get/SetNoiseParameters, so it needs a custom
+  // widget rather than add_scalar.
+  auto add_noise = [&](const std::string& path, bool is_scale) {
+    float scale = 0, rate = 0;
+    step_control_.GetNoiseParameters(scale, rate);
+    const float cur = is_scale ? scale : rate;
+    const std::string id = "###" + path;
+    auto draw = [this, id, is_scale] {
+      float s = 0, r = 0;
+      step_control_.GetNoiseParameters(s, r);
+      if (ImGui::InputScalar(id.c_str(), ImGuiDataType_Float,
+                             is_scale ? &s : &r)) {
+        step_control_.SetNoiseParameters(s, r);
+      }
+    };
+    auto reset = [this, is_scale] {
+      float s = 0, r = 0;
+      step_control_.GetNoiseParameters(s, r);
+      (is_scale ? s : r) = 0.0f;
+      step_control_.SetNoiseParameters(s, r);
+    };
+    commands.push_back({marked(path, cur != 0.0f), {}, "", {}, draw, reset,
+                        cur != 0.0f, "0"});
+  };
+  add_noise("noise.scale", true);
+  add_noise("noise.rate", false);
+
   // The remaining fields live in mjModel; '*' marks a value that differs from
   // mj_defaultOption (the library default).
   if (!has_model()) {
@@ -1537,6 +1592,21 @@ std::vector<CommandPalette::Command> App::CollectModelCommands() {
           }
         },
         ((def.enableflags >> i) & 1) != 0);
+  }
+  // disableactuator is a bitfield over actuator groups (the Physics panel's
+  // "Act Group N"), so expose one toggle per group bit, like the flags above.
+  for (int i = 0; i < mjNGROUP; ++i) {
+    add_flag(
+        "mjModel.opt.disableactuator." + std::to_string(i),
+        [this, i] { return (model()->opt.disableactuator & (1 << i)) != 0; },
+        [this, i](bool b) {
+          if (b) {
+            model()->opt.disableactuator |= (1 << i);
+          } else {
+            model()->opt.disableactuator &= ~(1 << i);
+          }
+        },
+        (def.disableactuator & (1 << i)) != 0);
   }
 
   // Solver/integrator enums: a combo in the value column (also Enter advances /
@@ -1628,11 +1698,54 @@ std::vector<CommandPalette::Command> App::CollectModelCommands() {
 #undef X
 #undef XVEC
 
-  // A model.vis (mjVisual) field: the camera projection toggle (boolean).
-  add_flag(
-      "mjModel.vis.global.orthographic",
-      [this] { return model()->vis.global.orthographic != 0; },
-      [this](bool b) { model()->vis.global.orthographic = b; }, false);
+  // mjModel.vis (mjVisual): every field of its six sub-structs, generated from
+  // the mjxmacros against the library default (mj_defaultVisual). Booleans here
+  // are plain ints (e.g. global.orthographic), so they show as 0/1 inputs rather
+  // than checkboxes. VIS_STR stringifies the current sub-struct token (#SUB
+  // would yield "SUB"); MJVIS_SUB names it both as a path segment and a member.
+  mjVisual visdef;
+  mj_defaultVisual(&visdef);
+#define VIS_STR2(x) #x
+#define VIS_STR(x) VIS_STR2(x)
+#define X(TYPE, NAME, SZ)                                                 \
+  add_scalar("mjModel.vis." VIS_STR(MJVIS_SUB) "." #NAME,                 \
+             &model()->vis.MJVIS_SUB.NAME, visdef.MJVIS_SUB.NAME);
+#define XVEC(TYPE, NAME, SZ)                                              \
+  add_vector("mjModel.vis." VIS_STR(MJVIS_SUB) "." #NAME,                 \
+             model()->vis.MJVIS_SUB.NAME, SZ, visdef.MJVIS_SUB.NAME);
+#define MJVIS_SUB global
+  MJVISUAL_GLOBAL_FIELDS
+#undef MJVIS_SUB
+#define MJVIS_SUB quality
+  MJVISUAL_QUALITY_FIELDS
+#undef MJVIS_SUB
+#define MJVIS_SUB headlight
+  MJVISUAL_HEADLIGHT_FIELDS
+#undef MJVIS_SUB
+#define MJVIS_SUB map
+  MJVISUAL_MAP_FIELDS
+#undef MJVIS_SUB
+#define MJVIS_SUB scale
+  MJVISUAL_SCALE_FIELDS
+#undef MJVIS_SUB
+#define MJVIS_SUB rgba
+  MJVISUAL_RGBA_FIELDS
+#undef MJVIS_SUB
+#undef X
+#undef XVEC
+#undef VIS_STR
+#undef VIS_STR2
+
+  // mjModel.stat (mjStatistic): compiler-computed, so there is no library
+  // default -- compare against the values captured at load (stat_default_). All
+  // fields are mjtNum, so the xmacro entries carry no type.
+#define X(NAME, SZ) \
+  add_scalar("mjModel.stat." #NAME, &model()->stat.NAME, stat_default_.NAME);
+#define XVEC(NAME, SZ) \
+  add_vector("mjModel.stat." #NAME, model()->stat.NAME, SZ, stat_default_.NAME);
+  MJSTATISTIC_FIELDS
+#undef X
+#undef XVEC
   return commands;
 }
 

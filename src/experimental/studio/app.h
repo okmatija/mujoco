@@ -352,6 +352,10 @@ class App {
   mjvCamera camera_;
   mjvPerturb perturb_;
   mjvOption vis_options_;
+  // The model's mjStatistic as loaded; the command palette treats it as the
+  // "default" for mjModel.stat.* fields (mjStatistic has no library default,
+  // unlike mjOption/mjVisual), so editing them can be marked and reverted.
+  mjStatistic stat_default_{};
 
   // Registered rail/tool windows and the Ctrl+P command palette.
   std::vector<ToolWindow> tool_windows_;
