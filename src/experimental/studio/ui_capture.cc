@@ -26,8 +26,6 @@
 
 #include <imgui.h>
 
-#include "experimental/studio/llm/llm_mock.h"
-
 namespace mujoco::studio {
 
 void App::ToggleToolWindowByName(const std::string& title) {
@@ -62,7 +60,7 @@ void App::StartCapture(const std::string& out_dir, int total_frames,
   // -- without deadlocking the render loop. The capture keeps rendering frames
   // while the conversation and UI program play out, and ends once everything has
   // been idle for a while (see CaptureStepLlm). Keep whatever provider the
-  // environment selected (real Claude when ANTHROPIC_API_KEY is set, else mock).
+  // environment selected (real Claude when ANTHROPIC_API_KEY is set).
 }
 
 bool App::SaveCaptureFrame() {

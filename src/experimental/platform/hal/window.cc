@@ -83,6 +83,18 @@ static void InitImGui(SDL_Window* window, float content_scale,
     constexpr ImWchar icon_ranges[] = {0xf000, 0xf3ff, 0x000};
     io.Fonts->AddFontFromMemoryTTF(data, size, 14.f, &icon_cfg, icon_ranges);
 
+    // A bold weight (becomes the font after the default), used to emphasize text
+    // spans (e.g. the command palette's autocomplete matches). It must be added
+    // AFTER the FontAwesome merge above: MergeMode merges into the previously
+    // added font, so loading bold earlier would pull the icons into the bold
+    // font and leave the default font (the tool rail, the cog button) without
+    // them.
+    ImFontConfig bold_cfg;
+    bold_cfg.FontDataOwnedByAtlas = false;
+    font = mju_openResource("", "font:OpenSans-Bold.ttf", nullptr, nullptr, 0);
+    size = mju_readResource(font, const_cast<const void**>(&data));
+    io.Fonts->AddFontFromMemoryTTF(data, size, 20.f, &bold_cfg);
+
     // Note: we purposefully do not "close" the font resources as ImGui may
     // need them again to resize fonts.
   }

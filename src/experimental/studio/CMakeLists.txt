@@ -19,6 +19,17 @@ include(third_party_deps/imgui_test_engine)
 include(third_party_deps/implot)
 include(third_party_deps/opensans)
 include(third_party_deps/font_awesome)
+# The LLM agent UI lives in a separate repo; it depends on dear_imgui and
+# imgui_test_engine, so it must be fetched after them.
+include(third_party_deps/agent_imgui)
+
+# Let the agent's grep_source tool search the Studio C++ sources at runtime.
+if(TARGET agent_imgui)
+    target_compile_definitions(agent_imgui
+        PRIVATE
+            AGENT_IMGUI_HOST_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/.."
+    )
+endif()
 
 # Common configuration shared between mujoco_studio and mujoco_live.
 function(configure_studio_target TARGET_NAME)
@@ -26,31 +37,9 @@ function(configure_studio_target TARGET_NAME)
         PRIVATE
             app.cc
             app.h
-            command_palette.cc
-            command_palette.h
             mujoco_logo.h
             ui_capture.cc
             ui_capture.h
-            llm/llm_claude.cc
-            llm/llm_claude.h
-            llm/llm_gemini.cc
-            llm/llm_gemini.h
-            llm/llm_mock.h
-            llm/llm_panel.cc
-            llm/llm_panel.h
-            llm/llm_provider.h
-            llm/source_search.cc
-            llm/source_search.h
-            llm/test_runner.cc
-            llm/test_runner.h
-            llm/ui_agent.cc
-            llm/ui_agent.h
-    )
-
-    # Lets the grep_source LLM tool search the Studio sources at runtime.
-    target_compile_definitions(${TARGET_NAME}
-        PRIVATE
-            MUJOCO_STUDIO_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/.."
     )
 
     target_include_directories(${TARGET_NAME}
@@ -68,7 +57,7 @@ function(configure_studio_target TARGET_NAME)
             PROPERTIES
                 VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}"
         )
-        # WinHTTP transport for the Claude provider (llm/llm_claude.cc).
+        # WinHTTP transport for the agent_imgui LLM providers (Windows-only).
         target_link_libraries(${TARGET_NAME} PRIVATE winhttp)
     endif()
 
@@ -76,6 +65,7 @@ function(configure_studio_target TARGET_NAME)
         PRIVATE
             absl::flags
             absl::flags_parse
+            agent_imgui
             dear_imgui
             imgui_test_engine
             implot
@@ -93,6 +83,15 @@ function(configure_studio_target TARGET_NAME)
                 ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/../_deps/opensans-src/fonts/ttf/OpenSans-Regular.ttf
                 ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/assets
         COMMENT "Copying OpenSans-Regular.ttf assets to build directory"
+    )
+    add_custom_command(
+        TARGET ${TARGET_NAME}
+        POST_BUILD
+        COMMAND ${CMAKE_COMMAND}
+            -E copy
+                ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/../_deps/opensans-src/fonts/ttf/OpenSans-Bold.ttf
+                ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/assets
+        COMMENT "Copying OpenSans-Bold.ttf assets to build directory"
     )
     add_custom_command(
         TARGET ${TARGET_NAME}

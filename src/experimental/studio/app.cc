@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cfloat>
 #include <cstddef>
 #include <cstdio>
@@ -29,12 +30,14 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
 #include <imgui.h>
 #include <implot.h>
 #include <mujoco/mujoco.h>
+#include <mujoco/mjxmacro.h>
 #include "experimental/platform/hal/graphics_mode.h"
 #include "experimental/platform/hal/renderer.h"
 #include "experimental/platform/hal/window.h"
@@ -48,10 +51,15 @@
 #include "experimental/platform/ux/interaction.h"
 #include "experimental/platform/ux/picture_gui.h"
 #include "experimental/platform/ux/plugin.h"
-#include "experimental/studio/llm/source_search.h"
+#include "agent_imgui/source_search.h"
 
 namespace mujoco::studio {
 
+// The LLM agent UI lives in the agent_imgui dependency; pull its symbols into
+// scope so the wiring below reads the same as before the extraction.
+using namespace agent_imgui;  // NOLINT(build/namespaces)
+
+using platform::CommandPalette;
 using PauseState = platform::StepControl::PauseState;
 
 static void ToggleFlag(mjtByte& flag) { flag = flag ? 0 : 1; }
@@ -234,6 +242,10 @@ void App::OnModelLoaded(std::string filename, ModelKind model_kind) {
   renderer_->Init(model);
   const int state_size = mj_stateSize(model, mjSTATE_INTEGRATION);
   sim_history_.Init(state_size);
+
+  // Snapshot the compiled statistics as the baseline for the command palette's
+  // mjModel.stat.* fields (see stat_default_).
+  stat_default_ = model->stat;
 
   if (!preserve_camera_on_load_) {
     const int model_cam = model->vis.global.cameraid;
@@ -980,19 +992,6 @@ void App::BuildGui() {
     ImGui::End();
   }
 
-  if (tmp_.agent_settings) {
-    // Center each time it opens (Appearing fires when "/settings" reveals it).
-    const ImGuiViewport* vp = ImGui::GetMainViewport();
-    ImGui::SetNextWindowPos(vp->GetCenter(), ImGuiCond_Appearing,
-                            ImVec2(0.5f, 0.5f));
-    ImGui::SetNextWindowSize(ImVec2(380, 0), ImGuiCond_FirstUseEver);
-    // The bool gives the title-bar close button (the X); "/settings" toggles it.
-    if (ImGui::Begin("Agent Settings###AgentSettings", &tmp_.agent_settings)) {
-      AgentSettingsGui();
-    }
-    ImGui::End();
-  }
-
   if (show_stats_window_) {
     // A transient hover peek, shown while the stats icon in the status bar is
     // hovered. Anchored to its bottom-right corner just above the status bar,
@@ -1069,9 +1068,25 @@ void App::BuildGui() {
     const ImVec4 palette_rect(vp->WorkPos.x, tmp_.top_overlay_bottom + 10.0f,
                               vp->WorkSize.x, workspace_rect.w);
     command_palette_.Draw(
-        CollectCommands(), CollectSlashCommands(), palette_rect,
+        CollectCommands(), palette_rect,
         [this] { llm_panel_.Render(ui_agent_); },
-        [this](const std::string& q) { ui_agent_.Ask(q); });
+        [this](const std::string& q) {
+          // Only "/..." strings reach here. "/prompt <text>" is the sole path to
+          // the LLM: strip the prefix and surrounding spaces, send the rest.
+          if (q.rfind("/prompt", 0) == 0) {
+            std::string text = q.substr(std::string("/prompt").size());
+            const size_t b = text.find_first_not_of(" \t");
+            const size_t e = text.find_last_not_of(" \t");
+            if (b != std::string::npos) ui_agent_.Ask(text.substr(b, e - b + 1));
+            return;
+          }
+          // The rest are handled locally (/record) or by UiAgent::Ask (/clear,
+          // /model, /copy, /settings) and never reach the model.
+          if (!HandleRecordCommand(q)) ui_agent_.Ask(q);
+        },
+        // Agent settings live in the cog panel (the extension point for the
+        // host's own settings).
+        [this] { AgentSettingsGui(); });
   }
 
   // Scripted GIF capture: advance the script and draw the synthetic cursor.
@@ -1360,17 +1375,22 @@ void App::RegisterToolWindows() {
 }
 
 std::vector<CommandPalette::Command> App::CollectCommands() {
+  // One unified, fuzzy-searched list. UI actions and agent commands carry a
+  // context prefix ('>' and '/') so typing it narrows to them; model/data
+  // fields are bare dotted paths (e.g. mjModel.opt.gravity), so their embedded
+  // dots already set them apart -- no leading '.' needed.
+  // TODO(studio): add a '$' context for console commands.
   std::vector<CommandPalette::Command> commands;
 
-  // Model actions.
+  // '>' UI actions.
+  commands.push_back({">Reload", [this] { RequestModelReload(); },
+                      "Reload the model from disk"});
   commands.push_back(
-      {"Reload", [this] { RequestModelReload(); }, "Reload the model from disk"});
-  commands.push_back(
-      {"Reset", [this] { ResetPhysics(); }, "Reset the simulation state"});
+      {">Reset", [this] { ResetPhysics(); }, "Reset the simulation state"});
 
   // Registered tool windows (index is stable for the process lifetime).
   for (int i = 0; i < static_cast<int>(tool_windows_.size()); ++i) {
-    commands.push_back({tool_windows_[i].title,
+    commands.push_back({">" + tool_windows_[i].title,
                         [this, i] {
                           tool_windows_[i].open = !tool_windows_[i].open;
                         },
@@ -1378,46 +1398,288 @@ std::vector<CommandPalette::Command> App::CollectCommands() {
   }
 
   // View / diagnostics windows.
-  commands.push_back({"Profiler", [this] { ToggleWindow(tmp_.profiler); },
+  commands.push_back({">Profiler", [this] { ToggleWindow(tmp_.profiler); },
                       "Open the timing profiler window"});
-  commands.push_back({"Stats",
+  commands.push_back({">Stats",
                       [this] {
                         tmp_.stats_in_statusbar = !tmp_.stats_in_statusbar;
                       },
                       "Pin sim metrics in the status bar"});
-  commands.push_back({"Picture-in-Picture",
+  commands.push_back({">Picture-in-Picture",
                       [this] {
                         tmp_.picture_in_picture = !tmp_.picture_in_picture;
                       },
                       "Open a picture-in-picture viewport"});
-  commands.push_back({"Help", [this] { ToggleWindow(tmp_.help); },
+  commands.push_back({">Help", [this] { ToggleWindow(tmp_.help); },
                       "Show keyboard shortcuts and help"});
 
   // GUI plugins (the same entries as the Plugins menu and the rail). Each
-  // toggles the plugin's window; only plugins that draw one are listed. The
-  // "Plugins > " prefix hints where they live in the menu bar.
+  // toggles the plugin's window; only plugins that draw one are listed.
   platform::ForEachPlugin<platform::GuiPlugin>(
       [&commands](platform::GuiPlugin* plugin) {
         if (!plugin->update) {
           return;
         }
-        commands.push_back({std::string("Plugins > ") + plugin->name,
+        commands.push_back({std::string(">Plugins > ") + plugin->name,
                             [plugin] { plugin->active = !plugin->active; },
                             "GUI plugin window"});
       });
 
+  // The dotted visualization + model/data fields and the '/' agent commands
+  // complete the unified list.
+  for (auto& c : CollectModelCommands()) commands.push_back(std::move(c));
+  for (auto& c : CollectSlashCommands()) commands.push_back(std::move(c));
+  return commands;
+}
+
+std::vector<CommandPalette::Command> App::CollectModelCommands() {
+  // The field-editing entries, named as the dotted code path (e.g.
+  // "mjModel.opt.gravity") so fuzzy-completing a field reads like navigating the
+  // struct. Wherever MuJoCo ships an mjxmacro the list is generated from it, so
+  // it tracks the headers: mjModel.opt (mjOption), mjModel.vis (mjVisual),
+  // mjModel.stat (mjStatistic), plus the mjvOption/mjvScene render state, which
+  // have no xmacro. The value column is an editable widget bound to the field --
+  // a checkbox for booleans, a combo for enums, a numeric input (or N-input) for
+  // scalars/vectors -- and a '*' marks a value that differs from its default.
+  std::vector<CommandPalette::Command> commands;
+  // Field-registration helpers append to `commands` (free functions in
+  // mujoco::platform; see command_palette.h).
+  using platform::RegisterArrayField;
+  using platform::RegisterCustomField;
+  using platform::RegisterEnumField;
+  using platform::RegisterFlagField;
+  using platform::RegisterScalarField;
+
+  // Build a constant-style identifier from a table name: "Convex Hull" -> CONVEXHULL.
+  auto ident = [](std::string s) {
+    std::string out;
+    for (char c : s) {
+      if (std::isalnum(static_cast<unsigned char>(c))) {
+        out += static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+      }
+    }
+    return out;
+  };
+
+  // Visualization element flags (mjvOption) and render-effect flags (mjvScene).
+  // These don't require a loaded model. Column [1] of each table is the default.
+  for (int i = 0; i < mjNVISFLAG; ++i) {
+    RegisterFlagField(
+        commands, "mjvOption.flags." + ident(mjVISSTRING[i][0]),
+        [this, i] { return vis_options_.flags[i] != 0; },
+        [this, i](bool b) { vis_options_.flags[i] = b; },
+        mjVISSTRING[i][1][0] == '1');
+  }
+  for (int i = 0; i < mjNRNDFLAG; ++i) {
+    RegisterFlagField(
+        commands, "mjvScene.flags." + ident(mjRNDSTRING[i][0]),
+        [this, i] { return renderer_->GetRenderFlags()[i] != 0; },
+        [this, i](bool b) { renderer_->GetRenderFlags()[i] = b; },
+        mjRNDSTRING[i][1][0] == '1');
+  }
+
+  // Per-group visibility toggles (mjvOption). MuJoCo has no xmacro for mjvOption,
+  // so list its group arrays with a small local one (stringifying each name with
+  // #NAME so the path and member stay in sync). Each is mjtByte[mjNGROUP], and
+  // mjv_defaultOption shows groups 0-2, hides 3-5; vis_options_ is a stable
+  // member, so the arrays can be captured by pointer.
+#define MJV_GROUP_ARRAYS(X)                                  \
+  X(geomgroup) X(sitegroup) X(jointgroup) X(tendongroup)     \
+  X(actuatorgroup) X(flexgroup) X(skingroup)
+  const struct {
+    const char* name;
+    mjtByte* arr;
+  } kGroups[] = {
+#define X(NAME) {#NAME, vis_options_.NAME},
+      MJV_GROUP_ARRAYS(X)
+#undef X
+  };
+#undef MJV_GROUP_ARRAYS
+  for (const auto& g : kGroups) {
+    mjtByte* arr = g.arr;
+    for (int i = 0; i < mjNGROUP; ++i) {
+      RegisterFlagField(
+          commands,
+          std::string("mjvOption.") + g.name + "." + std::to_string(i),
+          [arr, i] { return arr[i] != 0; },
+          [arr, i](bool b) { arr[i] = static_cast<mjtByte>(b); }, i < 3);
+    }
+  }
+
+  // Control noise applied before each step (studio StepControl; default 0). It
+  // is reached only through Get/SetNoiseParameters (no plain pointer to bind),
+  // so it uses RegisterCustomField rather than RegisterScalarField.
+  auto add_noise = [&](const std::string& path, bool is_scale) {
+    float scale = 0, rate = 0;
+    step_control_.GetNoiseParameters(scale, rate);
+    const float cur = is_scale ? scale : rate;
+    const std::string id = "###" + path;
+    auto draw = [this, id, is_scale] {
+      float s = 0, r = 0;
+      step_control_.GetNoiseParameters(s, r);
+      if (ImGui::InputScalar(id.c_str(), ImGuiDataType_Float,
+                             is_scale ? &s : &r)) {
+        step_control_.SetNoiseParameters(s, r);
+      }
+    };
+    auto reset = [this, is_scale] {
+      float s = 0, r = 0;
+      step_control_.GetNoiseParameters(s, r);
+      (is_scale ? s : r) = 0.0f;
+      step_control_.SetNoiseParameters(s, r);
+    };
+    RegisterCustomField(commands, path, draw, reset, cur != 0.0f, "0");
+  };
+  add_noise("noise.scale", true);
+  add_noise("noise.rate", false);
+
+  // The remaining fields live in mjModel; '*' marks a value that differs from
+  // mj_defaultOption (the library default).
+  if (!has_model()) {
+    return commands;
+  }
+  mjOption def;
+  mj_defaultOption(&def);
+
+  for (int i = 0; i < mjNDISABLE; ++i) {
+    RegisterFlagField(
+        commands, "mjModel.opt.disableflags." + ident(mjDISABLESTRING[i]),
+        [this, i] { return ((model()->opt.disableflags >> i) & 1) != 0; },
+        [this, i](bool b) {
+          if (b) {
+            model()->opt.disableflags |= (1 << i);
+          } else {
+            model()->opt.disableflags &= ~(1 << i);
+          }
+        },
+        ((def.disableflags >> i) & 1) != 0);
+  }
+  for (int i = 0; i < mjNENABLE; ++i) {
+    RegisterFlagField(
+        commands, "mjModel.opt.enableflags." + ident(mjENABLESTRING[i]),
+        [this, i] { return ((model()->opt.enableflags >> i) & 1) != 0; },
+        [this, i](bool b) {
+          if (b) {
+            model()->opt.enableflags |= (1 << i);
+          } else {
+            model()->opt.enableflags &= ~(1 << i);
+          }
+        },
+        ((def.enableflags >> i) & 1) != 0);
+  }
+  // disableactuator is a bitfield over actuator groups (the Physics panel's
+  // "Act Group N"), so expose one toggle per group bit, like the flags above.
+  for (int i = 0; i < mjNGROUP; ++i) {
+    RegisterFlagField(
+        commands, "mjModel.opt.disableactuator." + std::to_string(i),
+        [this, i] { return (model()->opt.disableactuator & (1 << i)) != 0; },
+        [this, i](bool b) {
+          if (b) {
+            model()->opt.disableactuator |= (1 << i);
+          } else {
+            model()->opt.disableactuator &= ~(1 << i);
+          }
+        },
+        (def.disableactuator & (1 << i)) != 0);
+  }
+
+  // Solver/integrator enums: a combo in the value column (also Enter advances /
+  // Left-Right cycles).
+  RegisterEnumField(commands, "mjModel.opt.integrator",
+                    &model()->opt.integrator,
+                    {"Euler", "RK4", "implicit", "implicitfast"},
+                    def.integrator);
+  RegisterEnumField(commands, "mjModel.opt.cone", &model()->opt.cone,
+                    {"pyramidal", "elliptic"}, def.cone);
+  RegisterEnumField(commands, "mjModel.opt.jacobian", &model()->opt.jacobian,
+                    {"dense", "sparse", "auto"}, def.jacobian);
+  RegisterEnumField(commands, "mjModel.opt.solver", &model()->opt.solver,
+                    {"PGS", "CG", "Newton"}, def.solver);
+
+  // The remaining scalar/vector mjOption fields, generated from the mjxmacro so
+  // the list tracks the struct. The enum/bitfield ints handled above are
+  // skipped.
+  auto special = [](const char* name) {
+    for (const char* s : {"integrator", "cone", "jacobian", "solver",
+                          "disableflags", "enableflags", "disableactuator"}) {
+      if (std::strcmp(name, s) == 0) return true;
+    }
+    return false;
+  };
+#define X(TYPE, NAME, SZ) \
+  if (!special(#NAME)) \
+    RegisterScalarField(commands, "mjModel.opt." #NAME, &model()->opt.NAME, \
+                        def.NAME);
+#define XVEC(TYPE, NAME, SZ) \
+  RegisterArrayField(commands, "mjModel.opt." #NAME, model()->opt.NAME, SZ, \
+                     def.NAME);
+  MJOPTION_FIELDS
+#undef X
+#undef XVEC
+
+  // mjModel.vis (mjVisual): every field of its six sub-structs, generated from
+  // the mjxmacros against the library default (mj_defaultVisual). Booleans here
+  // are plain ints (e.g. global.orthographic), so they show as 0/1 inputs rather
+  // than checkboxes. VIS_STR stringifies the current sub-struct token (#SUB
+  // would yield "SUB"); MJVIS_SUB names it both as a path segment and a member.
+  mjVisual visdef;
+  mj_defaultVisual(&visdef);
+#define VIS_STR2(x) #x
+#define VIS_STR(x) VIS_STR2(x)
+#define X(TYPE, NAME, SZ) \
+  RegisterScalarField(commands, "mjModel.vis." VIS_STR(MJVIS_SUB) "." #NAME, \
+                      &model()->vis.MJVIS_SUB.NAME, visdef.MJVIS_SUB.NAME);
+#define XVEC(TYPE, NAME, SZ) \
+  RegisterArrayField(commands, "mjModel.vis." VIS_STR(MJVIS_SUB) "." #NAME, \
+                     model()->vis.MJVIS_SUB.NAME, SZ, visdef.MJVIS_SUB.NAME);
+#define MJVIS_SUB global
+  MJVISUAL_GLOBAL_FIELDS
+#undef MJVIS_SUB
+#define MJVIS_SUB quality
+  MJVISUAL_QUALITY_FIELDS
+#undef MJVIS_SUB
+#define MJVIS_SUB headlight
+  MJVISUAL_HEADLIGHT_FIELDS
+#undef MJVIS_SUB
+#define MJVIS_SUB map
+  MJVISUAL_MAP_FIELDS
+#undef MJVIS_SUB
+#define MJVIS_SUB scale
+  MJVISUAL_SCALE_FIELDS
+#undef MJVIS_SUB
+#define MJVIS_SUB rgba
+  MJVISUAL_RGBA_FIELDS
+#undef MJVIS_SUB
+#undef X
+#undef XVEC
+#undef VIS_STR
+#undef VIS_STR2
+
+  // mjModel.stat (mjStatistic): compiler-computed, so there is no library
+  // default -- compare against the values captured at load (stat_default_). All
+  // fields are mjtNum, so the xmacro entries carry no type.
+#define X(NAME, SZ) \
+  RegisterScalarField(commands, "mjModel.stat." #NAME, &model()->stat.NAME, \
+                      stat_default_.NAME);
+#define XVEC(NAME, SZ) \
+  RegisterArrayField(commands, "mjModel.stat." #NAME, model()->stat.NAME, SZ, \
+                     stat_default_.NAME);
+  MJSTATISTIC_FIELDS
+#undef X
+#undef XVEC
   return commands;
 }
 
 std::vector<CommandPalette::Command> App::CollectSlashCommands() {
-  // Local "/..." commands handled by UiAgent::Ask (not sent to the model).
-  // Choosing one submits its name; for commands that take an argument, the user
-  // types the whole line (e.g. "/model sonnet") and it is submitted as-is.
+  // The '/' agent commands. Selecting one submits its name (UiAgent::Ask /
+  // HandleRecordCommand route it). "/prompt <text>" is the ONLY path to the
+  // LLM: its prefix and surrounding spaces are stripped before sending.
   return {
+      {"/prompt", {}, "Ask the agent (type your question after it)"},
       {"/clear", {}, "Clear the conversation history"},
       {"/copy", {}, "Copy the conversation to the clipboard"},
       {"/model", {}, "Switch or show the active model"},
-      {"/settings", {}, "Open the agent settings window"},
+      {"/record", {}, "Make a status-bar button that replays the agent's ops"},
   };
 }
 
@@ -1540,8 +1802,31 @@ void App::RegisterLlmTools() {
   ui_agent_.set_on_ask([this] { grep_calls_ = 0; });
   ui_agent_.set_copy_handler(
       [](const std::string& text) { ImGui::SetClipboardText(text.c_str()); });
-  ui_agent_.set_settings_handler(
-      [this] { tmp_.agent_settings = !tmp_.agent_settings; });
+  // No "/settings" command: the settings live only behind the cog button.
+}
+
+// Handles the studio-local "/record <label>" command (not sent to the model):
+// snapshots the ops the agent has run so far into a status-bar replay button,
+// then clears the recording so the next /record captures a fresh sequence.
+// Returns true if `text` was a /record command (and was consumed).
+bool App::HandleRecordCommand(const std::string& text) {
+  size_t b = text.find_first_not_of(" \t");
+  if (b == std::string::npos) return false;
+  const std::string trimmed = text.substr(b);
+  if (trimmed.rfind("/record", 0) != 0) return false;
+  // Extract the label argument (everything after "/record").
+  std::string label = trimmed.substr(std::string("/record").size());
+  const size_t lb = label.find_first_not_of(" \t");
+  const size_t le = label.find_last_not_of(" \t");
+  label = (lb == std::string::npos) ? "" : label.substr(lb, le - lb + 1);
+  if (label.empty()) return true;  // "/record" with no label: ignore, but consume
+
+  std::string ops = test_runner_.GetRecording();
+  if (!ops.empty()) {
+    recorded_macros_.push_back({label, std::move(ops)});
+    test_runner_.ClearRecording();
+  }
+  return true;
 }
 
 void App::SpecExplorerGui() {
@@ -2055,6 +2340,21 @@ void App::StatusBarGui() {
   if (ImGui::Begin("##StatusBar", nullptr, flags)) {
     // Status message on the left.
     ImGui::TextUnformatted(left.c_str());
+
+    // Replay buttons for any "/record <label>" macros, after the status text.
+    for (size_t i = 0; i < recorded_macros_.size(); ++i) {
+      ImGui::SameLine();
+      const std::string id =
+          recorded_macros_[i].first + "###macro" + std::to_string(i);
+      if (ImGui::SmallButton(id.c_str())) {
+        test_runner_.Replay(recorded_macros_[i].second,
+                            agent_imgui::TestRunner::Speed::kNormal);
+      }
+      if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Replay the \"%s\" recording",
+                          recorded_macros_[i].first.c_str());
+      }
+    }
 
     // Right side, right-aligned: the metrics (only when pinned) followed by the
     // stats toggle (the shared icon-checkbox: pressed/"on" frame while pinned).

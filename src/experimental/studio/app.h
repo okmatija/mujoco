@@ -33,15 +33,15 @@
 #include "experimental/platform/sim/sim_history.h"
 #include "experimental/platform/sim/sim_profiler.h"
 #include "experimental/platform/sim/step_control.h"
+#include "experimental/platform/ux/command_palette.h"
 #include "experimental/platform/ux/gui.h"
 #include "experimental/platform/ux/gui_spec.h"
 #include "experimental/platform/ux/interaction.h"
 #include "experimental/platform/ux/picture_gui.h"
 #include "experimental/platform/ux/spec_editor.h"
-#include "experimental/studio/command_palette.h"
-#include "experimental/studio/llm/llm_panel.h"
-#include "experimental/studio/llm/test_runner.h"
-#include "experimental/studio/llm/ui_agent.h"
+#include "agent_imgui/llm_panel.h"
+#include "agent_imgui/test_runner.h"
+#include "agent_imgui/ui_agent.h"
 #include "experimental/studio/ui_capture.h"
 
 namespace mujoco::studio {
@@ -158,7 +158,6 @@ class App {
     bool stats_in_statusbar = false;
     bool profiler = false;
     bool picture_in_picture = false;
-    bool agent_settings = false;  // the "/settings" window.
     bool options_panel = true;
     bool full_screen = false;
     bool style_editor = false;
@@ -250,7 +249,8 @@ class App {
 
   void MainMenuGui();
   void GraphicsModeMenu();
-  // The "/settings" window: agent model selection + test-engine playback knobs.
+  // Agent model selection + test-engine playback knobs, rendered into the
+  // command palette's cog settings panel (and reachable via "/settings").
   void AgentSettingsGui();
   void ToolBarGui();
   void HelpGui();
@@ -272,9 +272,14 @@ class App {
   // Registers the LLM tools (currently just open_tool_window) and their
   // executor on ui_agent_. Call after RegisterToolWindows so titles exist.
   void RegisterLlmTools();
-  std::vector<CommandPalette::Command> CollectCommands();
+  // Handles the local "/record <label>" command (makes a status-bar replay
+  // button from the agent's recorded ops). Returns true if `text` was consumed.
+  bool HandleRecordCommand(const std::string& text);
+  std::vector<platform::CommandPalette::Command> CollectCommands();
   // The local "/..." slash commands shown as completions in the command box.
-  std::vector<CommandPalette::Command> CollectSlashCommands();
+  std::vector<platform::CommandPalette::Command> CollectSlashCommands();
+  // The "." model/data fields (dotted paths like model.opt.disableflags.X).
+  std::vector<platform::CommandPalette::Command> CollectModelCommands();
   // Opens/closes a registered tool window by its title (used by the capture
   // script and the command palette).
   void ToggleToolWindowByName(const std::string& title);
@@ -347,21 +352,29 @@ class App {
   mjvCamera camera_;
   mjvPerturb perturb_;
   mjvOption vis_options_;
+  // The model's mjStatistic as loaded; the command palette treats it as the
+  // "default" for mjModel.stat.* fields (mjStatistic has no library default,
+  // unlike mjOption/mjVisual), so editing them can be marked and reverted.
+  mjStatistic stat_default_{};
 
   // Registered rail/tool windows and the Ctrl+P command palette.
   std::vector<ToolWindow> tool_windows_;
-  CommandPalette command_palette_;
+  platform::CommandPalette command_palette_;
 
   // LLM "ask" support: plain (non-'>') palette input is routed to ui_agent_ and
   // the reply is rendered in the palette by llm_panel_. The model drives the UI
   // exclusively through test_runner_ (the ImGui Test Engine), via the
   // run_ui_program tool. Declared after window_ so it stops before the ImGui
   // context (owned by the window) is destroyed.
-  TestRunner test_runner_;
-  UiAgent ui_agent_;
-  LlmPanel llm_panel_;
+  agent_imgui::TestRunner test_runner_;
+  agent_imgui::UiAgent ui_agent_;
+  agent_imgui::LlmPanel llm_panel_;
   // Per-turn grep_source budget so the agent can't get stuck exploring.
   int grep_calls_ = 0;
+
+  // "/record <label>" macros: {button label, recorded ops program}. Each shows
+  // as a replay button on the status bar (App::StatusBarGui).
+  std::vector<std::pair<std::string, std::string>> recorded_macros_;
 
   // Capture/GIF state and the on-screen rects the script aims the cursor at
   // (recorded each frame): rail button centers and open tool-window rects.
