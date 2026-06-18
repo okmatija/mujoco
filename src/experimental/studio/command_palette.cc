@@ -540,7 +540,7 @@ void CommandPalette::DrawSettings(const std::function<void()>& render_settings) 
       "##settings", ImVec2(0, 0),
       ImGuiChildFlags_AutoResizeY | ImGuiChildFlags_AlwaysUseWindowPadding);
 
-  if (ImGui::CollapsingHeader("Command palette settings",
+  if (ImGui::CollapsingHeader("Command Palette Settings",
                               ImGuiTreeNodeFlags_DefaultOpen)) {
     const char* kModes[] = {"Prefix", "Substring", "Fuzzy"};
     int mode = static_cast<int>(search_mode_);

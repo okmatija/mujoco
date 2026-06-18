@@ -1370,9 +1370,10 @@ void App::RegisterToolWindows() {
 }
 
 std::vector<CommandPalette::Command> App::CollectCommands() {
-  // One unified, fuzzy-searched list. Each entry's name carries a context
-  // prefix, so typing it narrows the list: '>' UI actions, '.' model/data
-  // fields, '/' agent commands.
+  // One unified, fuzzy-searched list. UI actions and agent commands carry a
+  // context prefix ('>' and '/') so typing it narrows to them; model/data
+  // fields are bare dotted paths (e.g. mjModel.opt.gravity), so their embedded
+  // dots already set them apart -- no leading '.' needed.
   // TODO(studio): add a '$' context for console commands.
   std::vector<CommandPalette::Command> commands;
 
@@ -1419,8 +1420,8 @@ std::vector<CommandPalette::Command> App::CollectCommands() {
                             "GUI plugin window"});
       });
 
-  // '.' visualization + model/data fields and '/' agent commands complete the
-  // unified list. (The visualization flags moved into the '.' context too.)
+  // The dotted visualization + model/data fields and the '/' agent commands
+  // complete the unified list.
   for (auto& c : CollectModelCommands()) commands.push_back(std::move(c));
   for (auto& c : CollectSlashCommands()) commands.push_back(std::move(c));
   return commands;
@@ -1428,7 +1429,7 @@ std::vector<CommandPalette::Command> App::CollectCommands() {
 
 std::vector<CommandPalette::Command> App::CollectModelCommands() {
   // The '.' entries: visualization and model/data fields, named as the dotted
-  // code path (e.g. ".mjModel.opt.gravity") so fuzzy-completing a field reads
+  // code path (e.g. "mjModel.opt.gravity") so fuzzy-completing a field reads
   // like navigating the struct. The value column is an editable widget bound to
   // the field -- a checkbox for booleans, a numeric input (or N-input) for
   // scalars/vectors -- and a '*' marks a value that differs from its default.
@@ -1490,14 +1491,14 @@ std::vector<CommandPalette::Command> App::CollectModelCommands() {
   // These don't require a loaded model. Column [1] of each table is the default.
   for (int i = 0; i < mjNVISFLAG; ++i) {
     add_flag(
-        ".mjvOption.flags." + ident(mjVISSTRING[i][0]),
+        "mjvOption.flags." + ident(mjVISSTRING[i][0]),
         [this, i] { return vis_options_.flags[i] != 0; },
         [this, i](bool b) { vis_options_.flags[i] = b; },
         mjVISSTRING[i][1][0] == '1');
   }
   for (int i = 0; i < mjNRNDFLAG; ++i) {
     add_flag(
-        ".mjvScene.flags." + ident(mjRNDSTRING[i][0]),
+        "mjvScene.flags." + ident(mjRNDSTRING[i][0]),
         [this, i] { return renderer_->GetRenderFlags()[i] != 0; },
         [this, i](bool b) { renderer_->GetRenderFlags()[i] = b; },
         mjRNDSTRING[i][1][0] == '1');
@@ -1513,7 +1514,7 @@ std::vector<CommandPalette::Command> App::CollectModelCommands() {
 
   for (int i = 0; i < mjNDISABLE; ++i) {
     add_flag(
-        ".mjModel.opt.disableflags." + ident(mjDISABLESTRING[i]),
+        "mjModel.opt.disableflags." + ident(mjDISABLESTRING[i]),
         [this, i] { return ((model()->opt.disableflags >> i) & 1) != 0; },
         [this, i](bool b) {
           if (b) {
@@ -1526,7 +1527,7 @@ std::vector<CommandPalette::Command> App::CollectModelCommands() {
   }
   for (int i = 0; i < mjNENABLE; ++i) {
     add_flag(
-        ".mjModel.opt.enableflags." + ident(mjENABLESTRING[i]),
+        "mjModel.opt.enableflags." + ident(mjENABLESTRING[i]),
         [this, i] { return ((model()->opt.enableflags >> i) & 1) != 0; },
         [this, i](bool b) {
           if (b) {
@@ -1561,13 +1562,13 @@ std::vector<CommandPalette::Command> App::CollectModelCommands() {
     commands.push_back({marked(path, cur != def_val), [cyc] { cyc(1); }, "", cyc,
                         combo, reset, cur != def_val, def_text});
   };
-  add_enum(".mjModel.opt.integrator", &mjOption::integrator,
+  add_enum("mjModel.opt.integrator", &mjOption::integrator,
            {"Euler", "RK4", "implicit", "implicitfast"}, def.integrator);
-  add_enum(".mjModel.opt.cone", &mjOption::cone, {"pyramidal", "elliptic"},
+  add_enum("mjModel.opt.cone", &mjOption::cone, {"pyramidal", "elliptic"},
            def.cone);
-  add_enum(".mjModel.opt.jacobian", &mjOption::jacobian,
+  add_enum("mjModel.opt.jacobian", &mjOption::jacobian,
            {"dense", "sparse", "auto"}, def.jacobian);
-  add_enum(".mjModel.opt.solver", &mjOption::solver, {"PGS", "CG", "Newton"},
+  add_enum("mjModel.opt.solver", &mjOption::solver, {"PGS", "CG", "Newton"},
            def.solver);
 
   // The remaining scalar/vector mjOption fields, generated from the mjxmacro so
@@ -1620,16 +1621,16 @@ std::vector<CommandPalette::Command> App::CollectModelCommands() {
   };
 #define X(TYPE, NAME, SZ)                                              \
   if (!special(#NAME))                                                 \
-    add_scalar(".mjModel.opt." #NAME, &model()->opt.NAME, def.NAME);
+    add_scalar("mjModel.opt." #NAME, &model()->opt.NAME, def.NAME);
 #define XVEC(TYPE, NAME, SZ) \
-  add_vector(".mjModel.opt." #NAME, model()->opt.NAME, SZ, def.NAME);
+  add_vector("mjModel.opt." #NAME, model()->opt.NAME, SZ, def.NAME);
   MJOPTION_FIELDS
 #undef X
 #undef XVEC
 
   // A model.vis (mjVisual) field: the camera projection toggle (boolean).
   add_flag(
-      ".mjModel.vis.global.orthographic",
+      "mjModel.vis.global.orthographic",
       [this] { return model()->vis.global.orthographic != 0; },
       [this](bool b) { model()->vis.global.orthographic = b; }, false);
   return commands;
