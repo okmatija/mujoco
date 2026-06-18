@@ -233,7 +233,8 @@ RowHit CompletionRow(const CommandPalette::Command& cmd, bool selected,
       if (cmd.default_text.empty()) {
         ImGui::SetItemTooltip("Restore default");
       } else {
-        ImGui::SetItemTooltip("Restore default\n(%s)", cmd.default_text.c_str());
+        ImGui::SetItemTooltip("Restore default\n(set to %s)",
+                              cmd.default_text.c_str());
       }
     }
   } else if (!cmd.description.empty()) {
