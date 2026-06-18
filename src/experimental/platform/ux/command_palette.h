@@ -234,7 +234,7 @@ void RegisterArrayField(std::vector<CommandPalette::Command>& out,
   std::string def_text;
   for (int k = 0; k < n; ++k) {
     modified |= (ptr[k] != defs[k]);
-    def_text += (k ? ", " : "") + command_palette_detail::NumStr(defs[k]);
+    def_text += (k ? " " : "") + command_palette_detail::NumStr(defs[k]);
   }
   const std::string id = "###" + path;
   auto draw = [id, ptr, dt, n] { ImGui::InputScalarN(id.c_str(), dt, ptr, n); };

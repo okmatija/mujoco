@@ -232,10 +232,9 @@ RowHit CompletionRow(const CommandPalette::Command& cmd, bool selected,
         cmd.reset();
       }
       if (cmd.default_text.empty()) {
-        ImGui::SetItemTooltip("Restore default");
+        ImGui::SetItemTooltip("Reset to default");
       } else {
-        ImGui::SetItemTooltip("Restore default\n(set to %s)",
-                              cmd.default_text.c_str());
+        ImGui::SetItemTooltip("Reset to '%s'", cmd.default_text.c_str());
       }
     }
   } else if (!cmd.description.empty()) {
@@ -698,6 +697,17 @@ void RegisterFlagField(std::vector<CommandPalette::Command>& out,
   auto toggle = [get, set] { set(!get()); };
   auto checkbox = [id, get, set] {
     bool b = get();
+    // Right-align the checkbox in the value column, leaving the revert-button
+    // slot on the far right (a flag always has a revert action) so the box keeps
+    // its place whether or not the marker is showing.
+    const ImGuiStyle& style = ImGui::GetStyle();
+    const float reserve = ImGui::CalcTextSize(kRevertIcon).x +
+                          style.FramePadding.x * 2.0f + style.ItemSpacing.x;
+    const float offset =
+        ImGui::GetContentRegionAvail().x - reserve - ImGui::GetFrameHeight();
+    if (offset > 0.0f) {
+      ImGui::SetCursorPosX(ImGui::GetCursorPosX() + offset);
+    }
     if (ImGui::Checkbox(id.c_str(), &b)) set(b);
   };
   auto reset = [set, dflt] { set(dflt); };
