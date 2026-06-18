@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cfloat>
 #include <cstddef>
 #include <cstdio>
@@ -1073,11 +1074,20 @@ void App::BuildGui() {
     const ImVec4 palette_rect(vp->WorkPos.x, tmp_.top_overlay_bottom + 10.0f,
                               vp->WorkSize.x, workspace_rect.w);
     command_palette_.Draw(
-        CollectCommands(), CollectSlashCommands(), palette_rect,
+        CollectCommands(), palette_rect,
         [this] { llm_panel_.Render(ui_agent_); },
         [this](const std::string& q) {
-          // "/record <label>" is handled locally (status-bar replay button);
-          // everything else goes to the agent.
+          // Only "/..." strings reach here. "/prompt <text>" is the sole path to
+          // the LLM: strip the prefix and surrounding spaces, send the rest.
+          if (q.rfind("/prompt", 0) == 0) {
+            std::string text = q.substr(std::string("/prompt").size());
+            const size_t b = text.find_first_not_of(" \t");
+            const size_t e = text.find_last_not_of(" \t");
+            if (b != std::string::npos) ui_agent_.Ask(text.substr(b, e - b + 1));
+            return;
+          }
+          // The rest are handled locally (/record) or by UiAgent::Ask (/clear,
+          // /model, /copy, /settings) and never reach the model.
           if (!HandleRecordCommand(q)) ui_agent_.Ask(q);
         });
   }
@@ -1368,17 +1378,21 @@ void App::RegisterToolWindows() {
 }
 
 std::vector<CommandPalette::Command> App::CollectCommands() {
+  // One unified, fuzzy-searched list. Each entry's name carries a context
+  // prefix, so typing it narrows the list: '>' UI actions, '.' model/data
+  // fields, '/' agent commands.
+  // TODO(studio): add a '$' context for console commands.
   std::vector<CommandPalette::Command> commands;
 
-  // Model actions.
+  // '>' UI actions.
+  commands.push_back({">Reload", [this] { RequestModelReload(); },
+                      "Reload the model from disk"});
   commands.push_back(
-      {"Reload", [this] { RequestModelReload(); }, "Reload the model from disk"});
-  commands.push_back(
-      {"Reset", [this] { ResetPhysics(); }, "Reset the simulation state"});
+      {">Reset", [this] { ResetPhysics(); }, "Reset the simulation state"});
 
   // Registered tool windows (index is stable for the process lifetime).
   for (int i = 0; i < static_cast<int>(tool_windows_.size()); ++i) {
-    commands.push_back({tool_windows_[i].title,
+    commands.push_back({">" + tool_windows_[i].title,
                         [this, i] {
                           tool_windows_[i].open = !tool_windows_[i].open;
                         },
@@ -1386,42 +1400,132 @@ std::vector<CommandPalette::Command> App::CollectCommands() {
   }
 
   // View / diagnostics windows.
-  commands.push_back({"Profiler", [this] { ToggleWindow(tmp_.profiler); },
+  commands.push_back({">Profiler", [this] { ToggleWindow(tmp_.profiler); },
                       "Open the timing profiler window"});
-  commands.push_back({"Stats",
+  commands.push_back({">Stats",
                       [this] {
                         tmp_.stats_in_statusbar = !tmp_.stats_in_statusbar;
                       },
                       "Pin sim metrics in the status bar"});
-  commands.push_back({"Picture-in-Picture",
+  commands.push_back({">Picture-in-Picture",
                       [this] {
                         tmp_.picture_in_picture = !tmp_.picture_in_picture;
                       },
                       "Open a picture-in-picture viewport"});
-  commands.push_back({"Help", [this] { ToggleWindow(tmp_.help); },
+  commands.push_back({">Help", [this] { ToggleWindow(tmp_.help); },
                       "Show keyboard shortcuts and help"});
 
   // GUI plugins (the same entries as the Plugins menu and the rail). Each
-  // toggles the plugin's window; only plugins that draw one are listed. The
-  // "Plugins > " prefix hints where they live in the menu bar.
+  // toggles the plugin's window; only plugins that draw one are listed.
   platform::ForEachPlugin<platform::GuiPlugin>(
       [&commands](platform::GuiPlugin* plugin) {
         if (!plugin->update) {
           return;
         }
-        commands.push_back({std::string("Plugins > ") + plugin->name,
+        commands.push_back({std::string(">Plugins > ") + plugin->name,
                             [plugin] { plugin->active = !plugin->active; },
                             "GUI plugin window"});
       });
 
+  // '>' visualization toggles, generated from MuJoCo's own name tables so the
+  // list stays in sync with the enums (mjtVisFlag/mjtRndFlag) with no
+  // hand-maintained list. These live in the viewer's mjvOption/mjvScene (not
+  // mjModel/mjData), so they are UI, not '.' model/data. Column [1] of each
+  // table is the flag's default value, so '*' shows when the current value
+  // differs. on/off is the live state; selecting or Left/Right toggles.
+  for (int i = 0; i < mjNVISFLAG; ++i) {
+    auto toggle = [this, i] { ToggleFlag(vis_options_.flags[i]); };
+    const bool cur = vis_options_.flags[i] != 0;
+    const bool dflt = mjVISSTRING[i][1][0] == '1';
+    commands.push_back({std::string(">Visual flag: ") + mjVISSTRING[i][0], toggle,
+                        cur ? "on" : "off", [toggle](int) { toggle(); },
+                        cur != dflt});
+  }
+  const mjtByte* render_flags = renderer_->GetRenderFlags();
+  for (int i = 0; i < mjNRNDFLAG; ++i) {
+    auto toggle = [this, i] { ToggleFlag(renderer_->GetRenderFlags()[i]); };
+    const bool cur = render_flags[i] != 0;
+    const bool dflt = mjRNDSTRING[i][1][0] == '1';
+    commands.push_back({std::string(">Render flag: ") + mjRNDSTRING[i][0], toggle,
+                        cur ? "on" : "off", [toggle](int) { toggle(); },
+                        cur != dflt});
+  }
+
+  // '.' model/data fields and '/' agent commands complete the unified list.
+  for (auto& c : CollectModelCommands()) commands.push_back(std::move(c));
+  for (auto& c : CollectSlashCommands()) commands.push_back(std::move(c));
+  return commands;
+}
+
+std::vector<CommandPalette::Command> App::CollectModelCommands() {
+  // The '.' entries: model/data fields, named as the dotted code path (e.g.
+  // ".model.opt.disableflags.WARMSTART") so fuzzy-completing a field reads like
+  // navigating the struct. Names come from MuJoCo's own tables (leaf upper-cased,
+  // no enum prefix -- the path already names the bitfield). Flags show on/off;
+  // selecting or Left/Right toggles. A '*' marks any value that differs from
+  // mj_defaultOption (the library default).
+  std::vector<CommandPalette::Command> commands;
+  if (!has_model()) {
+    return commands;  // these fields live in model->opt.
+  }
+  auto upper = [](std::string s) {
+    for (char& c : s) {
+      c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+    }
+    return s;
+  };
+  const mjOption& opt = model()->opt;
+  mjOption def;
+  mj_defaultOption(&def);
+
+  for (int i = 0; i < mjNDISABLE; ++i) {
+    auto toggle = [this, i] { model()->opt.disableflags ^= (1 << i); };
+    const bool cur = (opt.disableflags >> i) & 1;
+    const bool dflt = (def.disableflags >> i) & 1;
+    commands.push_back({".model.opt.disableflags." + upper(mjDISABLESTRING[i]),
+                        toggle, cur ? "on" : "off", [toggle](int) { toggle(); },
+                        cur != dflt});
+  }
+  for (int i = 0; i < mjNENABLE; ++i) {
+    auto toggle = [this, i] { model()->opt.enableflags ^= (1 << i); };
+    const bool cur = (opt.enableflags >> i) & 1;
+    const bool dflt = (def.enableflags >> i) & 1;
+    commands.push_back({".model.opt.enableflags." + upper(mjENABLESTRING[i]),
+                        toggle, cur ? "on" : "off", [toggle](int) { toggle(); },
+                        cur != dflt});
+  }
+
+  // Solver/integrator enums: Enter advances to the next value; Left/Right cycle
+  // in place. The description shows the current value; '*' marks non-default.
+  auto add_enum = [&](const char* path, int mjOption::*field,
+                      std::vector<const char*> names, int def_val) {
+    const int n = static_cast<int>(names.size());
+    auto cyc = [this, field, n](int delta) {
+      int& v = model()->opt.*field;
+      v = ((v + delta) % n + n) % n;
+    };
+    const int cur = model()->opt.*field;
+    commands.push_back({path, [cyc] { cyc(1); },
+                        (cur >= 0 && cur < n) ? std::string(names[cur]) : "?",
+                        cyc, cur != def_val});
+  };
+  add_enum(".model.opt.integrator", &mjOption::integrator,
+           {"Euler", "RK4", "implicit", "implicitfast"}, def.integrator);
+  add_enum(".model.opt.cone", &mjOption::cone, {"pyramidal", "elliptic"},
+           def.cone);
+  add_enum(".model.opt.jacobian", &mjOption::jacobian,
+           {"dense", "sparse", "auto"}, def.jacobian);
+  add_enum(".model.opt.solver", &mjOption::solver, {"PGS", "CG", "Newton"},
+           def.solver);
   return commands;
 }
 
 std::vector<CommandPalette::Command> App::CollectSlashCommands() {
-  // Local "/..." commands handled by UiAgent::Ask (not sent to the model).
-  // Choosing one submits its name; for commands that take an argument, the user
-  // types the whole line (e.g. "/model sonnet") and it is submitted as-is.
+  // The '/' agent commands. Selecting one submits its name (UiAgent::Ask /
+  // HandleRecordCommand route it). "/prompt <text>" is the ONLY path to the
+  // LLM: its prefix and surrounding spaces are stripped before sending.
   return {
+      {"/prompt", {}, "Ask the agent (type your question after it)"},
       {"/clear", {}, "Clear the conversation history"},
       {"/copy", {}, "Copy the conversation to the clipboard"},
       {"/model", {}, "Switch or show the active model"},

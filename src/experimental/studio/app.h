@@ -278,6 +278,8 @@ class App {
   std::vector<CommandPalette::Command> CollectCommands();
   // The local "/..." slash commands shown as completions in the command box.
   std::vector<CommandPalette::Command> CollectSlashCommands();
+  // The "." model/data fields (dotted paths like model.opt.disableflags.X).
+  std::vector<CommandPalette::Command> CollectModelCommands();
   // Opens/closes a registered tool window by its title (used by the capture
   // script and the command palette).
   void ToggleToolWindowByName(const std::string& title);

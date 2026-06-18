@@ -24,21 +24,30 @@
 namespace mujoco::studio {
 
 // A VS Code-style command palette. The owner opens it (e.g. on Ctrl+Shift+P) and
-// passes the available commands to Draw() each frame. The palette starts as a
-// single-line input; typing '>' switches to command mode, which grows the box
-// and shows a filtered, keyboard-navigable list. Selecting an entry runs its
-// callback.
+// passes one flat list of commands to Draw() each frame, fuzzy-searched against
+// the input. Commands are namespaced by a leading character in their name -- by
+// convention '>' UI actions, '.' model/data fields, '/' agent commands -- so
+// typing that character narrows the fuzzy results to one context. Selecting an
+// entry runs its callback; '/' entries instead submit their text (see Draw).
 //
 // This widget is intentionally self-contained and knows nothing about the app:
-// commands are just {name, callback} pairs, so it is easy to move to its own
-// module or reuse elsewhere.
+// commands are just {name, callback} pairs, so it is easy to reuse elsewhere.
 class CommandPalette {
  public:
   struct Command {
     std::string name;
     std::function<void()> run;
     // Optional one-line hint shown dimmed after the name in the completion list.
+    // The exact strings "on"/"off" are drawn green/red.
     std::string description;
+    // Optional: makes the command's value adjustable in place. Once the user has
+    // navigated into the list with Up/Down, Left/Right call this with delta -1/+1
+    // (and the palette stays open) instead of just moving the text cursor. Use it
+    // for commands backed by a value -- e.g. a flag toggle cycles on/off. Commands
+    // without it ignore Left/Right.
+    std::function<void(int delta)> cycle;
+    // When true, a '*' is shown by the entry (e.g. value changed from default).
+    bool modified = false;
   };
 
   void Open();
@@ -55,19 +64,18 @@ class CommandPalette {
   ImVec2 window_center() const { return center_; }
 
   // Draws the palette (if open), horizontally centered near the top of `rect`
-  // (x, y, width, height). `commands` is searched in '>' command mode and
-  // `slash_commands` in '/' mode; both render the same completion list (name in
-  // normal text, `description` dimmed after it).
+  // (x, y, width, height), capped at 80% of the viewport height (the list
+  // scrolls past that). `commands` is the single list fuzzy-matched against the
+  // whole input. Choosing an entry whose name starts with '/' submits its text
+  // via `on_submit_plain` (so the agent / app can route it); any other entry
+  // runs its `run` callback and closes.
   //
-  // Input that starts with neither '>' nor '/' is "ask" mode: pressing Enter
-  // calls `on_submit_plain(text)` (and clears the box, keeping it open), and
-  // `render_below` is invoked inside the palette window to draw the LLM
-  // conversation right in the command box. In '/' mode, choosing a completion
-  // submits its name via `on_submit_plain`, while typed text with arguments
-  // (e.g. "/model sonnet", which matches no completion) is submitted as-is.
-  // Both callbacks are optional.
-  void Draw(const std::vector<Command>& commands,
-            const std::vector<Command>& slash_commands, const ImVec4& rect,
+  // Typed text that matches no entry but starts with '/' is also submitted as-is
+  // on Enter (so an argument-bearing command like "/model sonnet" or
+  // "/prompt how do I..." works). `render_below` is invoked inside the palette
+  // window -- to draw the agent conversation -- while in agent context (the
+  // input starts with '/' or is empty). Both callbacks are optional.
+  void Draw(const std::vector<Command>& commands, const ImVec4& rect,
             const std::function<void()>& render_below = {},
             const std::function<void(const std::string&)>& on_submit_plain = {});
 
@@ -79,19 +87,20 @@ class CommandPalette {
   // (and thus wiped by the first keystroke).
   bool init_cursor_end_ = false;
   int selection_ = 0;
+  // True once the user has pressed Up/Down to move into the completion list;
+  // while set, Left/Right cycle the highlighted command's value (Command::cycle)
+  // rather than only editing the query. Reset whenever the query text changes.
+  bool in_list_ = false;
+  std::string last_query_;  // query from the previous Draw, to detect edits.
   char input_[256] = "";
   ImVec2 center_{0.0f, 0.0f};
-
-  std::vector<std::string> prompt_history_;
-  int history_pos_ = -1;   // -1 = current (unsaved) input
-  std::string saved_input_;
 
   // Filters `list` by `query`, runs Up/Down navigation, and draws the rows.
   // Returns the chosen command (clicked, or Enter on the highlighted row) or
   // nullptr. `entered` is the InputText's Enter result for this frame.
   const Command* DrawCompletionList(const std::vector<Command>& list,
                                     const std::string& query, bool entered);
-  // Records `text` in the history, calls `on_submit_plain`, then clears and
+  // Calls `on_submit_plain`, then clears and
   // refocuses the box (the shared "submit a line" path for ask and '/' modes).
   void SubmitPlain(const std::string& text,
                    const std::function<void(const std::string&)>& on_submit_plain);
