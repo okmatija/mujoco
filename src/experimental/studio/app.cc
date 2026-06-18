@@ -987,19 +987,6 @@ void App::BuildGui() {
     ImGui::End();
   }
 
-  if (tmp_.agent_settings) {
-    // Center each time it opens (Appearing fires when "/settings" reveals it).
-    const ImGuiViewport* vp = ImGui::GetMainViewport();
-    ImGui::SetNextWindowPos(vp->GetCenter(), ImGuiCond_Appearing,
-                            ImVec2(0.5f, 0.5f));
-    ImGui::SetNextWindowSize(ImVec2(380, 0), ImGuiCond_FirstUseEver);
-    // The bool gives the title-bar close button (the X); "/settings" toggles it.
-    if (ImGui::Begin("Agent Settings###AgentSettings", &tmp_.agent_settings)) {
-      AgentSettingsGui();
-    }
-    ImGui::End();
-  }
-
   if (show_stats_window_) {
     // A transient hover peek, shown while the stats icon in the status bar is
     // hovered. Anchored to its bottom-right corner just above the status bar,
@@ -1091,7 +1078,10 @@ void App::BuildGui() {
           // The rest are handled locally (/record) or by UiAgent::Ask (/clear,
           // /model, /copy, /settings) and never reach the model.
           if (!HandleRecordCommand(q)) ui_agent_.Ask(q);
-        });
+        },
+        // Agent settings live in the cog panel (the extension point for the
+        // host's own settings).
+        [this] { AgentSettingsGui(); });
   }
 
   // Scripted GIF capture: advance the script and draw the synthetic cursor.
@@ -1613,7 +1603,6 @@ std::vector<CommandPalette::Command> App::CollectSlashCommands() {
       {"/copy", {}, "Copy the conversation to the clipboard"},
       {"/model", {}, "Switch or show the active model"},
       {"/record", {}, "Make a status-bar button that replays the agent's ops"},
-      {"/settings", {}, "Open the agent settings window"},
   };
 }
 
@@ -1736,8 +1725,7 @@ void App::RegisterLlmTools() {
   ui_agent_.set_on_ask([this] { grep_calls_ = 0; });
   ui_agent_.set_copy_handler(
       [](const std::string& text) { ImGui::SetClipboardText(text.c_str()); });
-  ui_agent_.set_settings_handler(
-      [this] { tmp_.agent_settings = !tmp_.agent_settings; });
+  // No "/settings" command: the settings live only behind the cog button.
 }
 
 // Handles the studio-local "/record <label>" command (not sent to the model):

@@ -174,7 +174,7 @@ float HighlightedName(ImDrawList* dl, ImVec2 pos, const std::string& name,
 RowHit CompletionRow(const CommandPalette::Command& cmd, bool selected,
                      float desc_x, const std::string& query,
                      CommandPalette::SearchMode mode, bool case_insensitive,
-                     ImFont* match_font) {
+                     ImFont* match_font, bool focus_value) {
   // AllowOverlap so an editable value widget (draw_value) drawn on top of the
   // row's selectable still receives its clicks.
   const ImGuiSelectableFlags sel_flags = ImGuiSelectableFlags_AllowOverlap;
@@ -205,6 +205,9 @@ RowHit CompletionRow(const CommandPalette::Command& cmd, bool selected,
     ImGui::SameLine(desc_x);
     value_x = ImGui::GetCursorScreenPos().x;
     ImGui::SetNextItemWidth(-FLT_MIN);
+    if (focus_value) {
+      ImGui::SetKeyboardFocusHere();  // Right entered the widget; focus it.
+    }
     cmd.draw_value();
   } else if (!cmd.description.empty()) {
     ImGui::SameLine(desc_x);
@@ -307,6 +310,7 @@ void CommandPalette::Open() {
   focus_input_ = true;
   selection_ = 0;
   in_list_ = false;
+  show_settings_ = false;  // a fresh open shows the command list, not settings.
   last_query_.clear();
   // Start empty (type to search; the hint lists the contexts). OpenWith() may
   // pre-fill it afterwards; the cursor is then parked at the end (see
@@ -395,18 +399,20 @@ const CommandPalette::Command* CommandPalette::DrawCompletionList(
     selection_ = 0;
   }
 
-  // In list mode, Left/Right cycle the highlighted command's value in place
-  // (e.g. toggle a flag on/off) without running it or closing the palette. The
-  // description, rebuilt by the caller each frame, reflects the new value.
+  // In list mode, the highlighted command's value reacts to Left/Right without
+  // running it or closing the palette: a `cycle` value (flag/enum) cycles in
+  // place; otherwise (a numeric input) Right gives the input keyboard focus so
+  // it can be typed. Values rebuilt by the caller each frame reflect the change.
   if (in_list_ && !matches.empty()) {
-    int delta = 0;
-    if (ImGui::IsKeyPressed(ImGuiKey_LeftArrow)) {
-      delta = -1;
-    } else if (ImGui::IsKeyPressed(ImGuiKey_RightArrow)) {
-      delta = 1;
-    }
-    if (delta != 0 && matches[selection_]->cycle) {
-      matches[selection_]->cycle(delta);
+    const Command* sel = matches[selection_];
+    if (sel->cycle) {
+      if (ImGui::IsKeyPressed(ImGuiKey_LeftArrow)) {
+        sel->cycle(-1);
+      } else if (ImGui::IsKeyPressed(ImGuiKey_RightArrow)) {
+        sel->cycle(1);
+      }
+    } else if (sel->draw_value && ImGui::IsKeyPressed(ImGuiKey_RightArrow)) {
+      focus_value_ = true;
     }
   }
 
@@ -447,8 +453,9 @@ const CommandPalette::Command* CommandPalette::DrawCompletionList(
                       ImGui::GetFrameHeightWithSpacing() * 2.0f;
   ImGui::SetNextWindowSizeConstraints(ImVec2(0, 0), ImVec2(FLT_MAX, max_h));
   const Command* chosen = nullptr;
-  if (ImGui::BeginChild("##completions", ImVec2(0, 0),
-                        ImGuiChildFlags_AutoResizeY)) {
+  if (ImGui::BeginChild(
+          "##completions", ImVec2(0, 0),
+          ImGuiChildFlags_AutoResizeY | ImGuiChildFlags_AlwaysUseWindowPadding)) {
     // Make a held (pressed) row use the hover colour rather than the darker
     // "active" colour.
     ImGui::PushStyleColor(ImGuiCol_HeaderActive,
@@ -461,7 +468,7 @@ const CommandPalette::Command* CommandPalette::DrawCompletionList(
       // that the selection is invisible but still the Enter target (top match).
       const RowHit hit = CompletionRow(
           *command, in_list_ && at_selection, desc_x, query, search_mode_,
-          case_insensitive_, match_font);
+          case_insensitive_, match_font, focus_value_ && at_selection);
       if (hit != RowHit::kNone) {
         // A click moves the list focus to this row (and refocuses the input so
         // typing keeps working); it never runs or closes the palette. A click on
@@ -493,10 +500,11 @@ const CommandPalette::Command* CommandPalette::DrawCompletionList(
     ImGui::PopStyleColor();
   }
   ImGui::EndChild();
+  focus_value_ = false;  // one-shot, consumed by the selected row above.
   return chosen;
 }
 
-void CommandPalette::DrawSettings() {
+void CommandPalette::DrawSettings(const std::function<void()>& render_settings) {
   ImGui::Separator();
 
   // The palette window is translucent; give the settings panel a solid
@@ -504,17 +512,27 @@ void CommandPalette::DrawSettings() {
   ImVec4 bg = ImGui::GetStyleColorVec4(ImGuiCol_WindowBg);
   bg.w = 1.0f;
   ImGui::PushStyleColor(ImGuiCol_ChildBg, bg);
-  ImGui::BeginChild("##settings", ImVec2(0, 0), ImGuiChildFlags_AutoResizeY);
+  ImGui::BeginChild(
+      "##settings", ImVec2(0, 0),
+      ImGuiChildFlags_AutoResizeY | ImGuiChildFlags_AlwaysUseWindowPadding);
 
-  ImGui::TextDisabled("Command palette settings");
-  const char* kModes[] = {"Prefix", "Substring", "Fuzzy"};
-  int mode = static_cast<int>(search_mode_);
-  ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x * 0.5f);
-  if (ImGui::Combo("Autocomplete Mode", &mode, kModes, IM_ARRAYSIZE(kModes))) {
-    search_mode_ = static_cast<SearchMode>(mode);
+  if (ImGui::CollapsingHeader("Command palette settings",
+                              ImGuiTreeNodeFlags_DefaultOpen)) {
+    const char* kModes[] = {"Prefix", "Substring", "Fuzzy"};
+    int mode = static_cast<int>(search_mode_);
+    ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x * 0.5f);
+    if (ImGui::Combo("Autocomplete Mode", &mode, kModes, IM_ARRAYSIZE(kModes))) {
+      search_mode_ = static_cast<SearchMode>(mode);
+    }
+    ImGui::Checkbox("Case Insensitive", &case_insensitive_);
+    ImGui::Checkbox("Highlight Matches", &highlight_matches_);
   }
-  ImGui::Checkbox("Case Insensitive", &case_insensitive_);
-  ImGui::Checkbox("Highlight Matches", &highlight_matches_);
+
+  // Host- (and plugin-) provided settings go below the palette's own.
+  if (render_settings) {
+    ImGui::Spacing();
+    render_settings();
+  }
 
   ImGui::EndChild();
   ImGui::PopStyleColor();
@@ -536,7 +554,8 @@ void CommandPalette::SubmitPlain(
 void CommandPalette::Draw(
     const std::vector<Command>& commands, const ImVec4& rect,
     const std::function<void()>& render_below,
-    const std::function<void(const std::string&)>& on_submit_plain) {
+    const std::function<void(const std::string&)>& on_submit_plain,
+    const std::function<void()>& render_settings) {
   if (!open_) {
     return;
   }
@@ -597,7 +616,7 @@ void CommandPalette::Draw(
     ImGui::SetItemTooltip("Command Palette Preferences");
 
     if (show_settings_) {
-      DrawSettings();
+      DrawSettings(render_settings);
     } else {
       // One unified list, matched against the whole input. A leading
       // '>'/'.'/'/' only matches names with that prefix, narrowing by context.

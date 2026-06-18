@@ -88,10 +88,13 @@ class CommandPalette {
   // on Enter (so an argument-bearing command like "/model sonnet" or
   // "/prompt how do I..." works). `render_below` is invoked inside the palette
   // window -- to draw the agent conversation -- while in agent context (the
-  // input starts with '/' or is empty). Both callbacks are optional.
+  // input starts with '/' or is empty). `render_settings` is invoked inside the
+  // cog settings panel, after the palette's own options, so the host (and its
+  // plugins) can add their own settings there. All callbacks are optional.
   void Draw(const std::vector<Command>& commands, const ImVec4& rect,
             const std::function<void()>& render_below = {},
-            const std::function<void(const std::string&)>& on_submit_plain = {});
+            const std::function<void(const std::string&)>& on_submit_plain = {},
+            const std::function<void()>& render_settings = {});
 
  private:
   bool open_ = false;
@@ -105,6 +108,9 @@ class CommandPalette {
   // while set, Left/Right cycle the highlighted command's value (Command::cycle)
   // rather than only editing the query. Reset whenever the query text changes.
   bool in_list_ = false;
+  // One-shot: Right on a selected value-input row gives that widget keyboard
+  // focus next render (so the value can be typed).
+  bool focus_value_ = false;
   std::string last_query_;  // query from the previous Draw, to detect edits.
   char input_[256] = "";
   ImVec2 center_{0.0f, 0.0f};
@@ -125,7 +131,7 @@ class CommandPalette {
   const Command* DrawCompletionList(const std::vector<Command>& list,
                                     const std::string& query, bool entered);
   // Draws the settings panel (search mode, case sensitivity) in the list area.
-  void DrawSettings();
+  void DrawSettings(const std::function<void()>& render_settings);
   // Calls `on_submit_plain`, then clears and
   // refocuses the box (the shared "submit a line" path for ask and '/' modes).
   void SubmitPlain(const std::string& text,

@@ -158,7 +158,6 @@ class App {
     bool stats_in_statusbar = false;
     bool profiler = false;
     bool picture_in_picture = false;
-    bool agent_settings = false;  // the "/settings" window.
     bool options_panel = true;
     bool full_screen = false;
     bool style_editor = false;
@@ -250,7 +249,8 @@ class App {
 
   void MainMenuGui();
   void GraphicsModeMenu();
-  // The "/settings" window: agent model selection + test-engine playback knobs.
+  // Agent model selection + test-engine playback knobs, rendered into the
+  // command palette's cog settings panel (and reachable via "/settings").
   void AgentSettingsGui();
   void ToolBarGui();
   void HelpGui();
