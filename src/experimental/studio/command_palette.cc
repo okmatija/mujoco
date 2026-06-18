@@ -521,7 +521,7 @@ void CommandPalette::DrawSettings(const std::function<void()>& render_settings) 
     const char* kModes[] = {"Prefix", "Substring", "Fuzzy"};
     int mode = static_cast<int>(search_mode_);
     ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x * 0.5f);
-    if (ImGui::Combo("Autocomplete Mode", &mode, kModes, IM_ARRAYSIZE(kModes))) {
+    if (ImGui::Combo("Search Mode", &mode, kModes, IM_ARRAYSIZE(kModes))) {
       search_mode_ = static_cast<SearchMode>(mode);
     }
     ImGui::Checkbox("Case Insensitive", &case_insensitive_);
@@ -615,9 +615,16 @@ void CommandPalette::Draw(
     }
     ImGui::SetItemTooltip("Command Palette Preferences");
 
+    // Only show the autocomplete list / conversation while the palette is
+    // focused. Clicking outside ImGui (e.g. into the viewport) defocuses it, so
+    // the window collapses to just the input box -- this hides the list without
+    // losing what the user typed; clicking back into the box brings it back.
+    const bool focused =
+        ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
+
     if (show_settings_) {
       DrawSettings(render_settings);
-    } else {
+    } else if (focused) {
       // One unified list, matched against the whole input. A leading
       // '>'/'.'/'/' only matches names with that prefix, narrowing by context.
       if (input_[0] != '\0') {

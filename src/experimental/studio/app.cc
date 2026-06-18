@@ -1446,12 +1446,12 @@ std::vector<CommandPalette::Command> App::CollectModelCommands() {
     return out;
   };
 
-  // Appends " *" to a field's display name when its value differs from the
+  // Appends "*" to a field's display name when its value differs from the
   // default, so the change shows and typing "*" filters to all changed fields.
   // The value widget's id uses the unmarked path so editing isn't disrupted when
   // the marker appears/disappears.
   auto marked = [](const std::string& path, bool modified) {
-    return modified ? path + " *" : path;
+    return modified ? path + "*" : path;
   };
 
   // Pushes a boolean field: a checkbox in the value column, plus run/cycle
