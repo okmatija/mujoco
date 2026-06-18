@@ -77,6 +77,15 @@ function(configure_studio_target TARGET_NAME)
         COMMAND ${CMAKE_COMMAND} -E make_directory ${STUDIO_ASSETS_DIR}
         COMMAND ${CMAKE_COMMAND}
             -E copy
+                ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/../_deps/opensans-src/fonts/ttf/OpenSans-Bold.ttf
+                ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/assets
+        COMMENT "Copying OpenSans-Bold.ttf assets to build directory"
+    )
+    add_custom_command(
+        TARGET ${TARGET_NAME}
+        POST_BUILD
+        COMMAND ${CMAKE_COMMAND}
+            -E copy
                 ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/../_deps/font_awesome-src/fonts/fontawesome-webfont.ttf
                 ${STUDIO_ASSETS_DIR}
         COMMENT "Copying fontawesome-webfont.ttf to build directory"

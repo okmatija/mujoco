@@ -33,6 +33,7 @@
 #include "experimental/platform/sim/sim_history.h"
 #include "experimental/platform/sim/sim_profiler.h"
 #include "experimental/platform/sim/step_control.h"
+#include "experimental/platform/ux/command_palette.h"
 #include "experimental/platform/ux/gui.h"
 #include "experimental/platform/ux/gui_spec.h"
 #include "experimental/platform/ux/interaction.h"
@@ -219,6 +220,10 @@ class App {
   void MainMenuGui();
   void ToolBarGui();
   void StatusBarGui();
+  // Command palette (Ctrl+Shift+P). CollectCommands gathers the '>' UI actions
+  // plus, via CollectModelCommands, the editable '.' model/data fields.
+  std::vector<platform::CommandPalette::Command> CollectCommands();
+  std::vector<platform::CommandPalette::Command> CollectModelCommands();
   void HelpGui();
   void FileDialogGui();
   void ModelOptionsGui();
@@ -261,6 +266,12 @@ class App {
   mjvCamera camera_;
   mjvPerturb perturb_;
   mjvOption vis_options_;
+  // The model's mjStatistic as loaded; the command palette treats it as the
+  // "default" for mjModel.stat.* fields (mjStatistic has no library default,
+  // unlike mjOption/mjVisual), so editing them can be marked and reverted.
+  mjStatistic stat_default_{};
+
+  platform::CommandPalette command_palette_;
 
   UiState ui_;
   UiTempState tmp_;
