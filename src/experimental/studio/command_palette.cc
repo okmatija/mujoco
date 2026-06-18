@@ -167,12 +167,13 @@ float HighlightedName(ImDrawList* dl, ImVec2 pos, const std::string& name,
 
 // Draws one completion row: a full-width selectable for the background /
 // highlight / click, then the value at `desc_x` (a window-local x so values line
-// up in a column) -- either `draw_value`'s widget or the `description` text
-// (dimmed, except "on"/"off" which are green/red). If `match_font` is non-null
-// the name is drawn with the matched characters in that bold font (the
-// selectable then draws no label); otherwise the selectable draws the name
-// plainly. Returns which column was clicked this frame (kNone if not clicked):
-// the value column is everything from the value onward, the name column the rest.
+// up in a column) -- either `draw_value`'s editable widget (with a revert button
+// past it when `modified`) or, for entries without one, the `description` text
+// (dimmed). If `match_font` is non-null the name is drawn with the matched
+// characters in that bold font (the selectable then draws no label); otherwise
+// the selectable draws the name plainly. Returns which column was clicked this
+// frame (kNone if not clicked): the value column is everything from the value
+// onward, the name column the rest.
 RowHit CompletionRow(const CommandPalette::Command& cmd, bool selected,
                      float desc_x, const std::string& query,
                      CommandPalette::SearchMode mode, bool case_insensitive,
@@ -238,15 +239,10 @@ RowHit CompletionRow(const CommandPalette::Command& cmd, bool selected,
       }
     }
   } else if (!cmd.description.empty()) {
+    // A dimmed one-line hint (entries without a value widget, e.g. '>' / '/').
     ImGui::SameLine(desc_x);
     value_x = ImGui::GetCursorScreenPos().x;
-    if (cmd.description == "on") {
-      ImGui::TextColored(ImVec4(0.36f, 0.80f, 0.36f, 1.0f), "on");
-    } else if (cmd.description == "off") {
-      ImGui::TextColored(ImVec4(0.90f, 0.40f, 0.40f, 1.0f), "off");
-    } else {
-      ImGui::TextDisabled("%s", cmd.description.c_str());
-    }
+    ImGui::TextDisabled("%s", cmd.description.c_str());
   }
   if (!clicked) {
     return RowHit::kNone;
@@ -308,11 +304,11 @@ std::string SegmentComplete(const std::string& input,
 int CommandPalette::InputTextCallback(ImGuiInputTextCallbackData* data) {
   auto* self = static_cast<CommandPalette*>(data->UserData);
 
-  // CallbackAlways: one-shot after Open() to undo the select-all that focus
-  // applies, so the pre-filled ">" stays put and the cursor sits after it. This
-  // fires on the activation frame, after InputText's select-all, so it wins.
-  // (Up/Down/Left/Right are read via IsKeyPressed in DrawCompletionList, so the
-  // single-line input never needs to handle them itself.)
+  // CallbackAlways: one-shot after Open()/OpenWith() to undo the select-all that
+  // focus applies, so a pre-filled string (from OpenWith) stays put with the
+  // cursor after it. Fires on the activation frame, after InputText's
+  // select-all, so it wins. (Up/Down/Left/Right are read via IsKeyPressed in
+  // DrawCompletionList, so the single-line input never handles them itself.)
   if (data->EventFlag == ImGuiInputTextFlags_CallbackAlways) {
     if (self->init_cursor_end_) {
       data->CursorPos = data->BufTextLen;

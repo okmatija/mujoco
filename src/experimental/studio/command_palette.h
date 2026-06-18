@@ -31,20 +31,22 @@ namespace mujoco::studio {
 // entry runs its callback; '/' entries instead submit their text (see Draw).
 //
 // This widget is intentionally self-contained and knows nothing about the app:
-// commands are just {name, callback} pairs, so it is easy to reuse elsewhere.
+// a command is a {name, action, optional value-widget} record (see Command), so
+// it is easy to reuse elsewhere.
 class CommandPalette {
  public:
   struct Command {
     std::string name;
+    // Runs when the entry is chosen (Enter / click) -- for '>' and '.' entries.
     std::function<void()> run;
-    // Optional one-line hint shown dimmed after the name in the completion list.
-    // The exact strings "on"/"off" are drawn green/red.
+    // Optional dimmed one-line hint shown in the value column, for entries that
+    // have no value widget (e.g. '>' UI actions, '/' agent commands).
     std::string description;
     // Optional: makes the command's value adjustable in place. Once the user has
     // navigated into the list with Up/Down, Left/Right call this with delta -1/+1
     // (and the palette stays open) instead of just moving the text cursor. Use it
-    // for commands backed by a value -- e.g. a flag toggle cycles on/off. Commands
-    // without it ignore Left/Right.
+    // for stepped values -- a flag toggles, an enum advances. Entries without it
+    // ignore Left/Right (numeric inputs are typed instead; see `draw_value`).
     std::function<void(int delta)> cycle;
     // Optional: draws an editable widget for the value (checkbox, input, ...) in
     // the value column. When set it supersedes `description` there; the row's
@@ -65,7 +67,7 @@ class CommandPalette {
   //   kFuzzy     -- query characters appear in order with gaps (subsequence)
   enum class SearchMode { kPrefix, kSubstring, kFuzzy };
 
-  // Matching options. No UI toggles these yet; set them programmatically.
+  // Matching options (also exposed as controls in the cog settings panel).
   void set_search_mode(SearchMode mode) { search_mode_ = mode; }
   SearchMode search_mode() const { return search_mode_; }
   void set_case_insensitive(bool on) { case_insensitive_ = on; }
@@ -106,14 +108,15 @@ class CommandPalette {
  private:
   bool open_ = false;
   bool focus_input_ = false;
-  // One-shot after Open(): on the frame the input gains focus, move the cursor
-  // to the end and clear the selection so the pre-filled ">" isn't select-all'd
-  // (and thus wiped by the first keystroke).
+  // One-shot after Open()/OpenWith(): on the frame the input gains focus, move
+  // the cursor to the end and clear the selection so a pre-filled string (from
+  // OpenWith) isn't select-all'd and wiped by the first keystroke.
   bool init_cursor_end_ = false;
   int selection_ = 0;
   // True once the user has pressed Up/Down to move into the completion list;
-  // while set, Left/Right cycle the highlighted command's value (Command::cycle)
-  // rather than only editing the query. Reset whenever the query text changes.
+  // while set, Left/Right act on the highlighted command's value (cycle it, or
+  // Right focuses a numeric input) instead of moving the query text cursor.
+  // Reset whenever the query text changes.
   bool in_list_ = false;
   // One-shot: Right on a selected value-input row gives that widget keyboard
   // focus next render (so the value can be typed).
@@ -132,15 +135,17 @@ class CommandPalette {
   // completion list.
   bool show_settings_ = false;
 
-  // Filters `list` by `query`, runs Up/Down navigation, and draws the rows.
-  // Returns the chosen command (clicked, or Enter on the highlighted row) or
-  // nullptr. `entered` is the InputText's Enter result for this frame.
+  // Filters `list` by `query` (current search mode), runs Up/Down/Left/Right
+  // navigation, and draws the rows. Returns the command chosen by Enter on the
+  // selected row, or nullptr -- clicks move the list focus or edit values, they
+  // don't choose. `entered` is the InputText's Enter result for this frame.
   const Command* DrawCompletionList(const std::vector<Command>& list,
                                     const std::string& query, bool entered);
-  // Draws the settings panel (search mode, case sensitivity) in the list area.
+  // Draws the settings panel (search mode, case sensitivity, match
+  // highlighting), then the host's `render_settings`, in the list area.
   void DrawSettings(const std::function<void()>& render_settings);
-  // Calls `on_submit_plain`, then clears and
-  // refocuses the box (the shared "submit a line" path for ask and '/' modes).
+  // Calls `on_submit_plain`, then clears and refocuses the box (the shared
+  // "submit a line" path for '/' agent commands).
   void SubmitPlain(const std::string& text,
                    const std::function<void(const std::string&)>& on_submit_plain);
 
