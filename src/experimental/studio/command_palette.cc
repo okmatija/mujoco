@@ -82,15 +82,87 @@ bool MatchQuery(const std::string& text, const std::string& query,
 // Which column of a completion row a click landed in.
 enum class RowHit { kNone, kName, kValue };
 
+// Marks which characters of `name` the current query matched, under `mode` (so
+// they can be drawn bold). Assumes `name` already matched the query.
+std::vector<bool> MatchedChars(const std::string& name, const std::string& query,
+                               CommandPalette::SearchMode mode,
+                               bool case_insensitive) {
+  std::vector<bool> hit(name.size(), false);
+  if (query.empty()) {
+    return hit;
+  }
+  auto eq = [case_insensitive](char a, char b) {
+    if (case_insensitive) {
+      return std::tolower(static_cast<unsigned char>(a)) ==
+             std::tolower(static_cast<unsigned char>(b));
+    }
+    return a == b;
+  };
+  switch (mode) {
+    case CommandPalette::SearchMode::kPrefix:
+      for (std::size_t i = 0; i < query.size() && i < name.size(); ++i) {
+        hit[i] = true;
+      }
+      break;
+    case CommandPalette::SearchMode::kSubstring:
+      for (std::size_t s = 0; s + query.size() <= name.size(); ++s) {
+        std::size_t j = 0;
+        for (; j < query.size() && eq(name[s + j], query[j]); ++j) {
+        }
+        if (j == query.size()) {
+          for (std::size_t k = 0; k < query.size(); ++k) hit[s + k] = true;
+          break;  // bold only the first occurrence.
+        }
+      }
+      break;
+    case CommandPalette::SearchMode::kFuzzy: {
+      std::size_t qi = 0;
+      for (std::size_t i = 0; i < name.size() && qi < query.size(); ++i) {
+        if (eq(name[i], query[qi])) {
+          hit[i] = true;
+          ++qi;
+        }
+      }
+      break;
+    }
+  }
+  return hit;
+}
+
 // Draws one completion row: a full-width selectable whose label is the name,
 // then (if the value differs from default) a '*' at `marker_x`, then the
 // description at `desc_x` -- both window-local x's so they line up in columns.
-// The description is dimmed, except the literal "on"/"off" which are green/red.
-// Returns which column was clicked this frame (kNone if not clicked): the value
-// column is everything from the description onward, the name column the rest.
+// Characters of the name that matched `query` (under `mode`/`case_insensitive`)
+// are over-drawn to render bold. The description is dimmed, except the literal
+// "on"/"off" which are green/red. Returns which column was clicked this frame
+// (kNone if not clicked): the value column is everything from the description
+// onward, the name column the rest.
 RowHit CompletionRow(const CommandPalette::Command& cmd, bool selected,
-                     float marker_x, float desc_x) {
+                     float marker_x, float desc_x, const std::string& query,
+                     CommandPalette::SearchMode mode, bool case_insensitive) {
+  const ImVec2 name_pos = ImGui::GetCursorScreenPos();
   const bool clicked = ImGui::Selectable(cmd.name.c_str(), selected);
+
+  // Over-draw the matched characters shifted by a fraction of a pixel; the extra
+  // pass thickens them into a faux-bold (no separate bold font needed). ImGui
+  // lays glyphs out without kerning, so per-character widths sum to the position
+  // the selectable drew each one at.
+  if (!query.empty()) {
+    const std::vector<bool> hit =
+        MatchedChars(cmd.name, query, mode, case_insensitive);
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const ImU32 col = ImGui::GetColorU32(ImGuiCol_Text);
+    const float bold = ImGui::GetFontSize() * 0.04f;  // offset scales with font.
+    float x = name_pos.x;
+    for (std::size_t i = 0; i < cmd.name.size(); ++i) {
+      const char* c = &cmd.name[i];
+      if (hit[i]) {
+        dl->AddText(ImVec2(x + bold, name_pos.y), col, c, c + 1);
+      }
+      x += ImGui::CalcTextSize(c, c + 1).x;
+    }
+  }
+
   if (cmd.modified) {
     ImGui::SameLine(marker_x);
     ImGui::TextUnformatted("*");
@@ -334,7 +406,8 @@ const CommandPalette::Command* CommandPalette::DrawCompletionList(
       // Only highlight once the user has entered the list (in_list_); before
       // that the selection is invisible but still the Enter target (top match).
       const RowHit hit =
-          CompletionRow(*command, in_list_ && at_selection, marker_x, desc_x);
+          CompletionRow(*command, in_list_ && at_selection, marker_x, desc_x,
+                        query, search_mode_, case_insensitive_);
       if (hit != RowHit::kNone) {
         // A click moves the list focus to this row (and refocuses the input so
         // typing keeps working); it never runs or closes the palette. A click on
