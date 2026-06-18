@@ -109,10 +109,10 @@ class CommandPalette {
   // Points at the command list during Draw so the Tab-completion callback can
   // see it (the callback runs inside InputText, before the list is filtered).
   const std::vector<Command>* completion_list_ = nullptr;
-  // Matching options (default: prefix search, case-insensitive). Fuzzy is off by
-  // default so e.g. ".mjData" doesn't match ".mjModel..." entries.
-  SearchMode search_mode_ = SearchMode::kPrefix;
+  // Matching options (default: fuzzy, case-insensitive).
+  SearchMode search_mode_ = SearchMode::kFuzzy;
   bool case_insensitive_ = true;
+  bool highlight_matches_ = true;  // bold the matched characters in the list.
   // When set (toggled by the cog button), the settings panel replaces the
   // completion list.
   bool show_settings_ = false;

@@ -82,6 +82,12 @@ bool MatchQuery(const std::string& text, const std::string& query,
 // Which column of a completion row a click landed in.
 enum class RowHit { kNone, kName, kValue };
 
+// ===== Match highlighting ==================================================
+// Renders the matched characters of a name in a bold font. This whole block is
+// self-contained: deleting it (plus the `match_font` branch in CompletionRow and
+// the highlight handling in DrawCompletionList) removes the feature and leaves
+// the plain, regular-font path untouched.
+
 // Marks which characters of `name` the current query matched, under `mode` (so
 // they can be drawn bold). Assumes `name` already matched the query.
 std::vector<bool> MatchedChars(const std::string& name, const std::string& query,
@@ -129,38 +135,66 @@ std::vector<bool> MatchedChars(const std::string& name, const std::string& query
   return hit;
 }
 
-// Draws one completion row: a full-width selectable whose label is the name,
-// then (if the value differs from default) a '*' at `marker_x`, then the
-// description at `desc_x` -- both window-local x's so they line up in columns.
-// Characters of the name that matched `query` (under `mode`/`case_insensitive`)
-// are over-drawn to render bold. The description is dimmed, except the literal
-// "on"/"off" which are green/red. Returns which column was clicked this frame
-// (kNone if not clicked): the value column is everything from the description
-// onward, the name column the rest.
+// Lays out `name` in runs of adjacent characters that share a font -- matched
+// characters (per `hit`) use `bold`, the rest `regular`. Draws starting at `pos`
+// when `dl` is non-null; pass dl=nullptr to only measure. Returns the total
+// width (so the caller can size the name column for the mixed fonts). ImGui lays
+// out glyphs without kerning, so concatenated run widths match its own layout.
+float HighlightedName(ImDrawList* dl, ImVec2 pos, const std::string& name,
+                      const std::vector<bool>& hit, ImFont* regular,
+                      ImFont* bold, float size, ImU32 col) {
+  const char* base = name.c_str();
+  const std::size_t n = name.size();
+  float x = pos.x;
+  for (std::size_t i = 0; i < n;) {
+    const bool emphasized = hit[i];
+    std::size_t j = i + 1;
+    while (j < n && hit[j] == emphasized) {
+      ++j;
+    }
+    ImFont* f = emphasized ? bold : regular;
+    if (dl != nullptr) {
+      dl->AddText(f, size, ImVec2(x, pos.y), col, base + i, base + j);
+    }
+    x += f->CalcTextSizeA(size, FLT_MAX, 0.0f, base + i, base + j).x;
+    i = j;
+  }
+  return x - pos.x;
+}
+// ===========================================================================
+
+// Draws one completion row: a full-width selectable for the background /
+// highlight / click, then a '*' at `marker_x` if modified, then the description
+// at `desc_x` -- both window-local x's so they line up in columns. The
+// description is dimmed, except the literal "on"/"off" which are green/red. If
+// `match_font` is non-null the name is drawn with the matched characters in that
+// bold font (the selectable then draws no label); otherwise the selectable draws
+// the name plainly. Returns which column was clicked this frame (kNone if not
+// clicked): the value column is everything from the description onward, the name
+// column the rest.
 RowHit CompletionRow(const CommandPalette::Command& cmd, bool selected,
                      float marker_x, float desc_x, const std::string& query,
-                     CommandPalette::SearchMode mode, bool case_insensitive) {
-  const ImVec2 name_pos = ImGui::GetCursorScreenPos();
-  const bool clicked = ImGui::Selectable(cmd.name.c_str(), selected);
-
-  // Over-draw the matched characters shifted by a fraction of a pixel; the extra
-  // pass thickens them into a faux-bold (no separate bold font needed). ImGui
-  // lays glyphs out without kerning, so per-character widths sum to the position
-  // the selectable drew each one at.
-  if (!query.empty()) {
+                     CommandPalette::SearchMode mode, bool case_insensitive,
+                     ImFont* match_font) {
+  bool clicked;
+  if (match_font != nullptr) {
+    // Match-highlighting path: an empty selectable provides the row background /
+    // highlight / click, and the name is drawn on top so matched characters can
+    // use the bold font.
+    const ImVec2 name_pos = ImGui::GetCursorScreenPos();
+    ImGui::PushID(cmd.name.c_str());
+    clicked = ImGui::Selectable(
+        "##row", selected, 0,
+        ImVec2(ImGui::GetContentRegionAvail().x, ImGui::GetTextLineHeight()));
+    ImGui::PopID();
     const std::vector<bool> hit =
         MatchedChars(cmd.name, query, mode, case_insensitive);
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-    const ImU32 col = ImGui::GetColorU32(ImGuiCol_Text);
-    const float bold = ImGui::GetFontSize() * 0.04f;  // offset scales with font.
-    float x = name_pos.x;
-    for (std::size_t i = 0; i < cmd.name.size(); ++i) {
-      const char* c = &cmd.name[i];
-      if (hit[i]) {
-        dl->AddText(ImVec2(x + bold, name_pos.y), col, c, c + 1);
-      }
-      x += ImGui::CalcTextSize(c, c + 1).x;
-    }
+    HighlightedName(ImGui::GetWindowDrawList(), name_pos, cmd.name, hit,
+                    ImGui::GetFont(), match_font, ImGui::GetFontSize(),
+                    ImGui::GetColorU32(ImGuiCol_Text));
+  } else {
+    // Plain path: the selectable draws the name as its own label.
+    clicked = ImGui::Selectable(cmd.name.c_str(), selected);
   }
 
   if (cmd.modified) {
@@ -376,11 +410,28 @@ const CommandPalette::Command* CommandPalette::DrawCompletionList(
     return nullptr;  // nothing to show (e.g. mid-typing "/prompt question").
   }
 
+  // Bold weight for match highlighting (the font the app loads after the
+  // default); null when highlighting is off, which selects the plain path. See
+  // the "Match highlighting" block above.
+  const ImVector<ImFont*>& fonts = ImGui::GetIO().Fonts->Fonts;
+  ImFont* match_font =
+      (highlight_matches_ && fonts.Size > 1) ? fonts[1] : nullptr;
+
   // Column layout: '*' marker just past the widest name, descriptions past that.
   const float spacing = ImGui::GetStyle().ItemSpacing.x;
   float name_w = 0.0f;
   for (const Command* command : matches) {
-    name_w = std::max(name_w, ImGui::CalcTextSize(command->name.c_str()).x);
+    float w;
+    if (match_font != nullptr) {
+      // The name renders in mixed fonts, so measure it the same way.
+      const std::vector<bool> hit =
+          MatchedChars(command->name, query, search_mode_, case_insensitive_);
+      w = HighlightedName(nullptr, ImVec2(0, 0), command->name, hit,
+                          ImGui::GetFont(), match_font, ImGui::GetFontSize(), 0);
+    } else {
+      w = ImGui::CalcTextSize(command->name.c_str()).x;
+    }
+    name_w = std::max(name_w, w);
   }
   const float marker_x = name_w + spacing * 2.0f;
   const float desc_x = marker_x + ImGui::CalcTextSize("*").x + spacing * 2.0f;
@@ -405,9 +456,9 @@ const CommandPalette::Command* CommandPalette::DrawCompletionList(
       const float row_min = ImGui::GetCursorPosY();
       // Only highlight once the user has entered the list (in_list_); before
       // that the selection is invisible but still the Enter target (top match).
-      const RowHit hit =
-          CompletionRow(*command, in_list_ && at_selection, marker_x, desc_x,
-                        query, search_mode_, case_insensitive_);
+      const RowHit hit = CompletionRow(
+          *command, in_list_ && at_selection, marker_x, desc_x, query,
+          search_mode_, case_insensitive_, match_font);
       if (hit != RowHit::kNone) {
         // A click moves the list focus to this row (and refocuses the input so
         // typing keeps working); it never runs or closes the palette. A click on
@@ -444,8 +495,15 @@ const CommandPalette::Command* CommandPalette::DrawCompletionList(
 
 void CommandPalette::DrawSettings() {
   ImGui::Separator();
-  ImGui::TextDisabled("Command palette settings");
 
+  // The palette window is translucent; give the settings panel a solid
+  // background (the window's own colour, opaque) so its controls read clearly.
+  ImVec4 bg = ImGui::GetStyleColorVec4(ImGuiCol_WindowBg);
+  bg.w = 1.0f;
+  ImGui::PushStyleColor(ImGuiCol_ChildBg, bg);
+  ImGui::BeginChild("##settings", ImVec2(0, 0), ImGuiChildFlags_AutoResizeY);
+
+  ImGui::TextDisabled("Command palette settings");
   const char* kModes[] = {"Prefix", "Substring", "Fuzzy"};
   int mode = static_cast<int>(search_mode_);
   ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x * 0.5f);
@@ -453,6 +511,10 @@ void CommandPalette::DrawSettings() {
     search_mode_ = static_cast<SearchMode>(mode);
   }
   ImGui::Checkbox("Case Insensitive", &case_insensitive_);
+  ImGui::Checkbox("Highlight Matches", &highlight_matches_);
+
+  ImGui::EndChild();
+  ImGui::PopStyleColor();
 }
 
 void CommandPalette::SubmitPlain(
