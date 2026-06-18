@@ -33,12 +33,12 @@
 #include "experimental/platform/sim/sim_history.h"
 #include "experimental/platform/sim/sim_profiler.h"
 #include "experimental/platform/sim/step_control.h"
+#include "experimental/platform/ux/command_palette.h"
 #include "experimental/platform/ux/gui.h"
 #include "experimental/platform/ux/gui_spec.h"
 #include "experimental/platform/ux/interaction.h"
 #include "experimental/platform/ux/picture_gui.h"
 #include "experimental/platform/ux/spec_editor.h"
-#include "experimental/studio/command_palette.h"
 #include "agent_imgui/llm_panel.h"
 #include "agent_imgui/test_runner.h"
 #include "agent_imgui/ui_agent.h"
@@ -275,11 +275,11 @@ class App {
   // Handles the local "/record <label>" command (makes a status-bar replay
   // button from the agent's recorded ops). Returns true if `text` was consumed.
   bool HandleRecordCommand(const std::string& text);
-  std::vector<CommandPalette::Command> CollectCommands();
+  std::vector<platform::CommandPalette::Command> CollectCommands();
   // The local "/..." slash commands shown as completions in the command box.
-  std::vector<CommandPalette::Command> CollectSlashCommands();
+  std::vector<platform::CommandPalette::Command> CollectSlashCommands();
   // The "." model/data fields (dotted paths like model.opt.disableflags.X).
-  std::vector<CommandPalette::Command> CollectModelCommands();
+  std::vector<platform::CommandPalette::Command> CollectModelCommands();
   // Opens/closes a registered tool window by its title (used by the capture
   // script and the command palette).
   void ToggleToolWindowByName(const std::string& title);
@@ -359,7 +359,7 @@ class App {
 
   // Registered rail/tool windows and the Ctrl+P command palette.
   std::vector<ToolWindow> tool_windows_;
-  CommandPalette command_palette_;
+  platform::CommandPalette command_palette_;
 
   // LLM "ask" support: plain (non-'>') palette input is routed to ui_agent_ and
   // the reply is rendered in the palette by llm_panel_. The model drives the UI

@@ -59,6 +59,7 @@ namespace mujoco::studio {
 // scope so the wiring below reads the same as before the extraction.
 using namespace agent_imgui;  // NOLINT(build/namespaces)
 
+using platform::CommandPalette;
 using PauseState = platform::StepControl::PauseState;
 
 static void ToggleFlag(mjtByte& flag) { flag = flag ? 0 : 1; }
@@ -1441,6 +1442,13 @@ std::vector<CommandPalette::Command> App::CollectModelCommands() {
   // a checkbox for booleans, a combo for enums, a numeric input (or N-input) for
   // scalars/vectors -- and a '*' marks a value that differs from its default.
   std::vector<CommandPalette::Command> commands;
+  // Field-registration helpers append to `commands` (free functions in
+  // mujoco::platform; see command_palette.h).
+  using platform::RegisterArrayField;
+  using platform::RegisterCustomField;
+  using platform::RegisterEnumField;
+  using platform::RegisterFlagField;
+  using platform::RegisterScalarField;
 
   // Build a constant-style identifier from a table name: "Convex Hull" -> CONVEXHULL.
   auto ident = [](std::string s) {
@@ -1453,87 +1461,54 @@ std::vector<CommandPalette::Command> App::CollectModelCommands() {
     return out;
   };
 
-  // Appends "*" to a field's display name when its value differs from the
-  // default, so the change shows and typing "*" filters to all changed fields.
-  // The value widget's id uses the unmarked path so editing isn't disrupted when
-  // the marker appears/disappears.
-  auto marked = [](const std::string& path, bool modified) {
-    return modified ? path + "*" : path;
-  };
-
-  // Formats a scalar value for the revert tooltip ("%g" for floats, plain for
-  // ints).
-  auto numstr = [](auto v) -> std::string {
-    if constexpr (std::is_integral_v<decltype(v)>) {
-      return std::to_string(v);
-    } else {
-      char buf[32];
-      std::snprintf(buf, sizeof(buf), "%g", static_cast<double>(v));
-      return std::string(buf);
-    }
-  };
-
-  // Pushes a boolean field: a checkbox in the value column, plus run/cycle
-  // (Enter / Left-Right), all driven by `toggle`.
-  // Pushes a boolean field, deriving everything from `get`/`set` and the default
-  // `dflt`: a checkbox value, run/cycle (Enter / Left-Right) toggling, a
-  // revert-to-default button, and the '*' marker.
-  auto add_flag = [&](const std::string& path, std::function<bool()> get,
-                      std::function<void(bool)> set, bool dflt) {
-    const bool modified = get() != dflt;
-    const std::string id = "###" + path;
-    auto toggle = [get, set] { set(!get()); };
-    auto checkbox = [id, get, set] {
-      bool b = get();
-      if (ImGui::Checkbox(id.c_str(), &b)) set(b);
-    };
-    auto reset = [set, dflt] { set(dflt); };
-    commands.push_back({marked(path, modified), toggle, "",
-                        [toggle](int) { toggle(); }, checkbox, reset, modified,
-                        dflt ? "on" : "off"});
-  };
-
   // Visualization element flags (mjvOption) and render-effect flags (mjvScene).
   // These don't require a loaded model. Column [1] of each table is the default.
   for (int i = 0; i < mjNVISFLAG; ++i) {
-    add_flag(
-        "mjvOption.flags." + ident(mjVISSTRING[i][0]),
+    RegisterFlagField(
+        commands, "mjvOption.flags." + ident(mjVISSTRING[i][0]),
         [this, i] { return vis_options_.flags[i] != 0; },
         [this, i](bool b) { vis_options_.flags[i] = b; },
         mjVISSTRING[i][1][0] == '1');
   }
   for (int i = 0; i < mjNRNDFLAG; ++i) {
-    add_flag(
-        "mjvScene.flags." + ident(mjRNDSTRING[i][0]),
+    RegisterFlagField(
+        commands, "mjvScene.flags." + ident(mjRNDSTRING[i][0]),
         [this, i] { return renderer_->GetRenderFlags()[i] != 0; },
         [this, i](bool b) { renderer_->GetRenderFlags()[i] = b; },
         mjRNDSTRING[i][1][0] == '1');
   }
 
   // Per-group visibility toggles (mjvOption). MuJoCo has no xmacro for mjvOption,
-  // so list its group arrays here; each is mjtByte[mjNGROUP], and
-  // mjv_defaultOption shows groups 0-2, hides 3-5. vis_options_ is a stable
+  // so list its group arrays with a small local one (stringifying each name with
+  // #NAME so the path and member stay in sync). Each is mjtByte[mjNGROUP], and
+  // mjv_defaultOption shows groups 0-2, hides 3-5; vis_options_ is a stable
   // member, so the arrays can be captured by pointer.
 #define MJV_GROUP_ARRAYS(X)                                  \
   X(geomgroup) X(sitegroup) X(jointgroup) X(tendongroup)     \
   X(actuatorgroup) X(flexgroup) X(skingroup)
-#define X(NAME)                                                          \
-  {                                                                      \
-    mjtByte* arr = vis_options_.NAME;                                    \
-    for (int i = 0; i < mjNGROUP; ++i) {                                 \
-      add_flag("mjvOption." #NAME "." + std::to_string(i),               \
-               [arr, i] { return arr[i] != 0; },                         \
-               [arr, i](bool b) { arr[i] = static_cast<mjtByte>(b); },   \
-               i < 3);                                                   \
-    }                                                                    \
-  }
-  MJV_GROUP_ARRAYS(X)
+  const struct {
+    const char* name;
+    mjtByte* arr;
+  } kGroups[] = {
+#define X(NAME) {#NAME, vis_options_.NAME},
+      MJV_GROUP_ARRAYS(X)
 #undef X
+  };
 #undef MJV_GROUP_ARRAYS
+  for (const auto& g : kGroups) {
+    mjtByte* arr = g.arr;
+    for (int i = 0; i < mjNGROUP; ++i) {
+      RegisterFlagField(
+          commands,
+          std::string("mjvOption.") + g.name + "." + std::to_string(i),
+          [arr, i] { return arr[i] != 0; },
+          [arr, i](bool b) { arr[i] = static_cast<mjtByte>(b); }, i < 3);
+    }
+  }
 
-  // Control noise applied before each step (studio StepControl; default 0). The
-  // value is reached only through Get/SetNoiseParameters, so it needs a custom
-  // widget rather than add_scalar.
+  // Control noise applied before each step (studio StepControl; default 0). It
+  // is reached only through Get/SetNoiseParameters (no plain pointer to bind),
+  // so it uses RegisterCustomField rather than RegisterScalarField.
   auto add_noise = [&](const std::string& path, bool is_scale) {
     float scale = 0, rate = 0;
     step_control_.GetNoiseParameters(scale, rate);
@@ -1553,8 +1528,7 @@ std::vector<CommandPalette::Command> App::CollectModelCommands() {
       (is_scale ? s : r) = 0.0f;
       step_control_.SetNoiseParameters(s, r);
     };
-    commands.push_back({marked(path, cur != 0.0f), {}, "", {}, draw, reset,
-                        cur != 0.0f, "0"});
+    RegisterCustomField(commands, path, draw, reset, cur != 0.0f, "0");
   };
   add_noise("noise.scale", true);
   add_noise("noise.rate", false);
@@ -1568,8 +1542,8 @@ std::vector<CommandPalette::Command> App::CollectModelCommands() {
   mj_defaultOption(&def);
 
   for (int i = 0; i < mjNDISABLE; ++i) {
-    add_flag(
-        "mjModel.opt.disableflags." + ident(mjDISABLESTRING[i]),
+    RegisterFlagField(
+        commands, "mjModel.opt.disableflags." + ident(mjDISABLESTRING[i]),
         [this, i] { return ((model()->opt.disableflags >> i) & 1) != 0; },
         [this, i](bool b) {
           if (b) {
@@ -1581,8 +1555,8 @@ std::vector<CommandPalette::Command> App::CollectModelCommands() {
         ((def.disableflags >> i) & 1) != 0);
   }
   for (int i = 0; i < mjNENABLE; ++i) {
-    add_flag(
-        "mjModel.opt.enableflags." + ident(mjENABLESTRING[i]),
+    RegisterFlagField(
+        commands, "mjModel.opt.enableflags." + ident(mjENABLESTRING[i]),
         [this, i] { return ((model()->opt.enableflags >> i) & 1) != 0; },
         [this, i](bool b) {
           if (b) {
@@ -1596,8 +1570,8 @@ std::vector<CommandPalette::Command> App::CollectModelCommands() {
   // disableactuator is a bitfield over actuator groups (the Physics panel's
   // "Act Group N"), so expose one toggle per group bit, like the flags above.
   for (int i = 0; i < mjNGROUP; ++i) {
-    add_flag(
-        "mjModel.opt.disableactuator." + std::to_string(i),
+    RegisterFlagField(
+        commands, "mjModel.opt.disableactuator." + std::to_string(i),
         [this, i] { return (model()->opt.disableactuator & (1 << i)) != 0; },
         [this, i](bool b) {
           if (b) {
@@ -1610,78 +1584,21 @@ std::vector<CommandPalette::Command> App::CollectModelCommands() {
   }
 
   // Solver/integrator enums: a combo in the value column (also Enter advances /
-  // Left-Right cycles via `cyc`).
-  auto add_enum = [&](const std::string& path, int mjOption::*field,
-                      std::vector<const char*> names, int def_val) {
-    const int n = static_cast<int>(names.size());
-    const int cur = model()->opt.*field;
-    auto cyc = [this, field, n](int delta) {
-      int& v = model()->opt.*field;
-      v = ((v + delta) % n + n) % n;
-    };
-    const std::string id = "###" + path;
-    auto combo = [this, field, names, n, id] {
-      int v = model()->opt.*field;
-      if (ImGui::Combo(id.c_str(), &v, names.data(), n)) {
-        model()->opt.*field = v;
-      }
-    };
-    auto reset = [this, field, def_val] { model()->opt.*field = def_val; };
-    const std::string def_text =
-        (def_val >= 0 && def_val < n) ? names[def_val] : std::string();
-    commands.push_back({marked(path, cur != def_val), [cyc] { cyc(1); }, "", cyc,
-                        combo, reset, cur != def_val, def_text});
-  };
-  add_enum("mjModel.opt.integrator", &mjOption::integrator,
-           {"Euler", "RK4", "implicit", "implicitfast"}, def.integrator);
-  add_enum("mjModel.opt.cone", &mjOption::cone, {"pyramidal", "elliptic"},
-           def.cone);
-  add_enum("mjModel.opt.jacobian", &mjOption::jacobian,
-           {"dense", "sparse", "auto"}, def.jacobian);
-  add_enum("mjModel.opt.solver", &mjOption::solver, {"PGS", "CG", "Newton"},
-           def.solver);
+  // Left-Right cycles).
+  RegisterEnumField(commands, "mjModel.opt.integrator",
+                    &model()->opt.integrator,
+                    {"Euler", "RK4", "implicit", "implicitfast"},
+                    def.integrator);
+  RegisterEnumField(commands, "mjModel.opt.cone", &model()->opt.cone,
+                    {"pyramidal", "elliptic"}, def.cone);
+  RegisterEnumField(commands, "mjModel.opt.jacobian", &model()->opt.jacobian,
+                    {"dense", "sparse", "auto"}, def.jacobian);
+  RegisterEnumField(commands, "mjModel.opt.solver", &model()->opt.solver,
+                    {"PGS", "CG", "Newton"}, def.solver);
 
   // The remaining scalar/vector mjOption fields, generated from the mjxmacro so
-  // the list tracks the struct. Each gets a numeric input bound to the field
-  // (valid this frame -- the command list is rebuilt every frame). The
-  // enum/bitfield ints handled above are skipped.
-  auto add_scalar = [&](const std::string& path, auto* ptr, auto def_val) {
-    using T = std::remove_reference_t<decltype(*ptr)>;
-    const ImGuiDataType dt = std::is_same_v<T, int>     ? ImGuiDataType_S32
-                             : std::is_same_v<T, float> ? ImGuiDataType_Float
-                                                        : ImGuiDataType_Double;
-    const std::string id = "###" + path;
-    const bool modified = *ptr != def_val;
-    auto reset = [ptr, def_val] { *ptr = def_val; };
-    commands.push_back(
-        {marked(path, modified), {}, "", {},
-         [id, ptr, dt] { ImGui::InputScalar(id.c_str(), dt, ptr); }, reset,
-         modified, numstr(def_val)});
-  };
-  auto add_vector = [&](const std::string& path, auto* ptr, int n,
-                        const auto* def_ptr) {
-    using T = std::remove_reference_t<decltype(*ptr)>;
-    const ImGuiDataType dt = std::is_same_v<T, int>     ? ImGuiDataType_S32
-                             : std::is_same_v<T, float> ? ImGuiDataType_Float
-                                                        : ImGuiDataType_Double;
-    // Copy the defaults by value: `def` is a per-frame local, but reset runs
-    // later (on a click), so it can't hold a pointer into it.
-    const std::vector<T> defs(def_ptr, def_ptr + n);
-    bool modified = false;
-    std::string def_text;
-    for (int k = 0; k < n; ++k) {
-      modified |= (ptr[k] != defs[k]);
-      def_text += (k ? ", " : "") + numstr(defs[k]);
-    }
-    const std::string id = "###" + path;
-    auto reset = [ptr, defs] {
-      for (std::size_t k = 0; k < defs.size(); ++k) ptr[k] = defs[k];
-    };
-    commands.push_back(
-        {marked(path, modified), {}, "", {},
-         [id, ptr, dt, n] { ImGui::InputScalarN(id.c_str(), dt, ptr, n); }, reset,
-         modified, def_text});
-  };
+  // the list tracks the struct. The enum/bitfield ints handled above are
+  // skipped.
   auto special = [](const char* name) {
     for (const char* s : {"integrator", "cone", "jacobian", "solver",
                           "disableflags", "enableflags", "disableactuator"}) {
@@ -1689,11 +1606,13 @@ std::vector<CommandPalette::Command> App::CollectModelCommands() {
     }
     return false;
   };
-#define X(TYPE, NAME, SZ)                                              \
-  if (!special(#NAME))                                                 \
-    add_scalar("mjModel.opt." #NAME, &model()->opt.NAME, def.NAME);
+#define X(TYPE, NAME, SZ) \
+  if (!special(#NAME)) \
+    RegisterScalarField(commands, "mjModel.opt." #NAME, &model()->opt.NAME, \
+                        def.NAME);
 #define XVEC(TYPE, NAME, SZ) \
-  add_vector("mjModel.opt." #NAME, model()->opt.NAME, SZ, def.NAME);
+  RegisterArrayField(commands, "mjModel.opt." #NAME, model()->opt.NAME, SZ, \
+                     def.NAME);
   MJOPTION_FIELDS
 #undef X
 #undef XVEC
@@ -1707,12 +1626,12 @@ std::vector<CommandPalette::Command> App::CollectModelCommands() {
   mj_defaultVisual(&visdef);
 #define VIS_STR2(x) #x
 #define VIS_STR(x) VIS_STR2(x)
-#define X(TYPE, NAME, SZ)                                                 \
-  add_scalar("mjModel.vis." VIS_STR(MJVIS_SUB) "." #NAME,                 \
-             &model()->vis.MJVIS_SUB.NAME, visdef.MJVIS_SUB.NAME);
-#define XVEC(TYPE, NAME, SZ)                                              \
-  add_vector("mjModel.vis." VIS_STR(MJVIS_SUB) "." #NAME,                 \
-             model()->vis.MJVIS_SUB.NAME, SZ, visdef.MJVIS_SUB.NAME);
+#define X(TYPE, NAME, SZ) \
+  RegisterScalarField(commands, "mjModel.vis." VIS_STR(MJVIS_SUB) "." #NAME, \
+                      &model()->vis.MJVIS_SUB.NAME, visdef.MJVIS_SUB.NAME);
+#define XVEC(TYPE, NAME, SZ) \
+  RegisterArrayField(commands, "mjModel.vis." VIS_STR(MJVIS_SUB) "." #NAME, \
+                     model()->vis.MJVIS_SUB.NAME, SZ, visdef.MJVIS_SUB.NAME);
 #define MJVIS_SUB global
   MJVISUAL_GLOBAL_FIELDS
 #undef MJVIS_SUB
@@ -1740,9 +1659,11 @@ std::vector<CommandPalette::Command> App::CollectModelCommands() {
   // default -- compare against the values captured at load (stat_default_). All
   // fields are mjtNum, so the xmacro entries carry no type.
 #define X(NAME, SZ) \
-  add_scalar("mjModel.stat." #NAME, &model()->stat.NAME, stat_default_.NAME);
+  RegisterScalarField(commands, "mjModel.stat." #NAME, &model()->stat.NAME, \
+                      stat_default_.NAME);
 #define XVEC(NAME, SZ) \
-  add_vector("mjModel.stat." #NAME, model()->stat.NAME, SZ, stat_default_.NAME);
+  RegisterArrayField(commands, "mjModel.stat." #NAME, model()->stat.NAME, SZ, \
+                     stat_default_.NAME);
   MJSTATISTIC_FIELDS
 #undef X
 #undef XVEC

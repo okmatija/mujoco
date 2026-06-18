@@ -37,8 +37,6 @@ function(configure_studio_target TARGET_NAME)
         PRIVATE
             app.cc
             app.h
-            command_palette.cc
-            command_palette.h
             mujoco_logo.h
             ui_capture.cc
             ui_capture.h

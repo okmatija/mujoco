@@ -38,6 +38,8 @@ target_sources(${MUJOCO_PLATFORM_TARGET_NAME}
         sim/sim_profiler.h
         sim/step_control.cc
         sim/step_control.h
+        ux/command_palette.cc
+        ux/command_palette.h
         ux/enum_utils.h
         ux/file_dialog.h
         ux/gui.cc

@@ -12,16 +12,19 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#ifndef MUJOCO_SRC_EXPERIMENTAL_STUDIO_COMMAND_PALETTE_H_
-#define MUJOCO_SRC_EXPERIMENTAL_STUDIO_COMMAND_PALETTE_H_
+#ifndef MUJOCO_SRC_EXPERIMENTAL_PLATFORM_UX_COMMAND_PALETTE_H_
+#define MUJOCO_SRC_EXPERIMENTAL_PLATFORM_UX_COMMAND_PALETTE_H_
 
+#include <cstddef>
+#include <cstdio>
 #include <functional>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 #include <imgui.h>
 
-namespace mujoco::studio {
+namespace mujoco::platform {
 
 // A VS Code-style command palette. The owner opens it (e.g. on Ctrl+Shift+P) and
 // passes one flat list of commands to Draw() each frame, fuzzy-searched against
@@ -152,6 +155,132 @@ class CommandPalette {
   static int InputTextCallback(ImGuiInputTextCallbackData* data);
 };
 
-}  // namespace mujoco::studio
+// Free functions that append CommandPalette::Command records for editable
+// fields, so any subsystem can surface its members in the palette's dotted-path
+// field list without hand-writing the value widget, the '*'-when-modified
+// marker, or the revert-to-default button. They build Commands from raw pointers
+// (or a getter/setter pair) only, so they stay independent of any particular app
+// -- the palette merely consumes the Commands. The command list is the first
+// argument (these are bound-argument helpers, not state, so there is no class).
+//
+// `path` is the dotted code path of the field (e.g. "mjModel.opt.gravity"), so
+// fuzzy/prefix matching on the dots reads like navigating the struct. Each call
+// appends one command to `out`. A bound pointer must outlive the drawn command;
+// since the command list is typically rebuilt every frame, a pointer into live
+// state is fine (and lets '*' track changes made elsewhere).
 
-#endif  // MUJOCO_SRC_EXPERIMENTAL_STUDIO_COMMAND_PALETTE_H_
+namespace command_palette_detail {
+
+// Appends "*" to a modified field's name so the change shows and typing "*"
+// filters to all changed fields. The value widget's id (###path) stays unmarked,
+// so editing isn't disrupted when the marker appears/disappears.
+inline std::string Marked(const std::string& path, bool modified) {
+  return modified ? path + "*" : path;
+}
+// Formats a default for the revert tooltip ("%g" for floats, plain for ints).
+template <class T>
+std::string NumStr(T v) {
+  if constexpr (std::is_integral_v<T>) {
+    return std::to_string(v);
+  } else {
+    char buf[32];
+    std::snprintf(buf, sizeof(buf), "%g", static_cast<double>(v));
+    return std::string(buf);
+  }
+}
+template <class T>
+constexpr ImGuiDataType DataTypeOf() {
+  if constexpr (std::is_same_v<T, int>) {
+    return ImGuiDataType_S32;
+  } else if constexpr (std::is_same_v<T, float>) {
+    return ImGuiDataType_Float;
+  } else {
+    return ImGuiDataType_Double;
+  }
+}
+
+}  // namespace command_palette_detail
+
+// A boolean field: a checkbox value, Enter / Left-Right toggling, and a revert
+// button when the value differs from `dflt`.
+void RegisterFlagField(std::vector<CommandPalette::Command>& out,
+                       const std::string& path, std::function<bool()> get,
+                       std::function<void(bool)> set, bool dflt);
+
+// A scalar field (T = int / float / double): a numeric input bound to *ptr,
+// revert to `def`.
+template <class T>
+void RegisterScalarField(std::vector<CommandPalette::Command>& out,
+                         const std::string& path, T* ptr, T def) {
+  const ImGuiDataType dt = command_palette_detail::DataTypeOf<T>();
+  const bool modified = *ptr != def;
+  const std::string id = "###" + path;
+  auto draw = [id, ptr, dt] { ImGui::InputScalar(id.c_str(), dt, ptr); };
+  auto reset = [ptr, def] { *ptr = def; };
+  out.push_back({command_palette_detail::Marked(path, modified), {}, "", {},
+                 draw, reset, modified, command_palette_detail::NumStr(def)});
+}
+
+// An n-element array field (T = int / float / double): an N-input bound to
+// ptr[0..n), revert to def[0..n).
+template <class T>
+void RegisterArrayField(std::vector<CommandPalette::Command>& out,
+                        const std::string& path, T* ptr, int n, const T* def) {
+  const ImGuiDataType dt = command_palette_detail::DataTypeOf<T>();
+  // Copy the defaults by value: callers often pass a pointer into a per-frame
+  // local (e.g. mj_defaultOption's output), but reset runs later, on a click.
+  const std::vector<T> defs(def, def + n);
+  bool modified = false;
+  std::string def_text;
+  for (int k = 0; k < n; ++k) {
+    modified |= (ptr[k] != defs[k]);
+    def_text += (k ? ", " : "") + command_palette_detail::NumStr(defs[k]);
+  }
+  const std::string id = "###" + path;
+  auto draw = [id, ptr, dt, n] { ImGui::InputScalarN(id.c_str(), dt, ptr, n); };
+  auto reset = [ptr, defs] {
+    for (std::size_t k = 0; k < defs.size(); ++k) ptr[k] = defs[k];
+  };
+  out.push_back({command_palette_detail::Marked(path, modified), {}, "", {},
+                 draw, reset, modified, def_text});
+}
+
+// An enum field (T = an int-backed enum or int): a combo of `names` in the value
+// column, Enter advances / Left-Right cycles, revert to `def`.
+template <class T>
+void RegisterEnumField(std::vector<CommandPalette::Command>& out,
+                       const std::string& path, T* ptr,
+                       std::vector<const char*> names, T def) {
+  const int n = static_cast<int>(names.size());
+  const int cur = static_cast<int>(*ptr);
+  const int def_i = static_cast<int>(def);
+  auto cyc = [ptr, n](int delta) {
+    const int v = static_cast<int>(*ptr);
+    *ptr = static_cast<T>(((v + delta) % n + n) % n);
+  };
+  const std::string id = "###" + path;
+  auto combo = [id, ptr, names, n] {
+    int v = static_cast<int>(*ptr);
+    if (ImGui::Combo(id.c_str(), &v, names.data(), n)) {
+      *ptr = static_cast<T>(v);
+    }
+  };
+  auto reset = [ptr, def] { *ptr = def; };
+  const std::string def_text =
+      (def_i >= 0 && def_i < n) ? names[def_i] : std::string();
+  out.push_back({command_palette_detail::Marked(path, cur != def_i),
+                 [cyc] { cyc(1); }, "", cyc, combo, reset, cur != def_i,
+                 def_text});
+}
+
+// A field that can't be expressed as a plain pointer (e.g. one reached only
+// through an accessor pair): supply the value widget and the revert action, plus
+// the modified state and the default shown in the revert tooltip.
+void RegisterCustomField(std::vector<CommandPalette::Command>& out,
+                         const std::string& path, std::function<void()> draw,
+                         std::function<void()> reset, bool modified,
+                         std::string default_text);
+
+}  // namespace mujoco::platform
+
+#endif  // MUJOCO_SRC_EXPERIMENTAL_PLATFORM_UX_COMMAND_PALETTE_H_

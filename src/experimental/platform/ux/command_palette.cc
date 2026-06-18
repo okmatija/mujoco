@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "experimental/studio/command_palette.h"
+#include "experimental/platform/ux/command_palette.h"
 
 #include <algorithm>
 #include <cctype>
@@ -25,10 +25,10 @@
 
 #include <imgui.h>
 
-namespace mujoco::studio {
+namespace mujoco::platform {
 namespace {
 
-// FontAwesome 4 "fa-cog" (U+F013); in the 0xf000-0xf3ff range the studio merges.
+// FontAwesome 4 "fa-cog" (U+F013); in the 0xf000-0xf3ff range the host merges.
 constexpr char kCogIcon[] = "\xEF\x80\x93";
 // FontAwesome 4 "fa-undo" (U+F0E2), the revert/restore-default button glyph.
 constexpr char kRevertIcon[] = "\xEF\x83\xA2";
@@ -690,4 +690,29 @@ void CommandPalette::Draw(
   ImGui::End();
 }
 
-}  // namespace mujoco::studio
+void RegisterFlagField(std::vector<CommandPalette::Command>& out,
+                       const std::string& path, std::function<bool()> get,
+                       std::function<void(bool)> set, bool dflt) {
+  const bool modified = get() != dflt;
+  const std::string id = "###" + path;
+  auto toggle = [get, set] { set(!get()); };
+  auto checkbox = [id, get, set] {
+    bool b = get();
+    if (ImGui::Checkbox(id.c_str(), &b)) set(b);
+  };
+  auto reset = [set, dflt] { set(dflt); };
+  out.push_back({command_palette_detail::Marked(path, modified), toggle, "",
+                 [toggle](int) { toggle(); }, checkbox, reset, modified,
+                 dflt ? "on" : "off"});
+}
+
+void RegisterCustomField(std::vector<CommandPalette::Command>& out,
+                         const std::string& path, std::function<void()> draw,
+                         std::function<void()> reset, bool modified,
+                         std::string default_text) {
+  out.push_back({command_palette_detail::Marked(path, modified), {}, "", {},
+                 std::move(draw), std::move(reset), modified,
+                 std::move(default_text)});
+}
+
+}  // namespace mujoco::platform
