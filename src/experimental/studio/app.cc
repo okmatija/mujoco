@@ -1427,17 +1427,40 @@ std::vector<CommandPalette::Command> App::CollectCommands() {
                             "GUI plugin window"});
       });
 
-  // '>' visualization toggles, generated from MuJoCo's own name tables so the
-  // list stays in sync with the enums (mjtVisFlag/mjtRndFlag) with no
-  // hand-maintained list. These live in the viewer's mjvOption/mjvScene (not
-  // mjModel/mjData), so they are UI, not '.' model/data. Column [1] of each
-  // table is the flag's default value, so '*' shows when the current value
-  // differs. on/off is the live state; selecting or Left/Right toggles.
+  // '.' visualization + model/data fields and '/' agent commands complete the
+  // unified list. (The visualization flags moved into the '.' context too.)
+  for (auto& c : CollectModelCommands()) commands.push_back(std::move(c));
+  for (auto& c : CollectSlashCommands()) commands.push_back(std::move(c));
+  return commands;
+}
+
+std::vector<CommandPalette::Command> App::CollectModelCommands() {
+  // The '.' entries: visualization and model/data fields, named as the dotted
+  // code path (e.g. ".mjModel.opt.disableflags.WARMSTART") so fuzzy-completing a
+  // field reads like navigating the struct. Names come from MuJoCo's own tables
+  // (leaf upper-cased, spaces dropped, no enum prefix). Flags show on/off;
+  // selecting or Left/Right toggles. A '*' marks a value that differs from its
+  // default.
+  std::vector<CommandPalette::Command> commands;
+
+  // Build a constant-style identifier from a table name: "Convex Hull" -> CONVEXHULL.
+  auto ident = [](std::string s) {
+    std::string out;
+    for (char c : s) {
+      if (std::isalnum(static_cast<unsigned char>(c))) {
+        out += static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+      }
+    }
+    return out;
+  };
+
+  // Visualization element flags (mjvOption) and render-effect flags (mjvScene).
+  // These don't require a loaded model. Column [1] of each table is the default.
   for (int i = 0; i < mjNVISFLAG; ++i) {
     auto toggle = [this, i] { ToggleFlag(vis_options_.flags[i]); };
     const bool cur = vis_options_.flags[i] != 0;
     const bool dflt = mjVISSTRING[i][1][0] == '1';
-    commands.push_back({std::string(">Visual flag: ") + mjVISSTRING[i][0], toggle,
+    commands.push_back({".mjvOption.flags." + ident(mjVISSTRING[i][0]), toggle,
                         cur ? "on" : "off", [toggle](int) { toggle(); },
                         cur != dflt});
   }
@@ -1446,34 +1469,16 @@ std::vector<CommandPalette::Command> App::CollectCommands() {
     auto toggle = [this, i] { ToggleFlag(renderer_->GetRenderFlags()[i]); };
     const bool cur = render_flags[i] != 0;
     const bool dflt = mjRNDSTRING[i][1][0] == '1';
-    commands.push_back({std::string(">Render flag: ") + mjRNDSTRING[i][0], toggle,
+    commands.push_back({".mjvScene.flags." + ident(mjRNDSTRING[i][0]), toggle,
                         cur ? "on" : "off", [toggle](int) { toggle(); },
                         cur != dflt});
   }
 
-  // '.' model/data fields and '/' agent commands complete the unified list.
-  for (auto& c : CollectModelCommands()) commands.push_back(std::move(c));
-  for (auto& c : CollectSlashCommands()) commands.push_back(std::move(c));
-  return commands;
-}
-
-std::vector<CommandPalette::Command> App::CollectModelCommands() {
-  // The '.' entries: model/data fields, named as the dotted code path (e.g.
-  // ".model.opt.disableflags.WARMSTART") so fuzzy-completing a field reads like
-  // navigating the struct. Names come from MuJoCo's own tables (leaf upper-cased,
-  // no enum prefix -- the path already names the bitfield). Flags show on/off;
-  // selecting or Left/Right toggles. A '*' marks any value that differs from
+  // The remaining fields live in mjModel; '*' marks a value that differs from
   // mj_defaultOption (the library default).
-  std::vector<CommandPalette::Command> commands;
   if (!has_model()) {
-    return commands;  // these fields live in model->opt.
+    return commands;
   }
-  auto upper = [](std::string s) {
-    for (char& c : s) {
-      c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
-    }
-    return s;
-  };
   const mjOption& opt = model()->opt;
   mjOption def;
   mj_defaultOption(&def);
@@ -1482,7 +1487,7 @@ std::vector<CommandPalette::Command> App::CollectModelCommands() {
     auto toggle = [this, i] { model()->opt.disableflags ^= (1 << i); };
     const bool cur = (opt.disableflags >> i) & 1;
     const bool dflt = (def.disableflags >> i) & 1;
-    commands.push_back({".model.opt.disableflags." + upper(mjDISABLESTRING[i]),
+    commands.push_back({".mjModel.opt.disableflags." + ident(mjDISABLESTRING[i]),
                         toggle, cur ? "on" : "off", [toggle](int) { toggle(); },
                         cur != dflt});
   }
@@ -1490,7 +1495,7 @@ std::vector<CommandPalette::Command> App::CollectModelCommands() {
     auto toggle = [this, i] { model()->opt.enableflags ^= (1 << i); };
     const bool cur = (opt.enableflags >> i) & 1;
     const bool dflt = (def.enableflags >> i) & 1;
-    commands.push_back({".model.opt.enableflags." + upper(mjENABLESTRING[i]),
+    commands.push_back({".mjModel.opt.enableflags." + ident(mjENABLESTRING[i]),
                         toggle, cur ? "on" : "off", [toggle](int) { toggle(); },
                         cur != dflt});
   }
@@ -1509,14 +1514,26 @@ std::vector<CommandPalette::Command> App::CollectModelCommands() {
                         (cur >= 0 && cur < n) ? std::string(names[cur]) : "?",
                         cyc, cur != def_val});
   };
-  add_enum(".model.opt.integrator", &mjOption::integrator,
+  add_enum(".mjModel.opt.integrator", &mjOption::integrator,
            {"Euler", "RK4", "implicit", "implicitfast"}, def.integrator);
-  add_enum(".model.opt.cone", &mjOption::cone, {"pyramidal", "elliptic"},
+  add_enum(".mjModel.opt.cone", &mjOption::cone, {"pyramidal", "elliptic"},
            def.cone);
-  add_enum(".model.opt.jacobian", &mjOption::jacobian,
+  add_enum(".mjModel.opt.jacobian", &mjOption::jacobian,
            {"dense", "sparse", "auto"}, def.jacobian);
-  add_enum(".model.opt.solver", &mjOption::solver, {"PGS", "CG", "Newton"},
+  add_enum(".mjModel.opt.solver", &mjOption::solver, {"PGS", "CG", "Newton"},
            def.solver);
+
+  // A model.vis (mjVisual) field: the camera projection toggle. Example of the
+  // ".mjModel.vis..." path; more mjVisual fields can be added the same way.
+  {
+    auto toggle = [this] {
+      int& v = model()->vis.global.orthographic;
+      v = v ? 0 : 1;
+    };
+    const bool cur = model()->vis.global.orthographic != 0;
+    commands.push_back({".mjModel.vis.global.orthographic", toggle,
+                        cur ? "on" : "off", [toggle](int) { toggle(); }, cur});
+  }
   return commands;
 }
 

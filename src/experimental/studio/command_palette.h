@@ -50,6 +50,18 @@ class CommandPalette {
     bool modified = false;
   };
 
+  // How the typed text is matched against command names.
+  //   kPrefix    -- name starts with the query ("prefix" / classic autocomplete)
+  //   kSubstring -- query appears anywhere in the name ("contains")
+  //   kFuzzy     -- query characters appear in order with gaps (subsequence)
+  enum class SearchMode { kPrefix, kSubstring, kFuzzy };
+
+  // Matching options. No UI toggles these yet; set them programmatically.
+  void set_search_mode(SearchMode mode) { search_mode_ = mode; }
+  SearchMode search_mode() const { return search_mode_; }
+  void set_case_insensitive(bool on) { case_insensitive_ = on; }
+  bool case_insensitive() const { return case_insensitive_; }
+
   void Open();
   // Opens the palette pre-filled with `text` (e.g. ">Physics"); used by the
   // capture script to show command-mode interactions.
@@ -94,12 +106,24 @@ class CommandPalette {
   std::string last_query_;  // query from the previous Draw, to detect edits.
   char input_[256] = "";
   ImVec2 center_{0.0f, 0.0f};
+  // Points at the command list during Draw so the Tab-completion callback can
+  // see it (the callback runs inside InputText, before the list is filtered).
+  const std::vector<Command>* completion_list_ = nullptr;
+  // Matching options (default: prefix search, case-insensitive). Fuzzy is off by
+  // default so e.g. ".mjData" doesn't match ".mjModel..." entries.
+  SearchMode search_mode_ = SearchMode::kPrefix;
+  bool case_insensitive_ = true;
+  // When set (toggled by the cog button), the settings panel replaces the
+  // completion list.
+  bool show_settings_ = false;
 
   // Filters `list` by `query`, runs Up/Down navigation, and draws the rows.
   // Returns the chosen command (clicked, or Enter on the highlighted row) or
   // nullptr. `entered` is the InputText's Enter result for this frame.
   const Command* DrawCompletionList(const std::vector<Command>& list,
                                     const std::string& query, bool entered);
+  // Draws the settings panel (search mode, case sensitivity) in the list area.
+  void DrawSettings();
   // Calls `on_submit_plain`, then clears and
   // refocuses the box (the shared "submit a line" path for ask and '/' modes).
   void SubmitPlain(const std::string& text,

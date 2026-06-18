@@ -28,73 +28,77 @@
 namespace mujoco::studio {
 namespace {
 
-// Fuzzy (subsequence) match, case-insensitive: returns true if every character
-// of `query` appears in `text` in order, not necessarily contiguously (so "rndsh"
-// matches "Render flag: Shadow"). When it matches, *score is set so that better
-// matches rank higher: contiguous runs and matches right after a word boundary
-// (space, ':', '/', etc.) score more, and matches deep in the string are
-// penalized. An empty query matches everything with score 0 (preserving the
-// plain alphabetical list shown before the user types).
-bool FuzzyMatch(const std::string& text, const std::string& query, int* score) {
-  *score = 0;
+// FontAwesome 4 "fa-cog" (U+F013); in the 0xf000-0xf3ff range the studio merges.
+constexpr char kCogIcon[] = "\xEF\x80\x93";
+
+// Does `text` match `query` under the given search mode? An empty query always
+// matches.
+//   kPrefix    -- `text` starts with `query` (classic autocomplete).
+//   kSubstring -- `query` appears anywhere in `text` (contiguous).
+//   kFuzzy     -- `query`'s characters appear in `text` in order, with gaps.
+// `case_insensitive` folds case on both sides.
+bool MatchQuery(const std::string& text, const std::string& query,
+                CommandPalette::SearchMode mode, bool case_insensitive) {
   if (query.empty()) {
     return true;
   }
-  auto lower = [](char c) {
-    return static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  auto eq = [case_insensitive](char a, char b) {
+    if (case_insensitive) {
+      return std::tolower(static_cast<unsigned char>(a)) ==
+             std::tolower(static_cast<unsigned char>(b));
+    }
+    return a == b;
   };
 
-  constexpr int kAdjacencyBonus = 5;       // match right after another match.
-  constexpr int kSeparatorBonus = 10;      // match at a word boundary.
-  constexpr int kLeadingPenalty = -3;      // per char before the first match...
-  constexpr int kMaxLeadingPenalty = -9;   // ...capped here.
-  constexpr int kUnmatchedPenalty = -1;    // per non-matching char in text.
-
-  int total = 0;
-  std::size_t qi = 0;
-  bool prev_matched = false;
-  bool prev_separator = true;  // treat the start of the string as a boundary.
-  int first_match = -1;
-
-  for (std::size_t ti = 0; ti < text.size(); ++ti) {
-    const bool is_separator = !std::isalnum(static_cast<unsigned char>(text[ti]));
-    if (qi < query.size() && lower(text[ti]) == lower(query[qi])) {
-      if (first_match < 0) {
-        first_match = static_cast<int>(ti);
+  switch (mode) {
+    case CommandPalette::SearchMode::kPrefix:
+      if (text.size() < query.size()) {
+        return false;
       }
-      if (prev_matched) total += kAdjacencyBonus;
-      if (prev_separator) total += kSeparatorBonus;
-      ++qi;
-      prev_matched = true;
-    } else {
-      total += kUnmatchedPenalty;
-      prev_matched = false;
-    }
-    prev_separator = is_separator;
-  }
+      for (std::size_t i = 0; i < query.size(); ++i) {
+        if (!eq(text[i], query[i])) {
+          return false;
+        }
+      }
+      return true;
 
-  if (qi != query.size()) {
-    return false;  // not every query character was consumed, in order.
+    case CommandPalette::SearchMode::kSubstring:
+      return std::search(text.begin(), text.end(), query.begin(), query.end(),
+                         eq) != text.end();
+
+    case CommandPalette::SearchMode::kFuzzy: {
+      std::size_t qi = 0;
+      for (std::size_t ti = 0; ti < text.size() && qi < query.size(); ++ti) {
+        if (eq(text[ti], query[qi])) {
+          ++qi;
+        }
+      }
+      return qi == query.size();
+    }
   }
-  total += std::max(kMaxLeadingPenalty, kLeadingPenalty * first_match);
-  *score = total;
-  return true;
+  return false;
 }
+
+// Which column of a completion row a click landed in.
+enum class RowHit { kNone, kName, kValue };
 
 // Draws one completion row: a full-width selectable whose label is the name,
 // then (if the value differs from default) a '*' at `marker_x`, then the
 // description at `desc_x` -- both window-local x's so they line up in columns.
 // The description is dimmed, except the literal "on"/"off" which are green/red.
-// Returns true if the row was clicked.
-bool CompletionRow(const CommandPalette::Command& cmd, bool selected,
-                   float marker_x, float desc_x) {
+// Returns which column was clicked this frame (kNone if not clicked): the value
+// column is everything from the description onward, the name column the rest.
+RowHit CompletionRow(const CommandPalette::Command& cmd, bool selected,
+                     float marker_x, float desc_x) {
   const bool clicked = ImGui::Selectable(cmd.name.c_str(), selected);
   if (cmd.modified) {
     ImGui::SameLine(marker_x);
     ImGui::TextUnformatted("*");
   }
+  float value_x = FLT_MAX;  // screen-x where the value column begins.
   if (!cmd.description.empty()) {
     ImGui::SameLine(desc_x);
+    value_x = ImGui::GetCursorScreenPos().x;
     if (cmd.description == "on") {
       ImGui::TextColored(ImVec4(0.36f, 0.80f, 0.36f, 1.0f), "on");
     } else if (cmd.description == "off") {
@@ -103,7 +107,59 @@ bool CompletionRow(const CommandPalette::Command& cmd, bool selected,
       ImGui::TextDisabled("%s", cmd.description.c_str());
     }
   }
-  return clicked;
+  if (!clicked) {
+    return RowHit::kNone;
+  }
+  return ImGui::GetMousePos().x >= value_x ? RowHit::kValue : RowHit::kName;
+}
+
+// Tab-completion: extend `input` to the next dotted "segment" shared by every
+// command that has `input` as a (case-insensitive) prefix -- e.g. ".mjvOp" with
+// the .mjvOption.* entries completes to ".mjvOption.". Returns `input` unchanged
+// when there is nothing unambiguous to add (and fixes casing to the canonical
+// command spelling along the way).
+std::string SegmentComplete(const std::string& input,
+                            const std::vector<CommandPalette::Command>& list) {
+  auto lower = [](char c) {
+    return static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  };
+  std::string lcp;
+  bool any = false;
+  for (const CommandPalette::Command& c : list) {
+    if (c.name.size() < input.size()) {
+      continue;
+    }
+    bool is_prefix = true;
+    for (std::size_t i = 0; i < input.size(); ++i) {
+      if (lower(c.name[i]) != lower(input[i])) {
+        is_prefix = false;
+        break;
+      }
+    }
+    if (!is_prefix) {
+      continue;
+    }
+    if (!any) {
+      lcp = c.name;
+      any = true;
+    } else {
+      std::size_t n = 0;
+      while (n < lcp.size() && n < c.name.size() &&
+             lower(lcp[n]) == lower(c.name[n])) {
+        ++n;
+      }
+      lcp.resize(n);
+    }
+  }
+  if (!any) {
+    return input;  // nothing has `input` as a prefix.
+  }
+  // Stop at the first '.' at or past the typed length, i.e. complete one segment.
+  const std::size_t dot = lcp.find('.', input.size());
+  if (dot != std::string::npos) {
+    lcp.resize(dot + 1);
+  }
+  return lcp;
 }
 
 }  // namespace
@@ -122,6 +178,16 @@ int CommandPalette::InputTextCallback(ImGuiInputTextCallbackData* data) {
       data->SelectionStart = data->SelectionEnd = data->CursorPos;
       self->init_cursor_end_ = false;
     }
+  } else if (data->EventFlag == ImGuiInputTextFlags_CallbackCompletion) {
+    // Tab: complete the current dotted segment against the command list.
+    if (self->completion_list_) {
+      const std::string completed =
+          SegmentComplete(data->Buf, *self->completion_list_);
+      if (completed.size() > static_cast<std::size_t>(data->BufTextLen)) {
+        data->DeleteChars(0, data->BufTextLen);
+        data->InsertChars(0, completed.c_str());
+      }
+    }
   }
   return 0;
 }
@@ -132,10 +198,10 @@ void CommandPalette::Open() {
   selection_ = 0;
   in_list_ = false;
   last_query_.clear();
-  // Start in '>' command mode so the tool/command list is shown by default; the
-  // cursor is parked after the '>' (see init_cursor_end_) so typing filters it.
-  input_[0] = '>';
-  input_[1] = '\0';
+  // Start empty (type to search; the hint lists the contexts). OpenWith() may
+  // pre-fill it afterwards; the cursor is then parked at the end (see
+  // init_cursor_end_) so a pre-filled string isn't select-all'd and wiped.
+  input_[0] = '\0';
   init_cursor_end_ = true;
 }
 
@@ -164,27 +230,19 @@ void CommandPalette::Toggle() {
 
 const CommandPalette::Command* CommandPalette::DrawCompletionList(
     const std::vector<Command>& list, const std::string& query, bool entered) {
-  // Fuzzy-match the name against the query, keeping each match's score.
-  std::vector<std::pair<const Command*, int>> matches;
+  // Filter by the current search mode (membership only), then always present
+  // alphabetically (case-insensitive) so the list stays stable as the user types.
+  std::vector<const Command*> matches;
   for (const Command& command : list) {
-    int score = 0;
-    if (FuzzyMatch(command.name, query, &score)) {
-      matches.push_back({&command, score});
+    if (MatchQuery(command.name, query, search_mode_, case_insensitive_)) {
+      matches.push_back(&command);
     }
   }
-
-  // Best fuzzy score first; ties broken alphabetically (case-insensitive). With
-  // an empty query every score is 0, so this is the plain alphabetical list.
   std::sort(matches.begin(), matches.end(),
-            [](const std::pair<const Command*, int>& a,
-               const std::pair<const Command*, int>& b) {
-              if (a.second != b.second) {
-                return a.second > b.second;
-              }
+            [](const Command* a, const Command* b) {
               return std::lexicographical_compare(
-                  a.first->name.begin(), a.first->name.end(),
-                  b.first->name.begin(), b.first->name.end(),
-                  [](unsigned char x, unsigned char y) {
+                  a->name.begin(), a->name.end(), b->name.begin(),
+                  b->name.end(), [](unsigned char x, unsigned char y) {
                     return std::tolower(x) < std::tolower(y);
                   });
             });
@@ -198,17 +256,26 @@ const CommandPalette::Command* CommandPalette::DrawCompletionList(
     last_query_ = query;
   }
 
-  // Keyboard navigation through the filtered list. Up/Down move the selection
-  // and enter "list mode"; `moved` keeps the highlighted row scrolled into view.
+  // Keyboard navigation. The cursor stays in the input until Down first enters
+  // the list (landing on the top row); after that Down/Up move the selection,
+  // and Up from the top row returns focus to the input. `moved` keeps the
+  // selected row scrolled into view.
   bool moved = query_changed;
   if (ImGui::IsKeyPressed(ImGuiKey_DownArrow)) {
-    ++selection_;
-    in_list_ = true;
+    if (in_list_) {
+      ++selection_;
+    } else {
+      in_list_ = true;
+      selection_ = 0;
+    }
     moved = true;
   }
-  if (ImGui::IsKeyPressed(ImGuiKey_UpArrow)) {
-    --selection_;
-    in_list_ = true;
+  if (ImGui::IsKeyPressed(ImGuiKey_UpArrow) && in_list_) {
+    if (selection_ == 0) {
+      in_list_ = false;  // back to the input text
+    } else {
+      --selection_;
+    }
     moved = true;
   }
   if (!matches.empty()) {
@@ -228,8 +295,8 @@ const CommandPalette::Command* CommandPalette::DrawCompletionList(
     } else if (ImGui::IsKeyPressed(ImGuiKey_RightArrow)) {
       delta = 1;
     }
-    if (delta != 0 && matches[selection_].first->cycle) {
-      matches[selection_].first->cycle(delta);
+    if (delta != 0 && matches[selection_]->cycle) {
+      matches[selection_]->cycle(delta);
     }
   }
 
@@ -240,7 +307,7 @@ const CommandPalette::Command* CommandPalette::DrawCompletionList(
   // Column layout: '*' marker just past the widest name, descriptions past that.
   const float spacing = ImGui::GetStyle().ItemSpacing.x;
   float name_w = 0.0f;
-  for (const auto& [command, score] : matches) {
+  for (const Command* command : matches) {
     name_w = std::max(name_w, ImGui::CalcTextSize(command->name.c_str()).x);
   }
   const float marker_x = name_w + spacing * 2.0f;
@@ -256,20 +323,63 @@ const CommandPalette::Command* CommandPalette::DrawCompletionList(
   const Command* chosen = nullptr;
   if (ImGui::BeginChild("##completions", ImVec2(0, 0),
                         ImGuiChildFlags_AutoResizeY)) {
+    // Make a held (pressed) row use the hover colour rather than the darker
+    // "active" colour.
+    ImGui::PushStyleColor(ImGuiCol_HeaderActive,
+                          ImGui::GetStyleColorVec4(ImGuiCol_HeaderHovered));
     for (int i = 0; i < static_cast<int>(matches.size()); ++i) {
-      const Command* command = matches[i].first;
-      const bool is_selected = (i == selection_);
-      if (CompletionRow(*command, is_selected, marker_x, desc_x) ||
-          (is_selected && entered)) {
+      const Command* command = matches[i];
+      const bool at_selection = (i == selection_);
+      const float row_min = ImGui::GetCursorPosY();
+      // Only highlight once the user has entered the list (in_list_); before
+      // that the selection is invisible but still the Enter target (top match).
+      const RowHit hit =
+          CompletionRow(*command, in_list_ && at_selection, marker_x, desc_x);
+      if (hit != RowHit::kNone) {
+        // A click moves the list focus to this row (and refocuses the input so
+        // typing keeps working); it never runs or closes the palette. A click on
+        // the value column also cycles that value in place.
+        selection_ = i;
+        in_list_ = true;
+        focus_input_ = true;
+        if (hit == RowHit::kValue && command->cycle) {
+          command->cycle(1);
+        }
+      }
+      // Enter (from the input) runs/submits the selected row; clicks never do.
+      if (at_selection && entered) {
         chosen = command;
       }
-      if (is_selected && moved) {
-        ImGui::SetScrollHereY();
+      // Keep the selection visible, but only scroll once it reaches an edge of
+      // the view (not when it's somewhere in the middle).
+      if (at_selection && moved) {
+        const float row_max = row_min + ImGui::GetTextLineHeightWithSpacing();
+        const float view_h = ImGui::GetWindowHeight();
+        const float scroll = ImGui::GetScrollY();
+        if (row_min < scroll) {
+          ImGui::SetScrollY(row_min);
+        } else if (row_max > scroll + view_h) {
+          ImGui::SetScrollY(row_max - view_h);
+        }
       }
     }
+    ImGui::PopStyleColor();
   }
   ImGui::EndChild();
   return chosen;
+}
+
+void CommandPalette::DrawSettings() {
+  ImGui::Separator();
+  ImGui::TextDisabled("Command palette settings");
+
+  const char* kModes[] = {"Prefix", "Substring", "Fuzzy"};
+  int mode = static_cast<int>(search_mode_);
+  ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x * 0.5f);
+  if (ImGui::Combo("Autocomplete Mode", &mode, kModes, IM_ARRAYSIZE(kModes))) {
+    search_mode_ = static_cast<SearchMode>(mode);
+  }
+  ImGui::Checkbox("Case Insensitive", &case_insensitive_);
 }
 
 void CommandPalette::SubmitPlain(
@@ -318,43 +428,75 @@ void CommandPalette::Draw(
       ImGui::SetKeyboardFocusHere();
       focus_input_ = false;
     }
-    ImGui::SetNextItemWidth(-FLT_MIN);
+    // Input box, leaving room on the right for the cog settings toggle.
+    const float cog_w = ImGui::GetFrameHeight();  // square button
+    ImGui::SetNextItemWidth(-(cog_w + ImGui::GetStyle().ItemSpacing.x));
+    completion_list_ = &commands;  // for the Tab-completion callback.
     const bool entered = ImGui::InputTextWithHint(
         "##cmdinput", "Type to search  ( > UI   . model/data   / agent )",
         input_, sizeof(input_),
         ImGuiInputTextFlags_EnterReturnsTrue |
-            ImGuiInputTextFlags_CallbackAlways,
+            ImGuiInputTextFlags_CallbackAlways |
+            ImGuiInputTextFlags_CallbackCompletion,
         InputTextCallback, this);
 
-    // One unified list, fuzzy-matched against the whole input. A leading
-    // '>'/'.'/'/' only matches names with that prefix, so it narrows by context.
-    if (input_[0] != '\0') {
-      if (const Command* chosen =
-              DrawCompletionList(commands, input_, entered)) {
-        if (chosen->name[0] == '/') {
-          // Agent command: submit its text so the caller can route it.
-          SubmitPlain(chosen->name, on_submit_plain);
-        } else {
-          // '>' UI / '.' model-data (and future '$'): run the action.
-          if (chosen->run) chosen->run();
-          Close();
+    // Cog toggle: opens the settings panel in place of the completion list.
+    // Capture the tint state before the button, since clicking it flips
+    // show_settings_ (the push and pop must use the same value).
+    ImGui::SameLine();
+    const bool cog_active = show_settings_;
+    if (cog_active) {
+      ImGui::PushStyleColor(ImGuiCol_Button,
+                            ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
+    }
+    if (ImGui::Button(kCogIcon, ImVec2(cog_w, cog_w))) {
+      show_settings_ = !show_settings_;
+      focus_input_ = true;  // keep typing working after toggling.
+    }
+    if (cog_active) {
+      ImGui::PopStyleColor();
+    }
+    ImGui::SetItemTooltip("Command Palette Preferences");
+
+    if (show_settings_) {
+      DrawSettings();
+    } else {
+      // One unified list, matched against the whole input. A leading
+      // '>'/'.'/'/' only matches names with that prefix, narrowing by context.
+      if (input_[0] != '\0') {
+        if (const Command* chosen =
+                DrawCompletionList(commands, input_, entered)) {
+          if (chosen->name[0] == '/') {
+            // Agent command: submit its text so the caller can route it.
+            SubmitPlain(chosen->name, on_submit_plain);
+          } else {
+            // '>' UI / '.' model-data (and future '$'): run the action.
+            if (chosen->run) chosen->run();
+            Close();
+          }
+        } else if (entered && input_[0] == '/') {
+          // Typed agent text with arguments that matched no completion (e.g.
+          // "/prompt how do I..." or "/model sonnet"): submit it as-is.
+          SubmitPlain(input_, on_submit_plain);
         }
-      } else if (entered && input_[0] == '/') {
-        // Typed agent text with arguments that matched no completion (e.g.
-        // "/prompt how do I..." or "/model sonnet"): submit it as-is.
-        SubmitPlain(input_, on_submit_plain);
+      }
+
+      // The agent conversation renders in agent context: while typing a '/'
+      // command, and once a submitted prompt has cleared the box (empty input),
+      // so replies stay visible.
+      if (render_below && (input_[0] == '/' || input_[0] == '\0')) {
+        render_below();
       }
     }
 
-    // The agent conversation renders in agent context: while typing a '/'
-    // command, and once a submitted prompt has cleared the box (empty input), so
-    // replies stay visible.
-    if (render_below && (input_[0] == '/' || input_[0] == '\0')) {
-      render_below();
-    }
-
     if (ImGui::IsKeyPressed(ImGuiKey_Escape)) {
-      Close();
+      // Escape backs out of settings first, then closes the palette.
+      if (show_settings_) {
+        show_settings_ = false;
+        focus_input_ = true;
+      } else {
+        Close();
+      }
     }
   }
   ImGui::End();
