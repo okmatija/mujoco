@@ -275,6 +275,12 @@ class App {
 
   UiState ui_;
   UiTempState tmp_;
+  // Snapshot of tmp_ taken once after settings are loaded (first frame). The
+  // command palette uses its toggle states as the "default" for the '>' UI
+  // toggles, so their '*'/revert reflect changes since load. Captured at runtime
+  // (not hardcoded), so it tracks whatever was loaded from disk or, for state
+  // that isn't persisted, the initial UiTempState value.
+  UiTempState ui_loaded_;
 };
 
 }  // namespace mujoco::studio

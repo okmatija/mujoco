@@ -575,6 +575,14 @@ void App::HandleMouseEvents() {
 
 void App::HandleKeyboardEvents() {
   using platform::ImGui_IsChordJustPressed;
+
+  // Handle the command-palette toggle before the WantCaptureKeyboard guard, so
+  // the same chord also closes the palette while its text input has focus.
+  if (ImGui_IsChordJustPressed(ImGuiKey_P | ImGuiMod_Ctrl | ImGuiMod_Shift)) {
+    command_palette_.Toggle();
+    return;
+  }
+
   if (ImGui::GetIO().WantCaptureKeyboard) {
     return;
   }
@@ -584,9 +592,7 @@ void App::HandleKeyboardEvents() {
   bool is_freecam_wasd = ui_.camera_idx == platform::kFreeCameraIdx;
 
   // Menu shortcuts.
-  if (ImGui_IsChordJustPressed(ImGuiKey_P | ImGuiMod_CtrlShift)) {
-    command_palette_.Toggle();
-  } else if (ImGui_IsChordJustPressed(ImGuiKey_O | ImGuiMod_Ctrl)) {
+  if (ImGui_IsChordJustPressed(ImGuiKey_O | ImGuiMod_Ctrl)) {
     tmp_.file_dialog = UiTempState::FileDialog_Load;
   } else if (ImGui_IsChordJustPressed(ImGuiKey_S | ImGuiMod_CtrlShift)) {
     tmp_.file_dialog = UiTempState::FileDialog_SaveMjb;
@@ -889,24 +895,28 @@ void App::BuildGui() {
   }
 
   if (tmp_.options_panel) {
-    if (ImGui::Begin("Options", &tmp_.options_panel)) {
+    if (ImGui::Begin("Options", &tmp_.options_panel,
+                     ImGuiWindowFlags_NoFocusOnAppearing)) {
       ModelOptionsGui();
     }
     ImGui::End();
   }
 
   if (tmp_.inspector_panel) {
-    if (ImGui::Begin("Explorer", &tmp_.inspector_panel)) {
+    if (ImGui::Begin("Explorer", &tmp_.inspector_panel,
+                     ImGuiWindowFlags_NoFocusOnAppearing)) {
       SpecExplorerGui();
     }
     ImGui::End();
 
-    if (ImGui::Begin("Editor", &tmp_.inspector_panel)) {
+    if (ImGui::Begin("Editor", &tmp_.inspector_panel,
+                     ImGuiWindowFlags_NoFocusOnAppearing)) {
       SpecEditorGui();
     }
     ImGui::End();
 
-    if (ImGui::Begin("Inspector", &tmp_.inspector_panel)) {
+    if (ImGui::Begin("Inspector", &tmp_.inspector_panel,
+                     ImGuiWindowFlags_NoFocusOnAppearing)) {
       DataInspectorGui();
     }
     ImGui::End();
@@ -914,14 +924,17 @@ void App::BuildGui() {
 
   if (tmp_.profiler) {
     if (ImGui::Begin("Profiler", &tmp_.profiler,
-                     ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse)) {
+                     ImGuiWindowFlags_NoScrollbar |
+                         ImGuiWindowFlags_NoScrollWithMouse |
+                         ImGuiWindowFlags_NoFocusOnAppearing)) {
       platform::ProfilerGui(model(), data(), &profiler_);
     }
     ImGui::End();
   }
 
   if (tmp_.picture_in_picture) {
-    if (ImGui::Begin("Picture-in-Picture", &tmp_.picture_in_picture)) {
+    if (ImGui::Begin("Picture-in-Picture", &tmp_.picture_in_picture,
+                     ImGuiWindowFlags_NoFocusOnAppearing)) {
       platform::PipGui(model(), data(), window_->GetAspectRatio(),
                        renderer_.get(), &tmp_.pips);
     }
@@ -935,7 +948,8 @@ void App::BuildGui() {
                             ImGuiCond_Appearing);
     ImGui::SetNextWindowSize(ImVec2(0, 0), ImGuiCond_Appearing);
     if (ImGui::Begin("Help", &tmp_.help,
-                     ImGuiWindowFlags_AlwaysAutoResize)) {
+                     ImGuiWindowFlags_AlwaysAutoResize |
+                         ImGuiWindowFlags_NoFocusOnAppearing)) {
       ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(2.0f, 5.0f));
       HelpGui();
       ImGui::PopStyleVar();
@@ -958,7 +972,8 @@ void App::BuildGui() {
                                    ImGuiWindowFlags_NoMove |
                                    ImGuiWindowFlags_NoCollapse |
                                    ImGuiWindowFlags_AlwaysAutoResize |
-                                   ImGuiWindowFlags_NoSavedSettings;
+                                   ImGuiWindowFlags_NoSavedSettings |
+                                   ImGuiWindowFlags_NoFocusOnAppearing;
     if (ImGui::Begin("Info", nullptr, flags)) {
       const float fps = renderer_->GetFps();
       platform::InfoGui(
@@ -1002,7 +1017,8 @@ void App::BuildGui() {
     ImPlot::ShowDemoWindow();
   }
   if (tmp_.style_editor) {
-    if (ImGui::Begin("Style Editor", &tmp_.style_editor)) {
+    if (ImGui::Begin("Style Editor", &tmp_.style_editor,
+                     ImGuiWindowFlags_NoFocusOnAppearing)) {
       ImGui::ShowStyleEditor();
     }
     ImGui::End();
@@ -1010,8 +1026,12 @@ void App::BuildGui() {
 
   // Command palette overlay (Ctrl+Shift+P), drawn late so it sits on top.
   if (command_palette_.is_open()) {
-    const ImVec4 palette_rect(workspace_rect.x, workspace_rect.y + 10.0f,
-                              workspace_rect.z, workspace_rect.w);
+    // Center horizontally on the whole viewport (not the central dock node,
+    // whose x/width shift as panels dock), so the palette stays put when windows
+    // are toggled. The top edge follows the workspace (below the menu/toolbar).
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+    const ImVec4 palette_rect(vp->WorkPos.x, workspace_rect.y + 10.0f,
+                              vp->WorkSize.x, workspace_rect.w);
     command_palette_.Draw(CollectCommands(), palette_rect);
   }
 
@@ -1038,6 +1058,9 @@ void App::BuildGui() {
   ImGuiIO& io = ImGui::GetIO();
   if (tmp_.first_frame) {
     LoadSettings();
+    // Snapshot the loaded UI state as the baseline for the '>' toggles' '*'
+    // (see ui_loaded_). Captured after LoadSettings so it reflects disk values.
+    ui_loaded_ = tmp_;
     tmp_.first_frame = false;
   }
   if (io.WantSaveIniSettings) {
@@ -1049,29 +1072,58 @@ void App::BuildGui() {
 std::vector<CommandPalette::Command> App::CollectCommands() {
   std::vector<CommandPalette::Command> commands;
 
-  // '>' UI actions: the leading '>' namespaces them in the palette (typing '>'
-  // narrows to this group). Each just runs a callback -- the same things the
-  // menus and keyboard shortcuts do.
-  auto add = [&](const char* name, std::function<void()> run,
-                 const char* desc = "") {
-    commands.push_back({name, std::move(run), desc});
+  // '>' UI commands: the leading '>' namespaces them in the palette (typing '>'
+  // narrows to this group). `add` registers a one-shot action (shown as a "Run"
+  // button); toggles use RegisterFlagField (a checkbox, with '*'/revert vs the
+  // loaded state) and the pause state uses RegisterChoice (a combo).
+  auto add = [&](const char* name, std::function<void()> run) {
+    commands.push_back({name, std::move(run), ""});
   };
 
-  // Panels / windows.
-  add(">Toggle Options Panel",
-      [this] { tmp_.options_panel = !tmp_.options_panel; });
-  add(">Toggle Inspector Panel",
-      [this] { tmp_.inspector_panel = !tmp_.inspector_panel; });
-  add(">Toggle Profiler", [this] { ToggleWindow(tmp_.profiler); });
-  add(">Toggle Stats", [this] { ToggleWindow(tmp_.stats); });
-  add(">Toggle Help", [this] { ToggleWindow(tmp_.help); });
-  add(">Toggle Picture-in-Picture",
-      [this] { tmp_.picture_in_picture = !tmp_.picture_in_picture; });
-  add(">Toggle Full Screen", [this] { tmp_.full_screen = !tmp_.full_screen; });
-  add(">Toggle Style Editor",
-      [this] { tmp_.style_editor = !tmp_.style_editor; });
-  add(">Toggle ImGui Demo", [this] { tmp_.imgui_demo = !tmp_.imgui_demo; });
-  add(">Toggle ImPlot Demo", [this] { tmp_.implot_demo = !tmp_.implot_demo; });
+  // Panels / windows -- a checkbox showing each one's open state, with a '*'
+  // (and revert) when it differs from `baseline`, the value snapshotted at load
+  // (ui_loaded_). `save_ini` mirrors ToggleWindow, which persists the change for
+  // those windows.
+  auto add_toggle = [&](const char* name, bool* flag, bool baseline,
+                        bool save_ini) {
+    platform::RegisterFlagField(
+        commands, name, [flag] { return *flag; },
+        [flag, save_ini](bool b) {
+          *flag = b;
+          if (save_ini) ImGui::GetIO().WantSaveIniSettings = true;
+        },
+        baseline);
+  };
+  add_toggle(">Toggle Options Panel", &tmp_.options_panel,
+             ui_loaded_.options_panel, false);
+  add_toggle(">Toggle Inspector Panel", &tmp_.inspector_panel,
+             ui_loaded_.inspector_panel, false);
+  add_toggle(">Toggle Profiler", &tmp_.profiler, ui_loaded_.profiler, true);
+  add_toggle(">Toggle Info", &tmp_.info, ui_loaded_.info, true);
+  add_toggle(">Toggle Help", &tmp_.help, ui_loaded_.help, true);
+  add_toggle(">Toggle Picture-in-Picture", &tmp_.picture_in_picture,
+             ui_loaded_.picture_in_picture, false);
+  add_toggle(">Toggle Full Screen", &tmp_.full_screen, ui_loaded_.full_screen,
+             false);
+  add_toggle(">Toggle Style Editor", &tmp_.style_editor,
+             ui_loaded_.style_editor, false);
+  // The demo windows are built-in (ImGui::ShowDemoWindow), so they can't take
+  // NoFocusOnAppearing; instead refocus the palette so it isn't collapsed when a
+  // demo appears and grabs focus (the palette is drawn last, so it wins).
+  platform::RegisterFlagField(
+      commands, ">Toggle ImGui Demo", [this] { return tmp_.imgui_demo; },
+      [this](bool b) {
+        tmp_.imgui_demo = b;
+        command_palette_.FocusInput();
+      },
+      ui_loaded_.imgui_demo);
+  platform::RegisterFlagField(
+      commands, ">Toggle ImPlot Demo", [this] { return tmp_.implot_demo; },
+      [this](bool b) {
+        tmp_.implot_demo = b;
+        command_palette_.FocusInput();
+      },
+      ui_loaded_.implot_demo);
 
   // File.
   add(">Load Model...",
@@ -1089,12 +1141,13 @@ std::vector<CommandPalette::Command> App::CollectCommands() {
 
   // Simulation (these need a loaded model).
   if (has_model()) {
-    add(">Pause / Resume", [this] {
-      step_control_.SetPauseState(
-          step_control_.GetPauseState() == PauseState::kUnpaused
-              ? PauseState::kNormalPaused
-              : PauseState::kUnpaused);
-    });
+    platform::RegisterChoice(
+        commands, ">Set Pause State",
+        [this] { return static_cast<int>(step_control_.GetPauseState()); },
+        [this](int v) {
+          step_control_.SetPauseState(static_cast<PauseState>(v));
+        },
+        {"Running", "Paused", "Viscous"});
     add(">Reset Simulation", [this] { ResetPhysics(); });
     add(">Reload Model", [this] { RequestModelReload(); });
     add(">Reset Free Camera",
