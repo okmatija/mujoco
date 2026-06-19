@@ -33,6 +33,26 @@ constexpr char kCogIcon[] = "\xEF\x80\x93";
 // FontAwesome 4 "fa-undo" (U+F0E2), the revert/restore-default button glyph.
 constexpr char kRevertIcon[] = "\xEF\x83\xA2";
 
+// Builds a value-column draw lambda for a boolean: a checkbox right-aligned in
+// the column, leaving the revert-button slot on the far right so it lines up
+// whether or not a revert button is shown. `id` is the widget id ("###path").
+std::function<void()> RightAlignedCheckbox(std::string id,
+                                           std::function<bool()> get,
+                                           std::function<void(bool)> set) {
+  return [id = std::move(id), get = std::move(get), set = std::move(set)] {
+    bool b = get();
+    const ImGuiStyle& style = ImGui::GetStyle();
+    const float reserve = ImGui::CalcTextSize(kRevertIcon).x +
+                          style.FramePadding.x * 2.0f + style.ItemSpacing.x;
+    const float offset =
+        ImGui::GetContentRegionAvail().x - reserve - ImGui::GetFrameHeight();
+    if (offset > 0.0f) {
+      ImGui::SetCursorPosX(ImGui::GetCursorPosX() + offset);
+    }
+    if (ImGui::Checkbox(id.c_str(), &b)) set(b);
+  };
+}
+
 // Does `text` match `query` under the given search mode? An empty query always
 // matches.
 //   kPrefix    -- `text` starts with `query` (classic autocomplete).
@@ -82,7 +102,7 @@ bool MatchQuery(const std::string& text, const std::string& query,
 }
 
 // Which column of a completion row a click landed in.
-enum class RowHit { kNone, kName, kValue };
+enum class RowHit { kNone, kName, kValue, kActivated };
 
 // ===== Match highlighting ==================================================
 // Renders the matched characters of a name in a bold font. This whole block is
@@ -203,25 +223,26 @@ RowHit CompletionRow(const CommandPalette::Command& cmd, bool selected,
   }
 
   float value_x = FLT_MAX;  // screen-x where the value column begins.
+  // Reserve a fixed revert-button slot on the right of the value column for
+  // every value widget / action button, so they all line up and a revert button
+  // (when shown) always lands in the same place. Widgets and actions with no
+  // revert (e.g. the pause combo, the Execute buttons) leave the slot empty.
+  const ImGuiStyle& style = ImGui::GetStyle();
+  const float revert_w =
+      ImGui::CalcTextSize(kRevertIcon).x + style.FramePadding.x * 2.0f;
+  const float widget_w = -(revert_w + style.ItemSpacing.x);  // fill, less slot.
   if (cmd.draw_value) {
-    // An editable widget (checkbox / numeric input) fills the value column,
-    // reserving a revert-button column on the right for fields that can revert.
+    // An editable widget (checkbox / numeric input / combo) fills the value
+    // column up to the reserved revert slot.
     ImGui::SameLine(desc_x);
     value_x = ImGui::GetCursorScreenPos().x;
-    const float revert_w =
-        cmd.reset ? ImGui::CalcTextSize(kRevertIcon).x +
-                        ImGui::GetStyle().FramePadding.x * 2.0f
-                  : 0.0f;
-    ImGui::SetNextItemWidth(
-        revert_w > 0.0f ? -(revert_w + ImGui::GetStyle().ItemSpacing.x)
-                        : -FLT_MIN);
+    ImGui::SetNextItemWidth(widget_w);
     if (focus_value) {
       ImGui::SetKeyboardFocusHere();  // Right entered the widget; focus it.
     }
     cmd.draw_value();
-    // Revert-to-default button, shown only when the value differs from default.
-    // Right-aligned into a fixed last column so every revert button lines up,
-    // regardless of the value widget's width (e.g. narrow checkboxes).
+    // Revert-to-default button, shown only when the value differs from default,
+    // right-aligned into the reserved slot so every revert button lines up.
     if (cmd.modified && cmd.reset) {
       ImGui::SameLine();
       const float avail = ImGui::GetContentRegionAvail().x;
@@ -237,8 +258,20 @@ RowHit CompletionRow(const CommandPalette::Command& cmd, bool selected,
         ImGui::SetItemTooltip("Reset to '%s'", cmd.default_text.c_str());
       }
     }
+  } else if (cmd.run) {
+    // A pure action ('>' command): an "Execute" button filling the value column
+    // (up to the reserved slot). Clicking it activates the command -- Draw runs
+    // `run` and closes, exactly as Enter on the selected row does.
+    ImGui::SameLine(desc_x);
+    value_x = ImGui::GetCursorScreenPos().x;
+    ImGui::PushID(cmd.name.c_str());
+    const bool pressed = ImGui::Button("Execute", ImVec2(widget_w, 0.0f));
+    ImGui::PopID();
+    if (pressed) {
+      return RowHit::kActivated;
+    }
   } else if (!cmd.description.empty()) {
-    // A dimmed one-line hint (entries without a value widget, e.g. '>' / '/').
+    // A dimmed one-line hint (entries without a value widget).
     ImGui::SameLine(desc_x);
     value_x = ImGui::GetCursorScreenPos().x;
     ImGui::TextDisabled("%s", cmd.description.c_str());
@@ -303,19 +336,10 @@ std::string SegmentComplete(const std::string& input,
 int CommandPalette::InputTextCallback(ImGuiInputTextCallbackData* data) {
   auto* self = static_cast<CommandPalette*>(data->UserData);
 
-  // CallbackAlways: one-shot after Open()/OpenWith() to undo the select-all that
-  // focus applies, so a pre-filled string (from OpenWith) stays put with the
-  // cursor after it. Fires on the activation frame, after InputText's
-  // select-all, so it wins. (Up/Down/Left/Right are read via IsKeyPressed in
-  // DrawCompletionList, so the single-line input never handles them itself.)
-  if (data->EventFlag == ImGuiInputTextFlags_CallbackAlways) {
-    if (self->init_cursor_end_) {
-      data->CursorPos = data->BufTextLen;
-      data->SelectionStart = data->SelectionEnd = data->CursorPos;
-      self->init_cursor_end_ = false;
-    }
-  } else if (data->EventFlag == ImGuiInputTextFlags_CallbackCompletion) {
-    // Tab: complete the current dotted segment against the command list.
+  // Tab: complete the current dotted segment against the command list.
+  // (Up/Down/Left/Right are read via IsKeyPressed in DrawCompletionList, so the
+  // single-line input never handles them itself.)
+  if (data->EventFlag == ImGuiInputTextFlags_CallbackCompletion) {
     if (self->completion_list_) {
       const std::string completed =
           SegmentComplete(data->Buf, *self->completion_list_);
@@ -335,24 +359,7 @@ void CommandPalette::Open() {
   in_list_ = false;
   show_settings_ = false;  // a fresh open shows the command list, not settings.
   last_query_.clear();
-  // Start empty (type to search; the hint lists the contexts). OpenWith() may
-  // pre-fill it afterwards; the cursor is then parked at the end (see
-  // init_cursor_end_) so a pre-filled string isn't select-all'd and wiped.
-  input_[0] = '\0';
-  init_cursor_end_ = true;
-}
-
-void CommandPalette::OpenWith(const std::string& text) {
-  Open();
-  const std::size_t n = std::min(text.size(), sizeof(input_) - 1);
-  std::memcpy(input_, text.data(), n);
-  input_[n] = '\0';
-}
-
-void CommandPalette::SetText(const std::string& text) {
-  const std::size_t n = std::min(text.size(), sizeof(input_) - 1);
-  std::memcpy(input_, text.data(), n);
-  input_[n] = '\0';
+  input_[0] = '\0';  // start empty; type to search (the hint lists the contexts).
 }
 
 void CommandPalette::Close() { open_ = false; }
@@ -492,7 +499,11 @@ const CommandPalette::Command* CommandPalette::DrawCompletionList(
       const RowHit hit = CompletionRow(
           *command, in_list_ && at_selection, desc_x, query, search_mode_,
           case_insensitive_, match_font, focus_value_ && at_selection);
-      if (hit != RowHit::kNone) {
+      if (hit == RowHit::kActivated) {
+        // An action button was pressed: treat it as choosing this row (Draw runs
+        // its `run` and closes).
+        chosen = command;
+      } else if (hit != RowHit::kNone) {
         // A click moves the list focus to this row (and refocuses the input so
         // typing keeps working); it never runs or closes the palette. A click on
         // the value column also cycles that value in place.
@@ -527,7 +538,7 @@ const CommandPalette::Command* CommandPalette::DrawCompletionList(
   return chosen;
 }
 
-void CommandPalette::DrawSettings(const std::function<void()>& render_settings) {
+void CommandPalette::DrawSettings() {
   ImGui::Separator();
 
   // The palette window is translucent; give the settings panel a solid
@@ -551,34 +562,12 @@ void CommandPalette::DrawSettings(const std::function<void()>& render_settings) 
     ImGui::Checkbox("Highlight Matches", &highlight_matches_);
   }
 
-  // Host- (and plugin-) provided settings go below the palette's own.
-  if (render_settings) {
-    ImGui::Spacing();
-    render_settings();
-  }
-
   ImGui::EndChild();
   ImGui::PopStyleColor();
 }
 
-void CommandPalette::SubmitPlain(
-    const std::string& text,
-    const std::function<void(const std::string&)>& on_submit_plain) {
-  if (text.empty()) {
-    return;
-  }
-  if (on_submit_plain) {
-    on_submit_plain(text);
-  }
-  input_[0] = '\0';
-  focus_input_ = true;
-}
-
-void CommandPalette::Draw(
-    const std::vector<Command>& commands, const ImVec4& rect,
-    const std::function<void()>& render_below,
-    const std::function<void(const std::string&)>& on_submit_plain,
-    const std::function<void()>& render_settings) {
+void CommandPalette::Draw(const std::vector<Command>& commands,
+                          const ImVec4& rect) {
   if (!open_) {
     return;
   }
@@ -602,8 +591,6 @@ void CommandPalette::Draw(
       ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoNavInputs;
 
   if (ImGui::Begin("##CommandPalette", nullptr, flags)) {
-    center_ = ImVec2(ImGui::GetWindowPos().x + ImGui::GetWindowSize().x * 0.5f,
-                     ImGui::GetWindowPos().y + ImGui::GetWindowSize().y * 0.5f);
     if (focus_input_) {
       ImGui::SetKeyboardFocusHere();
       focus_input_ = false;
@@ -613,10 +600,9 @@ void CommandPalette::Draw(
     ImGui::SetNextItemWidth(-(cog_w + ImGui::GetStyle().ItemSpacing.x));
     completion_list_ = &commands;  // for the Tab-completion callback.
     const bool entered = ImGui::InputTextWithHint(
-        "##cmdinput", "Type to search  ( > UI   . model/data   / agent )",
+        "##cmdinput", "Type to search  ( > UI   . model/data )",
         input_, sizeof(input_),
         ImGuiInputTextFlags_EnterReturnsTrue |
-            ImGuiInputTextFlags_CallbackAlways |
             ImGuiInputTextFlags_CallbackCompletion,
         InputTextCallback, this);
 
@@ -638,41 +624,26 @@ void CommandPalette::Draw(
     }
     ImGui::SetItemTooltip("Command Palette Preferences");
 
-    // Only show the autocomplete list / conversation while the palette is
-    // focused. Clicking outside ImGui (e.g. into the viewport) defocuses it, so
-    // the window collapses to just the input box -- this hides the list without
-    // losing what the user typed; clicking back into the box brings it back.
+    // Only show the part below the input (the completion list or the settings
+    // panel) while the palette is focused. Clicking outside it (e.g. into the
+    // viewport) defocuses it, collapsing the window to just the input box, which
+    // still shows -- and stays above the docked panels, since the palette is a
+    // floating window -- so clicking back into it brings the list back.
     const bool focused =
         ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
 
-    if (show_settings_) {
-      DrawSettings(render_settings);
-    } else if (focused) {
-      // One unified list, matched against the whole input. A leading
-      // '>'/'.'/'/' only matches names with that prefix, narrowing by context.
-      if (input_[0] != '\0') {
+    if (focused) {
+      if (show_settings_) {
+        DrawSettings();
+      } else if (input_[0] != '\0') {
+        // One unified list, matched against the whole input. A leading '>'/'.'
+        // only matches names with that prefix, narrowing by context. Choosing an
+        // entry runs its action and closes.
         if (const Command* chosen =
                 DrawCompletionList(commands, input_, entered)) {
-          if (chosen->name[0] == '/') {
-            // Agent command: submit its text so the caller can route it.
-            SubmitPlain(chosen->name, on_submit_plain);
-          } else {
-            // '>' UI / '.' model-data (and future '$'): run the action.
-            if (chosen->run) chosen->run();
-            Close();
-          }
-        } else if (entered && input_[0] == '/') {
-          // Typed agent text with arguments that matched no completion (e.g.
-          // "/prompt how do I..." or "/model sonnet"): submit it as-is.
-          SubmitPlain(input_, on_submit_plain);
+          if (chosen->run) chosen->run();
+          Close();
         }
-      }
-
-      // The agent conversation renders in agent context: while typing a '/'
-      // command, and once a submitted prompt has cleared the box (empty input),
-      // so replies stay visible.
-      if (render_below && (input_[0] == '/' || input_[0] == '\0')) {
-        render_below();
       }
     }
 
@@ -693,27 +664,29 @@ void RegisterFlagField(std::vector<CommandPalette::Command>& out,
                        const std::string& path, std::function<bool()> get,
                        std::function<void(bool)> set, bool dflt) {
   const bool modified = get() != dflt;
-  const std::string id = "###" + path;
   auto toggle = [get, set] { set(!get()); };
-  auto checkbox = [id, get, set] {
-    bool b = get();
-    // Right-align the checkbox in the value column, leaving the revert-button
-    // slot on the far right (a flag always has a revert action) so the box keeps
-    // its place whether or not the marker is showing.
-    const ImGuiStyle& style = ImGui::GetStyle();
-    const float reserve = ImGui::CalcTextSize(kRevertIcon).x +
-                          style.FramePadding.x * 2.0f + style.ItemSpacing.x;
-    const float offset =
-        ImGui::GetContentRegionAvail().x - reserve - ImGui::GetFrameHeight();
-    if (offset > 0.0f) {
-      ImGui::SetCursorPosX(ImGui::GetCursorPosX() + offset);
-    }
-    if (ImGui::Checkbox(id.c_str(), &b)) set(b);
-  };
+  auto checkbox = RightAlignedCheckbox("###" + path, get, set);
   auto reset = [set, dflt] { set(dflt); };
   out.push_back({command_palette_detail::Marked(path, modified), toggle, "",
                  [toggle](int) { toggle(); }, checkbox, reset, modified,
                  dflt ? "on" : "off"});
+}
+
+void RegisterChoice(std::vector<CommandPalette::Command>& out,
+                    const std::string& name, std::function<int()> get,
+                    std::function<void(int)> set,
+                    std::vector<const char*> names) {
+  const int n = static_cast<int>(names.size());
+  const std::string id = "###" + name;
+  auto cyc = [get, set, n](int delta) {
+    const int v = get();
+    set(((v + delta) % n + n) % n);
+  };
+  auto combo = [id, get, set, names, n] {
+    int v = get();
+    if (ImGui::Combo(id.c_str(), &v, names.data(), n)) set(v);
+  };
+  out.push_back({name, [cyc] { cyc(1); }, "", cyc, combo, {}, false, ""});
 }
 
 void RegisterCustomField(std::vector<CommandPalette::Command>& out,

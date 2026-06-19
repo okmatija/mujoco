@@ -29,9 +29,9 @@ namespace mujoco::platform {
 // A VS Code-style command palette. The owner opens it (e.g. on Ctrl+Shift+P) and
 // passes one flat list of commands to Draw() each frame, fuzzy-searched against
 // the input. Commands are namespaced by a leading character in their name -- by
-// convention '>' UI actions, '.' model/data fields, '/' agent commands -- so
-// typing that character narrows the fuzzy results to one context. Selecting an
-// entry runs its callback; '/' entries instead submit their text (see Draw).
+// convention '>' UI actions and '.' model/data fields -- so typing that
+// character narrows the fuzzy results to one context. Selecting an entry runs
+// its callback.
 //
 // This widget is intentionally self-contained and knows nothing about the app:
 // a command is a {name, action, optional value-widget} record (see Command), so
@@ -43,7 +43,7 @@ class CommandPalette {
     // Runs when the entry is chosen (Enter / click) -- for '>' and '.' entries.
     std::function<void()> run;
     // Optional dimmed one-line hint shown in the value column, for entries that
-    // have no value widget (e.g. '>' UI actions, '/' agent commands).
+    // have no value widget (e.g. '>' UI actions).
     std::string description;
     // Optional: makes the command's value adjustable in place. Once the user has
     // navigated into the list with Up/Down, Left/Right call this with delta -1/+1
@@ -77,44 +77,23 @@ class CommandPalette {
   bool case_insensitive() const { return case_insensitive_; }
 
   void Open();
-  // Opens the palette pre-filled with `text` (e.g. ">Physics"); used by the
-  // capture script to show command-mode interactions.
-  void OpenWith(const std::string& text);
-  // Replaces the input text without opening/closing (used by the capture script
-  // to "type" a question one character at a time).
-  void SetText(const std::string& text);
   void Close();
   void Toggle();
   bool is_open() const { return open_; }
-  // Center of the palette window from the last Draw (for the capture cursor).
-  ImVec2 window_center() const { return center_; }
+  // Re-focuses the input box on the next Draw. Useful when a command opens a
+  // window that would otherwise steal focus and collapse the palette: call this
+  // from the command so the palette reclaims focus and stays expanded.
+  void FocusInput() { focus_input_ = true; }
 
   // Draws the palette (if open), horizontally centered near the top of `rect`
   // (x, y, width, height), capped at 80% of the viewport height (the list
   // scrolls past that). `commands` is the single list fuzzy-matched against the
-  // whole input. Choosing an entry whose name starts with '/' submits its text
-  // via `on_submit_plain` (so the agent / app can route it); any other entry
-  // runs its `run` callback and closes.
-  //
-  // Typed text that matches no entry but starts with '/' is also submitted as-is
-  // on Enter (so an argument-bearing command like "/model sonnet" or
-  // "/prompt how do I..." works). `render_below` is invoked inside the palette
-  // window -- to draw the agent conversation -- while in agent context (the
-  // input starts with '/' or is empty). `render_settings` is invoked inside the
-  // cog settings panel, after the palette's own options, so the host (and its
-  // plugins) can add their own settings there. All callbacks are optional.
-  void Draw(const std::vector<Command>& commands, const ImVec4& rect,
-            const std::function<void()>& render_below = {},
-            const std::function<void(const std::string&)>& on_submit_plain = {},
-            const std::function<void()>& render_settings = {});
+  // whole input; choosing an entry runs its `run` callback and closes.
+  void Draw(const std::vector<Command>& commands, const ImVec4& rect);
 
  private:
   bool open_ = false;
   bool focus_input_ = false;
-  // One-shot after Open()/OpenWith(): on the frame the input gains focus, move
-  // the cursor to the end and clear the selection so a pre-filled string (from
-  // OpenWith) isn't select-all'd and wiped by the first keystroke.
-  bool init_cursor_end_ = false;
   int selection_ = 0;
   // True once the user has pressed Up/Down to move into the completion list;
   // while set, Left/Right act on the highlighted command's value (cycle it, or
@@ -126,7 +105,6 @@ class CommandPalette {
   bool focus_value_ = false;
   std::string last_query_;  // query from the previous Draw, to detect edits.
   char input_[256] = "";
-  ImVec2 center_{0.0f, 0.0f};
   // Points at the command list during Draw so the Tab-completion callback can
   // see it (the callback runs inside InputText, before the list is filtered).
   const std::vector<Command>* completion_list_ = nullptr;
@@ -145,12 +123,8 @@ class CommandPalette {
   const Command* DrawCompletionList(const std::vector<Command>& list,
                                     const std::string& query, bool entered);
   // Draws the settings panel (search mode, case sensitivity, match
-  // highlighting), then the host's `render_settings`, in the list area.
-  void DrawSettings(const std::function<void()>& render_settings);
-  // Calls `on_submit_plain`, then clears and refocuses the box (the shared
-  // "submit a line" path for '/' agent commands).
-  void SubmitPlain(const std::string& text,
-                   const std::function<void(const std::string&)>& on_submit_plain);
+  // highlighting) in the list area.
+  void DrawSettings();
 
   static int InputTextCallback(ImGuiInputTextCallbackData* data);
 };
@@ -280,6 +254,14 @@ void RegisterCustomField(std::vector<CommandPalette::Command>& out,
                          const std::string& path, std::function<void()> draw,
                          std::function<void()> reset, bool modified,
                          std::string default_text);
+
+// A choice over `names` reached through accessors (e.g. an enum behind a
+// getter/setter): a combo in the value column, Enter advances / Left-Right
+// cycles. `get`/`set` use the option index (0..names.size()).
+void RegisterChoice(std::vector<CommandPalette::Command>& out,
+                    const std::string& name, std::function<int()> get,
+                    std::function<void(int)> set,
+                    std::vector<const char*> names);
 
 }  // namespace mujoco::platform
 
