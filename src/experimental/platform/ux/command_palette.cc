@@ -600,7 +600,7 @@ void CommandPalette::Draw(const std::vector<Command>& commands,
     ImGui::SetNextItemWidth(-(cog_w + ImGui::GetStyle().ItemSpacing.x));
     completion_list_ = &commands;  // for the Tab-completion callback.
     const bool entered = ImGui::InputTextWithHint(
-        "##cmdinput", "Type to search  ( > UI   . model/data )",
+        "##cmdinput", "Type to search",
         input_, sizeof(input_),
         ImGuiInputTextFlags_EnterReturnsTrue |
             ImGuiInputTextFlags_CallbackCompletion,
