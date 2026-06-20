@@ -221,9 +221,8 @@ class App {
   void ToolBarGui();
   void StatusBarGui();
   // Command palette (Ctrl+Shift+P). CollectCommands gathers the '>' UI actions
-  // plus, via CollectModelCommands, the editable '.' model/data fields.
+  // and noise, plus the editable '.' fields via platform::CollectModelCommands.
   std::vector<platform::CommandPalette::Command> CollectCommands();
-  std::vector<platform::CommandPalette::Command> CollectModelCommands();
   void HelpGui();
   void FileDialogGui();
   void ModelOptionsGui();

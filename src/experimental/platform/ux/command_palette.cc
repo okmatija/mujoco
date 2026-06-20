@@ -24,6 +24,8 @@
 #include <vector>
 
 #include <imgui.h>
+#include <mujoco/mjxmacro.h>
+#include <mujoco/mujoco.h>
 
 namespace mujoco::platform {
 namespace {
@@ -32,6 +34,18 @@ namespace {
 constexpr char kCogIcon[] = "\xEF\x80\x93";
 // FontAwesome 4 "fa-undo" (U+F0E2), the revert/restore-default button glyph.
 constexpr char kRevertIcon[] = "\xEF\x83\xA2";
+
+// Builds a constant-style identifier from a table name: "Convex Hull" ->
+// CONVEXHULL (used for the flag path segments from the mj*STRING tables).
+std::string Ident(const std::string& s) {
+  std::string out;
+  for (char c : s) {
+    if (std::isalnum(static_cast<unsigned char>(c))) {
+      out += static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+    }
+  }
+  return out;
+}
 
 // Builds a value-column draw lambda for a boolean: a checkbox right-aligned in
 // the column, leaving the revert-button slot on the far right so it lines up
@@ -696,6 +710,186 @@ void RegisterCustomField(std::vector<CommandPalette::Command>& out,
   out.push_back({command_palette_detail::Marked(path, modified), {}, "", {},
                  std::move(draw), std::move(reset), modified,
                  std::move(default_text)});
+}
+
+void RegisterMjvOptionFields(std::vector<CommandPalette::Command>& out,
+                             const std::string& prefix, mjvOption* opt) {
+  // Element-visibility flags. Column [1] of each table is the default.
+  for (int i = 0; i < mjNVISFLAG; ++i) {
+    RegisterFlagField(
+        out, prefix + ".flags." + Ident(mjVISSTRING[i][0]),
+        [opt, i] { return opt->flags[i] != 0; },
+        [opt, i](bool b) { opt->flags[i] = b; }, mjVISSTRING[i][1][0] == '1');
+  }
+  // Per-group visibility toggles. MuJoCo has no xmacro for mjvOption, so list
+  // its group arrays with a small local one (stringifying each name with #NAME
+  // so the path and member stay in sync). Each is mjtByte[mjNGROUP], and
+  // mjv_defaultOption shows groups 0-2, hides 3-5.
+#define MJV_GROUP_ARRAYS(X)                                  \
+  X(geomgroup) X(sitegroup) X(jointgroup) X(tendongroup)     \
+  X(actuatorgroup) X(flexgroup) X(skingroup)
+  const struct {
+    const char* name;
+    mjtByte* arr;
+  } kGroups[] = {
+#define X(NAME) {#NAME, opt->NAME},
+      MJV_GROUP_ARRAYS(X)
+#undef X
+  };
+#undef MJV_GROUP_ARRAYS
+  for (const auto& g : kGroups) {
+    mjtByte* arr = g.arr;
+    for (int i = 0; i < mjNGROUP; ++i) {
+      RegisterFlagField(
+          out, prefix + "." + g.name + "." + std::to_string(i),
+          [arr, i] { return arr[i] != 0; },
+          [arr, i](bool b) { arr[i] = static_cast<mjtByte>(b); }, i < 3);
+    }
+  }
+}
+
+void RegisterMjvSceneFields(std::vector<CommandPalette::Command>& out,
+                            const std::string& prefix, mjvScene* scn) {
+  // Render-effect flags. Column [1] of each table is the default.
+  for (int i = 0; i < mjNRNDFLAG; ++i) {
+    RegisterFlagField(
+        out, prefix + ".flags." + Ident(mjRNDSTRING[i][0]),
+        [scn, i] { return scn->flags[i] != 0; },
+        [scn, i](bool b) { scn->flags[i] = b; }, mjRNDSTRING[i][1][0] == '1');
+  }
+}
+
+void RegisterMjOptionFields(std::vector<CommandPalette::Command>& out,
+                            const std::string& prefix, mjOption* opt) {
+  mjOption def;
+  mj_defaultOption(&def);
+
+  for (int i = 0; i < mjNDISABLE; ++i) {
+    RegisterFlagField(
+        out, prefix + ".disableflags." + Ident(mjDISABLESTRING[i]),
+        [opt, i] { return ((opt->disableflags >> i) & 1) != 0; },
+        [opt, i](bool b) {
+          if (b) {
+            opt->disableflags |= (1 << i);
+          } else {
+            opt->disableflags &= ~(1 << i);
+          }
+        },
+        ((def.disableflags >> i) & 1) != 0);
+  }
+  for (int i = 0; i < mjNENABLE; ++i) {
+    RegisterFlagField(
+        out, prefix + ".enableflags." + Ident(mjENABLESTRING[i]),
+        [opt, i] { return ((opt->enableflags >> i) & 1) != 0; },
+        [opt, i](bool b) {
+          if (b) {
+            opt->enableflags |= (1 << i);
+          } else {
+            opt->enableflags &= ~(1 << i);
+          }
+        },
+        ((def.enableflags >> i) & 1) != 0);
+  }
+  // disableactuator is a bitfield over actuator groups (the Physics panel's
+  // "Act Group N"), so expose one toggle per group bit, like the flags above.
+  for (int i = 0; i < mjNGROUP; ++i) {
+    RegisterFlagField(
+        out, prefix + ".disableactuator." + std::to_string(i),
+        [opt, i] { return (opt->disableactuator & (1 << i)) != 0; },
+        [opt, i](bool b) {
+          if (b) {
+            opt->disableactuator |= (1 << i);
+          } else {
+            opt->disableactuator &= ~(1 << i);
+          }
+        },
+        (def.disableactuator & (1 << i)) != 0);
+  }
+
+  // Solver/integrator enums: a combo in the value column (also Enter advances /
+  // Left-Right cycles).
+  RegisterEnumField(out, prefix + ".integrator", &opt->integrator,
+                    {"Euler", "RK4", "implicit", "implicitfast"},
+                    def.integrator);
+  RegisterEnumField(out, prefix + ".cone", &opt->cone, {"pyramidal", "elliptic"},
+                    def.cone);
+  RegisterEnumField(out, prefix + ".jacobian", &opt->jacobian,
+                    {"dense", "sparse", "auto"}, def.jacobian);
+  RegisterEnumField(out, prefix + ".solver", &opt->solver,
+                    {"PGS", "CG", "Newton"}, def.solver);
+
+  // The remaining scalar/vector fields, generated from the mjxmacro so the list
+  // tracks the struct. The enum/bitfield ints handled above are skipped.
+  auto special = [](const char* name) {
+    for (const char* s : {"integrator", "cone", "jacobian", "solver",
+                          "disableflags", "enableflags", "disableactuator"}) {
+      if (std::strcmp(name, s) == 0) return true;
+    }
+    return false;
+  };
+#define X(TYPE, NAME, SZ) \
+  if (!special(#NAME)) \
+    RegisterScalarField(out, prefix + "." #NAME, &opt->NAME, def.NAME);
+#define XVEC(TYPE, NAME, SZ) \
+  RegisterArrayField(out, prefix + "." #NAME, opt->NAME, SZ, def.NAME);
+  MJOPTION_FIELDS
+#undef X
+#undef XVEC
+}
+
+void RegisterMjVisualFields(std::vector<CommandPalette::Command>& out,
+                            const std::string& prefix, mjVisual* vis) {
+  // Every field of mjVisual's six sub-structs, generated from the mjxmacros
+  // against the library default (mj_defaultVisual). Booleans here are plain ints
+  // (e.g. global.orthographic), so they show as 0/1 inputs rather than
+  // checkboxes. VIS_STR stringifies the current sub-struct token (#SUB would
+  // yield "SUB"); MJVIS_SUB names it both as a path segment and a member.
+  mjVisual visdef;
+  mj_defaultVisual(&visdef);
+#define VIS_STR2(x) #x
+#define VIS_STR(x) VIS_STR2(x)
+#define X(TYPE, NAME, SZ) \
+  RegisterScalarField(out, prefix + "." VIS_STR(MJVIS_SUB) "." #NAME, \
+                      &vis->MJVIS_SUB.NAME, visdef.MJVIS_SUB.NAME);
+#define XVEC(TYPE, NAME, SZ) \
+  RegisterArrayField(out, prefix + "." VIS_STR(MJVIS_SUB) "." #NAME, \
+                     vis->MJVIS_SUB.NAME, SZ, visdef.MJVIS_SUB.NAME);
+#define MJVIS_SUB global
+  MJVISUAL_GLOBAL_FIELDS
+#undef MJVIS_SUB
+#define MJVIS_SUB quality
+  MJVISUAL_QUALITY_FIELDS
+#undef MJVIS_SUB
+#define MJVIS_SUB headlight
+  MJVISUAL_HEADLIGHT_FIELDS
+#undef MJVIS_SUB
+#define MJVIS_SUB map
+  MJVISUAL_MAP_FIELDS
+#undef MJVIS_SUB
+#define MJVIS_SUB scale
+  MJVISUAL_SCALE_FIELDS
+#undef MJVIS_SUB
+#define MJVIS_SUB rgba
+  MJVISUAL_RGBA_FIELDS
+#undef MJVIS_SUB
+#undef X
+#undef XVEC
+#undef VIS_STR
+#undef VIS_STR2
+}
+
+void RegisterMjStatisticFields(std::vector<CommandPalette::Command>& out,
+                               const std::string& prefix, mjStatistic* stat,
+                               const mjStatistic& stat_default) {
+  // All fields are mjtNum, so the xmacro entries carry no type. mjStatistic has
+  // no library default, so compare against `stat_default`.
+#define X(NAME, SZ) \
+  RegisterScalarField(out, prefix + "." #NAME, &stat->NAME, stat_default.NAME);
+#define XVEC(NAME, SZ) \
+  RegisterArrayField(out, prefix + "." #NAME, stat->NAME, SZ, stat_default.NAME);
+  MJSTATISTIC_FIELDS
+#undef X
+#undef XVEC
 }
 
 }  // namespace mujoco::platform
