@@ -23,6 +23,8 @@
 #include <vector>
 
 #include <imgui.h>
+#include <mujoco/mjmodel.h>
+#include <mujoco/mjvisualize.h>
 
 namespace mujoco::platform {
 
@@ -262,6 +264,37 @@ void RegisterChoice(std::vector<CommandPalette::Command>& out,
                     const std::string& name, std::function<int()> get,
                     std::function<void(int)> set,
                     std::vector<const char*> names);
+
+// The following append the '.' field-editing commands for one editable MuJoCo
+// struct, generated from the mjxmacros where one exists so the list tracks the
+// headers. `prefix` is the dotted path root for the entries (e.g. "mjModel.opt"
+// -> "mjModel.opt.gravity"); the bound pointer must stay valid for the frame the
+// commands are drawn. A '*'/revert marks values differing from the library
+// default (mj_defaultOption / mj_defaultVisual). Compose the ones you need.
+
+// mjvOption: element-visibility flags (.flags.<FLAG>) and per-group toggles
+// (.<group>.<N>).
+void RegisterMjvOptionFields(std::vector<CommandPalette::Command>& out,
+                             const std::string& prefix, mjvOption* opt);
+
+// mjvScene: render-effect flags (.flags.<FLAG>).
+void RegisterMjvSceneFields(std::vector<CommandPalette::Command>& out,
+                            const std::string& prefix, mjvScene* scn);
+
+// mjOption: disable/enable/disableactuator bit toggles, solver/integrator
+// enums, and the scalar/vector fields.
+void RegisterMjOptionFields(std::vector<CommandPalette::Command>& out,
+                            const std::string& prefix, mjOption* opt);
+
+// mjVisual: every field of its six sub-structs (.<sub>.<field>).
+void RegisterMjVisualFields(std::vector<CommandPalette::Command>& out,
+                            const std::string& prefix, mjVisual* vis);
+
+// mjStatistic: compiler-computed, so it has no library default -- `stat_default`
+// is the baseline for its '*'/revert (e.g. the values captured at model load).
+void RegisterMjStatisticFields(std::vector<CommandPalette::Command>& out,
+                               const std::string& prefix, mjStatistic* stat,
+                               const mjStatistic& stat_default);
 
 }  // namespace mujoco::platform
 

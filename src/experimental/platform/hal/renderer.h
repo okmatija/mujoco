@@ -89,6 +89,7 @@ class Renderer {
 
   // Rendering flags.
   mjtByte* GetRenderFlags() { return scene_.flags; }
+  mjvScene* GetScene() { return &scene_; }
 
   // Returns the current frame rate.
   double GetFps();
