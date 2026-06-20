@@ -296,6 +296,14 @@ void RegisterMjStatisticFields(std::vector<CommandPalette::Command>& out,
                                const std::string& prefix, mjStatistic* stat,
                                const mjStatistic& stat_default);
 
+class StepControl;
+
+// StepControl: the control noise applied before each step (<prefix>.scale and
+// <prefix>.rate; default 0). Reached only through Get/SetNoiseParameters.
+void RegisterStepControlNoiseFields(std::vector<CommandPalette::Command>& out,
+                                    const std::string& prefix,
+                                    StepControl* step_control);
+
 }  // namespace mujoco::platform
 
 #endif  // MUJOCO_SRC_EXPERIMENTAL_PLATFORM_UX_COMMAND_PALETTE_H_

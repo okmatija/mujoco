@@ -27,6 +27,8 @@
 #include <mujoco/mjxmacro.h>
 #include <mujoco/mujoco.h>
 
+#include "experimental/platform/sim/step_control.h"
+
 namespace mujoco::platform {
 namespace {
 
@@ -890,6 +892,36 @@ void RegisterMjStatisticFields(std::vector<CommandPalette::Command>& out,
   MJSTATISTIC_FIELDS
 #undef X
 #undef XVEC
+}
+
+void RegisterStepControlNoiseFields(std::vector<CommandPalette::Command>& out,
+                                    const std::string& prefix,
+                                    StepControl* step_control) {
+  // The noise pair is reached only through Get/SetNoiseParameters (no plain
+  // pointer to bind), so it uses RegisterCustomField. Default is 0.
+  auto add = [&out, step_control](const std::string& path, bool is_scale) {
+    float scale = 0, rate = 0;
+    step_control->GetNoiseParameters(scale, rate);
+    const float cur = is_scale ? scale : rate;
+    const std::string id = "###" + path;
+    auto draw = [step_control, id, is_scale] {
+      float s = 0, r = 0;
+      step_control->GetNoiseParameters(s, r);
+      if (ImGui::InputScalar(id.c_str(), ImGuiDataType_Float,
+                             is_scale ? &s : &r)) {
+        step_control->SetNoiseParameters(s, r);
+      }
+    };
+    auto reset = [step_control, is_scale] {
+      float s = 0, r = 0;
+      step_control->GetNoiseParameters(s, r);
+      (is_scale ? s : r) = 0.0f;
+      step_control->SetNoiseParameters(s, r);
+    };
+    RegisterCustomField(out, path, draw, reset, cur != 0.0f, "0");
+  };
+  add(prefix + ".scale", true);
+  add(prefix + ".rate", false);
 }
 
 }  // namespace mujoco::platform

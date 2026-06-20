@@ -1160,33 +1160,8 @@ std::vector<CommandPalette::Command> App::CollectCommands() {
 
   add(">Quit", [this] { tmp_.should_exit = true; });
 
-  // Control noise applied before each step (studio StepControl; default 0). It
-  // is reached only through Get/SetNoiseParameters (no plain pointer to bind),
-  // so it uses RegisterCustomField. It is registered here, not in
-  // CollectModelCommands, which is pure MuJoCo model/visualization state.
-  auto add_noise = [&](const std::string& path, bool is_scale) {
-    float scale = 0, rate = 0;
-    step_control_.GetNoiseParameters(scale, rate);
-    const float cur = is_scale ? scale : rate;
-    const std::string id = "###" + path;
-    auto draw = [this, id, is_scale] {
-      float s = 0, r = 0;
-      step_control_.GetNoiseParameters(s, r);
-      if (ImGui::InputScalar(id.c_str(), ImGuiDataType_Float,
-                             is_scale ? &s : &r)) {
-        step_control_.SetNoiseParameters(s, r);
-      }
-    };
-    auto reset = [this, is_scale] {
-      float s = 0, r = 0;
-      step_control_.GetNoiseParameters(s, r);
-      (is_scale ? s : r) = 0.0f;
-      step_control_.SetNoiseParameters(s, r);
-    };
-    platform::RegisterCustomField(commands, path, draw, reset, cur != 0.0f, "0");
-  };
-  add_noise("noise.scale", true);
-  add_noise("noise.rate", false);
+  // Control noise applied before each step (StepControl).
+  platform::RegisterStepControlNoiseFields(commands, "noise", &step_control_);
 
   // The '.' field editors, one call per MuJoCo struct.
   platform::RegisterMjvOptionFields(commands, "mjvOption", &vis_options_);
