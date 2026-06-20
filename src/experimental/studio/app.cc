@@ -35,7 +35,6 @@
 
 #include <imgui.h>
 #include <implot.h>
-#include <mujoco/mjxmacro.h>
 #include <mujoco/mujoco.h>
 #include "experimental/platform/hal/graphics_mode.h"
 #include "experimental/platform/hal/renderer.h"
