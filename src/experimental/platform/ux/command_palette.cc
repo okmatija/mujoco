@@ -49,6 +49,13 @@ std::string Ident(const std::string& s) {
   return out;
 }
 
+// Wraps a MuJoCo enum *STRING table (e.g. mjINTEGRATORSTRING) as the names
+// vector RegisterEnumField takes, so the combo labels come straight from the
+// headers instead of hand-written literals.
+std::vector<const char*> EnumNames(const char* const* table, int n) {
+  return std::vector<const char*>(table, table + n);
+}
+
 // Builds a value-column draw lambda for a boolean: a checkbox right-aligned in
 // the column, leaving the revert-button slot on the far right so it lines up
 // whether or not a revert button is shown. `id` is the widget id ("###path").
@@ -69,6 +76,16 @@ std::function<void()> RightAlignedCheckbox(std::string id,
   };
 }
 
+// Character equality for query matching, optionally folding case. Shared by
+// MatchQuery (the filter predicate) and MatchedChars (match highlighting).
+bool CharsEqual(char a, char b, bool case_insensitive) {
+  if (case_insensitive) {
+    return std::tolower(static_cast<unsigned char>(a)) ==
+           std::tolower(static_cast<unsigned char>(b));
+  }
+  return a == b;
+}
+
 // Does `text` match `query` under the given search mode? An empty query always
 // matches.
 //   kPrefix    -- `text` starts with `query` (classic autocomplete).
@@ -81,11 +98,7 @@ bool MatchQuery(const std::string& text, const std::string& query,
     return true;
   }
   auto eq = [case_insensitive](char a, char b) {
-    if (case_insensitive) {
-      return std::tolower(static_cast<unsigned char>(a)) ==
-             std::tolower(static_cast<unsigned char>(b));
-    }
-    return a == b;
+    return CharsEqual(a, b, case_insensitive);
   };
 
   switch (mode) {
@@ -128,24 +141,20 @@ enum class RowHit { kNone, kName, kValue, kActivated };
 
 // Marks which characters of `name` the current query matched, under `mode` (so
 // they can be drawn bold). Assumes `name` already matched the query.
-std::vector<bool> MatchedChars(const std::string& name, const std::string& query,
+std::vector<char> MatchedChars(const std::string& name, const std::string& query,
                                CommandPalette::SearchMode mode,
                                bool case_insensitive) {
-  std::vector<bool> hit(name.size(), false);
+  std::vector<char> hit(name.size(), false);
   if (query.empty()) {
     return hit;
   }
   auto eq = [case_insensitive](char a, char b) {
-    if (case_insensitive) {
-      return std::tolower(static_cast<unsigned char>(a)) ==
-             std::tolower(static_cast<unsigned char>(b));
-    }
-    return a == b;
+    return CharsEqual(a, b, case_insensitive);
   };
   switch (mode) {
     case CommandPalette::SearchMode::kPrefix:
       for (std::size_t i = 0; i < query.size() && i < name.size(); ++i) {
-        hit[i] = true;
+        hit[i] = eq(name[i], query[i]);
       }
       break;
     case CommandPalette::SearchMode::kSubstring:
@@ -179,13 +188,13 @@ std::vector<bool> MatchedChars(const std::string& name, const std::string& query
 // width (so the caller can size the name column for the mixed fonts). ImGui lays
 // out glyphs without kerning, so concatenated run widths match its own layout.
 float HighlightedName(ImDrawList* dl, ImVec2 pos, const std::string& name,
-                      const std::vector<bool>& hit, ImFont* regular,
+                      const std::vector<char>& hit, ImFont* regular,
                       ImFont* bold, float size, ImU32 col) {
   const char* base = name.c_str();
   const std::size_t n = name.size();
   float x = pos.x;
   for (std::size_t i = 0; i < n;) {
-    const bool emphasized = hit[i];
+    const char emphasized = hit[i];
     std::size_t j = i + 1;
     while (j < n && hit[j] == emphasized) {
       ++j;
@@ -222,13 +231,18 @@ RowHit CompletionRow(const CommandPalette::Command& cmd, bool selected,
     // Match-highlighting path: an empty selectable provides the row background /
     // highlight / click, and the name is drawn on top so matched characters can
     // use the bold font.
-    const ImVec2 name_pos = ImGui::GetCursorScreenPos();
+    ImVec2 name_pos = ImGui::GetCursorScreenPos();
+    // Center the name against the framed value widgets on the row (checkboxes /
+    // inputs are GetFrameHeight tall); without the FramePadding.y nudge the text
+    // sits at the top of the widget instead of its vertical center. The row's
+    // selectable is sized to the full frame height to match.
+    name_pos.y += ImGui::GetStyle().FramePadding.y;
     ImGui::PushID(cmd.name.c_str());
     clicked = ImGui::Selectable(
         "##row", selected, sel_flags,
-        ImVec2(ImGui::GetContentRegionAvail().x, ImGui::GetTextLineHeight()));
+        ImVec2(ImGui::GetContentRegionAvail().x, ImGui::GetFrameHeight()));
     ImGui::PopID();
-    const std::vector<bool> hit =
+    const std::vector<char> hit =
         MatchedChars(cmd.name, query, mode, case_insensitive);
     HighlightedName(ImGui::GetWindowDrawList(), name_pos, cmd.name, hit,
                     ImGui::GetFont(), match_font, ImGui::GetFontSize(),
@@ -290,6 +304,7 @@ RowHit CompletionRow(const CommandPalette::Command& cmd, bool selected,
     // A dimmed one-line hint (entries without a value widget).
     ImGui::SameLine(desc_x);
     value_x = ImGui::GetCursorScreenPos().x;
+    ImGui::AlignTextToFramePadding();  // center against the frame-height row
     ImGui::TextDisabled("%s", cmd.description.c_str());
   }
   if (!clicked) {
@@ -480,7 +495,7 @@ const CommandPalette::Command* CommandPalette::DrawCompletionList(
     float w;
     if (match_font != nullptr) {
       // The name renders in mixed fonts, so measure it the same way.
-      const std::vector<bool> hit =
+      const std::vector<char> hit =
           MatchedChars(command->name, query, search_mode_, case_insensitive_);
       w = HighlightedName(nullptr, ImVec2(0, 0), command->name, hit,
                           ImGui::GetFont(), match_font, ImGui::GetFontSize(), 0);
@@ -537,7 +552,7 @@ const CommandPalette::Command* CommandPalette::DrawCompletionList(
       // Keep the selection visible, but only scroll once it reaches an edge of
       // the view (not when it's somewhere in the middle).
       if (at_selection && moved) {
-        const float row_max = row_min + ImGui::GetTextLineHeightWithSpacing();
+        const float row_max = row_min + ImGui::GetFrameHeightWithSpacing();
         const float view_h = ImGui::GetWindowHeight();
         const float scroll = ImGui::GetScrollY();
         if (row_min < scroll) {
@@ -683,7 +698,7 @@ void RegisterFlagField(std::vector<CommandPalette::Command>& out,
   auto toggle = [get, set] { set(!get()); };
   auto checkbox = RightAlignedCheckbox("###" + path, get, set);
   auto reset = [set, dflt] { set(dflt); };
-  out.push_back({command_palette_detail::Marked(path, modified), toggle, "",
+  out.push_back({detail::DisplayName(path, modified), toggle, "",
                  [toggle](int) { toggle(); }, checkbox, reset, modified,
                  dflt ? "on" : "off"});
 }
@@ -709,7 +724,7 @@ void RegisterCustomField(std::vector<CommandPalette::Command>& out,
                          const std::string& path, std::function<void()> draw,
                          std::function<void()> reset, bool modified,
                          std::string default_text) {
-  out.push_back({command_palette_detail::Marked(path, modified), {}, "", {},
+  out.push_back({detail::DisplayName(path, modified), {}, "", {},
                  std::move(draw), std::move(reset), modified,
                  std::move(default_text)});
 }
@@ -811,14 +826,13 @@ void RegisterMjOptionFields(std::vector<CommandPalette::Command>& out,
   // Solver/integrator enums: a combo in the value column (also Enter advances /
   // Left-Right cycles).
   RegisterEnumField(out, prefix + ".integrator", &opt->integrator,
-                    {"Euler", "RK4", "implicit", "implicitfast"},
-                    def.integrator);
-  RegisterEnumField(out, prefix + ".cone", &opt->cone, {"pyramidal", "elliptic"},
-                    def.cone);
+                    EnumNames(mjINTEGRATORSTRING, mjNINTEGRATOR), def.integrator);
+  RegisterEnumField(out, prefix + ".cone", &opt->cone,
+                    EnumNames(mjCONESTRING, mjNCONE), def.cone);
   RegisterEnumField(out, prefix + ".jacobian", &opt->jacobian,
-                    {"dense", "sparse", "auto"}, def.jacobian);
+                    EnumNames(mjJACOBIANSTRING, mjNJACOBIAN), def.jacobian);
   RegisterEnumField(out, prefix + ".solver", &opt->solver,
-                    {"PGS", "CG", "Newton"}, def.solver);
+                    EnumNames(mjSOLVERSTRING, mjNSOLVERS), def.solver);
 
   // The remaining scalar/vector fields, generated from the mjxmacro so the list
   // tracks the struct. The enum/bitfield ints handled above are skipped.
