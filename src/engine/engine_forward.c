@@ -931,6 +931,9 @@ void mj_fwdConstraint(const mjModel* m, mjData* d) {
       mju_scatter(d->qfrc_constraint, d->ifrc_constraint, d->map_idof2dof, nidof);
       mju_gather(d->efc_force, d->iefc_force, d->map_efc2iefc, nefc);
       break;
+
+    default:
+      mjERROR("invalid solver");
     }
 
     // run noslip solver per island if enabled
@@ -955,6 +958,9 @@ void mj_fwdConstraint(const mjModel* m, mjData* d) {
     case mjSOL_NEWTON:                  // Newton
       mj_solNewton(m, d, m->opt.iterations);
       break;
+
+    default:
+      mjERROR("invalid solver");
     }
 
     // run noslip solver if enabled
