@@ -181,27 +181,35 @@ typedef enum mjtIntegrator {      // integrator mode
   mjINT_EULER         = 0,        // semi-implicit Euler
   mjINT_RK4,                      // 4th-order Runge Kutta
   mjINT_IMPLICIT,                 // implicit in velocity
-  mjINT_IMPLICITFAST              // implicit in velocity, no rne derivative
+  mjINT_IMPLICITFAST,             // implicit in velocity, no rne derivative
+
+  mjNINTEGRATOR                   // number of integrators
 } mjtIntegrator;
 
 
 typedef enum mjtCone {            // type of friction cone
   mjCONE_PYRAMIDAL     = 0,       // pyramidal
-  mjCONE_ELLIPTIC                 // elliptic
+  mjCONE_ELLIPTIC,                // elliptic
+
+  mjNCONE                         // number of friction cone types
 } mjtCone;
 
 
 typedef enum mjtJacobian {        // type of constraint Jacobian
   mjJAC_DENSE          = 0,       // dense
   mjJAC_SPARSE,                   // sparse
-  mjJAC_AUTO                      // dense if nv<60, sparse otherwise
+  mjJAC_AUTO,                     // dense if nv<60, sparse otherwise
+
+  mjNJACOBIAN                     // number of Jacobian types
 } mjtJacobian;
 
 
 typedef enum mjtSolver {          // constraint solver algorithm
   mjSOL_PGS            = 0,       // PGS    (dual)
   mjSOL_CG,                       // CG     (primal)
-  mjSOL_NEWTON                    // Newton (primal)
+  mjSOL_NEWTON,                   // Newton (primal)
+
+  mjNSOLVERS                      // number of solver algorithms (mjNSOLVER taken)
 } mjtSolver;
 
 

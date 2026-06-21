@@ -82,6 +82,38 @@ const char* mjENABLESTRING[mjNENABLE] = {
 };
 
 
+// names of integrators
+const char* mjINTEGRATORSTRING[mjNINTEGRATOR] = {
+  "Euler",
+  "RK4",
+  "implicit",
+  "implicitfast"
+};
+
+
+// names of friction cone types
+const char* mjCONESTRING[mjNCONE] = {
+  "pyramidal",
+  "elliptic"
+};
+
+
+// names of constraint Jacobian types
+const char* mjJACOBIANSTRING[mjNJACOBIAN] = {
+  "dense",
+  "sparse",
+  "auto"
+};
+
+
+// names of solver algorithms
+const char* mjSOLVERSTRING[mjNSOLVERS] = {
+  "PGS",
+  "CG",
+  "Newton"
+};
+
+
 // names of timers
 const char* mjTIMERSTRING[mjNTIMER]= {
   "step",

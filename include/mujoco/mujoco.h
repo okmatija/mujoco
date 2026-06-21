@@ -74,6 +74,10 @@ MJAPI extern const char* mjFRAMESTRING[mjNFRAME];
 MJAPI extern const char* mjVISSTRING[mjNVISFLAG][3];
 MJAPI extern const char* mjRNDSTRING[mjNRNDFLAG][3];
 MJAPI extern const char* mjTOPICSTRING[mjNTOPIC];
+MJAPI extern const char* mjINTEGRATORSTRING[mjNINTEGRATOR];
+MJAPI extern const char* mjCONESTRING[mjNCONE];
+MJAPI extern const char* mjJACOBIANSTRING[mjNJACOBIAN];
+MJAPI extern const char* mjSOLVERSTRING[mjNSOLVERS];
 
 
 //---------------------------------- Virtual file system -------------------------------------------

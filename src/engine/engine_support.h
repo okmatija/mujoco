@@ -29,6 +29,10 @@ MJAPI extern const char* mjDISABLESTRING[mjNDISABLE];
 MJAPI extern const char* mjENABLESTRING[mjNENABLE];
 MJAPI extern const char* mjTIMERSTRING[mjNTIMER];
 MJAPI extern const char* mjTOPICSTRING[mjNTOPIC];
+MJAPI extern const char* mjINTEGRATORSTRING[mjNINTEGRATOR];
+MJAPI extern const char* mjCONESTRING[mjNCONE];
+MJAPI extern const char* mjJACOBIANSTRING[mjNJACOBIAN];
+MJAPI extern const char* mjSOLVERSTRING[mjNSOLVERS];
 
 // arrays
 MJAPI extern const int mjCONDATA_SIZE[mjNCONDATA];  // TODO(tassa): expose in public header?
