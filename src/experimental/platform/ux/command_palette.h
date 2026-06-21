@@ -145,12 +145,12 @@ class CommandPalette {
 // since the command list is typically rebuilt every frame, a pointer into live
 // state is fine (and lets '*' track changes made elsewhere).
 
-namespace command_palette_detail {
+namespace detail {
 
 // Appends "*" to a modified field's name so the change shows and typing "*"
 // filters to all changed fields. The value widget's id (###path) stays unmarked,
 // so editing isn't disrupted when the marker appears/disappears.
-inline std::string Marked(const std::string& path, bool modified) {
+inline std::string DisplayName(const std::string& path, bool modified) {
   return modified ? path + "*" : path;
 }
 // Formats a default for the revert tooltip ("%g" for floats, plain for ints).
@@ -175,7 +175,7 @@ constexpr ImGuiDataType DataTypeOf() {
   }
 }
 
-}  // namespace command_palette_detail
+}  // namespace detail
 
 // A boolean field: a checkbox value, Enter / Left-Right toggling, and a revert
 // button when the value differs from `dflt`.
@@ -188,13 +188,13 @@ void RegisterFlagField(std::vector<CommandPalette::Command>& out,
 template <class T>
 void RegisterScalarField(std::vector<CommandPalette::Command>& out,
                          const std::string& path, T* ptr, T def) {
-  const ImGuiDataType dt = command_palette_detail::DataTypeOf<T>();
+  const ImGuiDataType dt = detail::DataTypeOf<T>();
   const bool modified = *ptr != def;
   const std::string id = "###" + path;
   auto draw = [id, ptr, dt] { ImGui::InputScalar(id.c_str(), dt, ptr); };
   auto reset = [ptr, def] { *ptr = def; };
-  out.push_back({command_palette_detail::Marked(path, modified), {}, "", {},
-                 draw, reset, modified, command_palette_detail::NumStr(def)});
+  out.push_back({detail::DisplayName(path, modified), {}, "", {},
+                 draw, reset, modified, detail::NumStr(def)});
 }
 
 // An n-element array field (T = int / float / double): an N-input bound to
@@ -202,7 +202,7 @@ void RegisterScalarField(std::vector<CommandPalette::Command>& out,
 template <class T>
 void RegisterArrayField(std::vector<CommandPalette::Command>& out,
                         const std::string& path, T* ptr, int n, const T* def) {
-  const ImGuiDataType dt = command_palette_detail::DataTypeOf<T>();
+  const ImGuiDataType dt = detail::DataTypeOf<T>();
   // Copy the defaults by value: callers often pass a pointer into a per-frame
   // local (e.g. mj_defaultOption's output), but reset runs later, on a click.
   const std::vector<T> defs(def, def + n);
@@ -210,14 +210,14 @@ void RegisterArrayField(std::vector<CommandPalette::Command>& out,
   std::string def_text;
   for (int k = 0; k < n; ++k) {
     modified |= (ptr[k] != defs[k]);
-    def_text += (k ? " " : "") + command_palette_detail::NumStr(defs[k]);
+    def_text += (k ? " " : "") + detail::NumStr(defs[k]);
   }
   const std::string id = "###" + path;
   auto draw = [id, ptr, dt, n] { ImGui::InputScalarN(id.c_str(), dt, ptr, n); };
   auto reset = [ptr, defs] {
     for (std::size_t k = 0; k < defs.size(); ++k) ptr[k] = defs[k];
   };
-  out.push_back({command_palette_detail::Marked(path, modified), {}, "", {},
+  out.push_back({detail::DisplayName(path, modified), {}, "", {},
                  draw, reset, modified, def_text});
 }
 
@@ -244,7 +244,7 @@ void RegisterEnumField(std::vector<CommandPalette::Command>& out,
   auto reset = [ptr, def] { *ptr = def; };
   const std::string def_text =
       (def_i >= 0 && def_i < n) ? names[def_i] : std::string();
-  out.push_back({command_palette_detail::Marked(path, cur != def_i),
+  out.push_back({detail::DisplayName(path, cur != def_i),
                  [cyc] { cyc(1); }, "", cyc, combo, reset, cur != def_i,
                  def_text});
 }
