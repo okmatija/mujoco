@@ -56,19 +56,16 @@ std::vector<const char*> EnumNames(const char* const* table, int n) {
   return std::vector<const char*>(table, table + n);
 }
 
-// Builds a value-column draw lambda for a boolean: a checkbox right-aligned in
-// the column, leaving the revert-button slot on the far right so it lines up
-// whether or not a revert button is shown. `id` is the widget id ("###path").
+// Builds a value-column draw lambda for a boolean: a checkbox right-aligned at
+// the right edge of the value column (the revert button, when shown, lives in
+// its own column further right). `id` is the widget id ("###path").
 std::function<void()> RightAlignedCheckbox(std::string id,
                                            std::function<bool()> get,
                                            std::function<void(bool)> set) {
   return [id = std::move(id), get = std::move(get), set = std::move(set)] {
     bool b = get();
-    const ImGuiStyle& style = ImGui::GetStyle();
-    const float reserve = ImGui::CalcTextSize(kRevertIcon).x +
-                          style.FramePadding.x * 2.0f + style.ItemSpacing.x;
     const float offset =
-        ImGui::GetContentRegionAvail().x - reserve - ImGui::GetFrameHeight();
+        ImGui::GetContentRegionAvail().x - ImGui::GetFrameHeight();
     if (offset > 0.0f) {
       ImGui::SetCursorPosX(ImGui::GetCursorPosX() + offset);
     }
@@ -210,107 +207,92 @@ float HighlightedName(ImDrawList* dl, ImVec2 pos, const std::string& name,
 }
 // ===========================================================================
 
-// Draws one completion row: a full-width selectable for the background /
-// highlight / click, then the value at `desc_x` (a window-local x so values line
-// up in a column) -- either `draw_value`'s editable widget (with a revert button
-// past it when `modified`) or, for entries without one, the `description` text
-// (dimmed). If `match_font` is non-null the name is drawn with the matched
-// characters in that bold font (the selectable then draws no label); otherwise
-// the selectable draws the name plainly. Returns which column was clicked this
-// frame (kNone if not clicked): the value column is everything from the value
-// onward, the name column the rest.
+// Draws one completion row into the name | value | revert table set up by
+// DrawCompletionList. A selectable spanning all columns provides the row
+// background / highlight / click; the name is drawn over the first column (its
+// matched characters in `match_font` when non-null, else the selectable renders
+// the name itself). The caller must have started the row and selected column 0.
+// Returns which column was clicked this frame (kNone if not): a click in the
+// value or revert column counts as kValue (so the caller cycles the value),
+// anything else as kName, and the Execute button as kActivated.
 RowHit CompletionRow(const CommandPalette::Command& cmd, bool selected,
-                     float desc_x, const std::string& query,
-                     CommandPalette::SearchMode mode, bool case_insensitive,
-                     ImFont* match_font, bool focus_value) {
-  // AllowOverlap so an editable value widget (draw_value) drawn on top of the
-  // row's selectable still receives its clicks.
-  const ImGuiSelectableFlags sel_flags = ImGuiSelectableFlags_AllowOverlap;
-  bool clicked;
+                     const std::string& query, CommandPalette::SearchMode mode,
+                     bool case_insensitive, ImFont* match_font,
+                     bool focus_value) {
+  RowHit result = RowHit::kNone;
+
+  // Name column. SpanAllColumns makes the highlight/click cover the whole row;
+  // AllowOverlap lets the value widget drawn on top still receive its clicks.
+  ImVec2 name_pos = ImGui::GetCursorScreenPos();
+  // Center the name against the framed value widgets (GetFrameHeight tall);
+  // without the FramePadding.y nudge the text sits at the top of the widget.
+  name_pos.y += ImGui::GetStyle().FramePadding.y;
+  ImGui::PushID(cmd.name.c_str());
+  const ImGuiSelectableFlags sel_flags =
+      ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowOverlap;
+  // Empty label on the match path (the bold name is drawn below); the plain path
+  // lets the selectable render the name itself.
+  const bool clicked = ImGui::Selectable(
+      match_font != nullptr ? "##row" : cmd.name.c_str(), selected, sel_flags,
+      ImVec2(0, ImGui::GetFrameHeight()));
+  ImGui::PopID();
   if (match_font != nullptr) {
-    // Match-highlighting path: an empty selectable provides the row background /
-    // highlight / click, and the name is drawn on top so matched characters can
-    // use the bold font.
-    ImVec2 name_pos = ImGui::GetCursorScreenPos();
-    // Center the name against the framed value widgets on the row (checkboxes /
-    // inputs are GetFrameHeight tall); without the FramePadding.y nudge the text
-    // sits at the top of the widget instead of its vertical center. The row's
-    // selectable is sized to the full frame height to match.
-    name_pos.y += ImGui::GetStyle().FramePadding.y;
-    ImGui::PushID(cmd.name.c_str());
-    clicked = ImGui::Selectable(
-        "##row", selected, sel_flags,
-        ImVec2(ImGui::GetContentRegionAvail().x, ImGui::GetFrameHeight()));
-    ImGui::PopID();
     const std::vector<char> hit =
         MatchedChars(cmd.name, query, mode, case_insensitive);
     HighlightedName(ImGui::GetWindowDrawList(), name_pos, cmd.name, hit,
                     ImGui::GetFont(), match_font, ImGui::GetFontSize(),
                     ImGui::GetColorU32(ImGuiCol_Text));
-  } else {
-    // Plain path: the selectable draws the name as its own label.
-    clicked = ImGui::Selectable(cmd.name.c_str(), selected, sel_flags);
   }
 
-  float value_x = FLT_MAX;  // screen-x where the value column begins.
-  // Reserve a fixed revert-button slot on the right of the value column for
-  // every value widget / action button, so they all line up and a revert button
-  // (when shown) always lands in the same place. Widgets and actions with no
-  // revert (e.g. the pause combo, the Execute buttons) leave the slot empty.
-  const ImGuiStyle& style = ImGui::GetStyle();
-  const float revert_w =
-      ImGui::CalcTextSize(kRevertIcon).x + style.FramePadding.x * 2.0f;
-  const float widget_w = -(revert_w + style.ItemSpacing.x);  // fill, less slot.
+  // Value column: editable widget / Execute button / dimmed description.
+  ImGui::TableNextColumn();
   if (cmd.draw_value) {
-    // An editable widget (checkbox / numeric input / combo) fills the value
-    // column up to the reserved revert slot.
-    ImGui::SameLine(desc_x);
-    value_x = ImGui::GetCursorScreenPos().x;
-    ImGui::SetNextItemWidth(widget_w);
+    // An editable widget (checkbox / numeric input / combo) fills the column.
+    ImGui::SetNextItemWidth(-FLT_MIN);
     if (focus_value) {
       ImGui::SetKeyboardFocusHere();  // Right entered the widget; focus it.
     }
     cmd.draw_value();
-    // Revert-to-default button, shown only when the value differs from default,
-    // right-aligned into the reserved slot so every revert button lines up.
-    if (cmd.modified && cmd.reset) {
-      ImGui::SameLine();
-      const float avail = ImGui::GetContentRegionAvail().x;
-      if (avail > revert_w) {
-        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + avail - revert_w);
-      }
-      if (ImGui::Button((std::string(kRevertIcon) + "##revert" + cmd.name).c_str())) {
-        cmd.reset();
-      }
-      if (cmd.default_text.empty()) {
-        ImGui::SetItemTooltip("Reset to default");
-      } else {
-        ImGui::SetItemTooltip("Reset to '%s'", cmd.default_text.c_str());
-      }
-    }
   } else if (cmd.run) {
-    // A pure action ('>' command): an "Execute" button filling the value column
-    // (up to the reserved slot). Clicking it activates the command -- Draw runs
-    // `run` and closes, exactly as Enter on the selected row does.
-    ImGui::SameLine(desc_x);
-    value_x = ImGui::GetCursorScreenPos().x;
+    // A pure action ('>' command): an "Execute" button filling the column.
+    // Clicking it activates the command -- Draw runs `run` and closes, exactly
+    // as Enter on the selected row does.
     ImGui::PushID(cmd.name.c_str());
-    const bool pressed = ImGui::Button("Execute", ImVec2(widget_w, 0.0f));
+    const bool pressed = ImGui::Button("Execute", ImVec2(-FLT_MIN, 0.0f));
     ImGui::PopID();
     if (pressed) {
-      return RowHit::kActivated;
+      result = RowHit::kActivated;
     }
   } else if (!cmd.description.empty()) {
     // A dimmed one-line hint (entries without a value widget).
-    ImGui::SameLine(desc_x);
-    value_x = ImGui::GetCursorScreenPos().x;
     ImGui::AlignTextToFramePadding();  // center against the frame-height row
     ImGui::TextDisabled("%s", cmd.description.c_str());
+  }
+
+  // Revert column: reset-to-default button, shown only when the value differs
+  // from its default. Its own fixed column keeps every revert button aligned.
+  ImGui::TableNextColumn();
+  if (cmd.draw_value && cmd.modified && cmd.reset) {
+    if (ImGui::Button(
+            (std::string(kRevertIcon) + "##revert" + cmd.name).c_str())) {
+      cmd.reset();
+    }
+    if (cmd.default_text.empty()) {
+      ImGui::SetItemTooltip("Reset to default");
+    } else {
+      ImGui::SetItemTooltip("Reset to '%s'", cmd.default_text.c_str());
+    }
+  }
+
+  if (result == RowHit::kActivated) {
+    return result;
   }
   if (!clicked) {
     return RowHit::kNone;
   }
-  return ImGui::GetMousePos().x >= value_x ? RowHit::kValue : RowHit::kName;
+  // A click in the value or revert column cycles the value; a click on the name
+  // just moves the selection.
+  return ImGui::TableGetHoveredColumn() >= 1 ? RowHit::kValue : RowHit::kName;
 }
 
 // Tab-completion: extend `input` to the next dotted "segment" shared by every
@@ -504,8 +486,6 @@ const CommandPalette::Command* CommandPalette::DrawCompletionList(
     }
     name_w = std::max(name_w, w);
   }
-  const float desc_x = name_w + spacing * 3.0f;
-
   ImGui::Separator();
 
   // The list scrolls inside a child so the whole window stays under the 80% cap
@@ -521,46 +501,63 @@ const CommandPalette::Command* CommandPalette::DrawCompletionList(
     // "active" colour.
     ImGui::PushStyleColor(ImGuiCol_HeaderActive,
                           ImGui::GetStyleColorVec4(ImGuiCol_HeaderHovered));
-    for (int i = 0; i < static_cast<int>(matches.size()); ++i) {
-      const Command* command = matches[i];
-      const bool at_selection = (i == selection_);
-      const float row_min = ImGui::GetCursorPosY();
-      // Only highlight once the user has entered the list (in_list_); before
-      // that the selection is invisible but still the Enter target (top match).
-      const RowHit hit = CompletionRow(
-          *command, in_list_ && at_selection, desc_x, query, search_mode_,
-          case_insensitive_, match_font, focus_value_ && at_selection);
-      if (hit == RowHit::kActivated) {
-        // An action button was pressed: treat it as choosing this row (Draw runs
-        // its `run` and closes).
-        chosen = command;
-      } else if (hit != RowHit::kNone) {
-        // A click moves the list focus to this row (and refocuses the input so
-        // typing keeps working); it never runs or closes the palette. A click on
-        // the value column also cycles that value in place.
-        selection_ = i;
-        in_list_ = true;
-        focus_input_ = true;
-        if (hit == RowHit::kValue && command->cycle) {
-          command->cycle(1);
+    // Three columns line everything up: the name (fixed to the widest name), the
+    // value (stretches to fill), and a fixed slot for the revert button so the
+    // values all end at the same x whether or not a revert button is shown.
+    const float revert_w = ImGui::CalcTextSize(kRevertIcon).x +
+                           ImGui::GetStyle().FramePadding.x * 2.0f;
+    const ImGuiTableFlags table_flags =
+        ImGuiTableFlags_NoSavedSettings | ImGuiTableFlags_NoPadOuterX;
+    if (ImGui::BeginTable("##rows", 3, table_flags)) {
+      ImGui::TableSetupColumn("name", ImGuiTableColumnFlags_WidthFixed,
+                              name_w + spacing * 2.0f);
+      ImGui::TableSetupColumn("value", ImGuiTableColumnFlags_WidthStretch);
+      ImGui::TableSetupColumn("revert", ImGuiTableColumnFlags_WidthFixed,
+                              revert_w);
+      for (int i = 0; i < static_cast<int>(matches.size()); ++i) {
+        const Command* command = matches[i];
+        const bool at_selection = (i == selection_);
+        ImGui::TableNextRow();
+        ImGui::TableSetColumnIndex(0);
+        const float row_min = ImGui::GetCursorPosY();
+        // Only highlight once the user has entered the list (in_list_); before
+        // that the selection is invisible but still the Enter target (top match).
+        const RowHit hit = CompletionRow(
+            *command, in_list_ && at_selection, query, search_mode_,
+            case_insensitive_, match_font, focus_value_ && at_selection);
+        if (hit == RowHit::kActivated) {
+          // An action button was pressed: treat it as choosing this row (Draw
+          // runs its `run` and closes).
+          chosen = command;
+        } else if (hit != RowHit::kNone) {
+          // A click moves the list focus to this row (and refocuses the input so
+          // typing keeps working); it never runs or closes the palette. A click
+          // on the value column also cycles that value in place.
+          selection_ = i;
+          in_list_ = true;
+          focus_input_ = true;
+          if (hit == RowHit::kValue && command->cycle) {
+            command->cycle(1);
+          }
+        }
+        // Enter (from the input) runs/submits the selected row; clicks never do.
+        if (at_selection && entered) {
+          chosen = command;
+        }
+        // Keep the selection visible, but only scroll once it reaches an edge of
+        // the view (not when it's somewhere in the middle).
+        if (at_selection && moved) {
+          const float row_max = row_min + ImGui::GetFrameHeightWithSpacing();
+          const float view_h = ImGui::GetWindowHeight();
+          const float scroll = ImGui::GetScrollY();
+          if (row_min < scroll) {
+            ImGui::SetScrollY(row_min);
+          } else if (row_max > scroll + view_h) {
+            ImGui::SetScrollY(row_max - view_h);
+          }
         }
       }
-      // Enter (from the input) runs/submits the selected row; clicks never do.
-      if (at_selection && entered) {
-        chosen = command;
-      }
-      // Keep the selection visible, but only scroll once it reaches an edge of
-      // the view (not when it's somewhere in the middle).
-      if (at_selection && moved) {
-        const float row_max = row_min + ImGui::GetFrameHeightWithSpacing();
-        const float view_h = ImGui::GetWindowHeight();
-        const float scroll = ImGui::GetScrollY();
-        if (row_min < scroll) {
-          ImGui::SetScrollY(row_min);
-        } else if (row_max > scroll + view_h) {
-          ImGui::SetScrollY(row_max - view_h);
-        }
-      }
+      ImGui::EndTable();
     }
     ImGui::PopStyleColor();
   }
