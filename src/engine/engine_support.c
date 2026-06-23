@@ -43,8 +43,8 @@
 
 //-------------------------- Constants -------------------------------------------------------------
 
- #define mjVERSION 3010000
-#define mjVERSIONSTRING "3.10.0"
+ #define mjVERSION 3010001
+#define mjVERSIONSTRING "3.10.1"
 
 // names of disable flags
 const char* mjDISABLESTRING[mjNDISABLE] = {
@@ -79,6 +79,38 @@ const char* mjENABLESTRING[mjNENABLE] = {
   "InvDiscrete",
   "Sleep",
   "DiagExact"
+};
+
+
+// names of integrators
+const char* mjINTEGRATORSTRING[mjNINTEGRATOR] = {
+  "Euler",
+  "RK4",
+  "implicit",
+  "implicitfast"
+};
+
+
+// names of friction cone types
+const char* mjCONESTRING[mjNCONE] = {
+  "pyramidal",
+  "elliptic"
+};
+
+
+// names of constraint Jacobian types
+const char* mjJACOBIANSTRING[mjNJACOBIAN] = {
+  "dense",
+  "sparse",
+  "auto"
+};
+
+
+// names of solver algorithms
+const char* mjSOLVERSTRING[mjNSOLVERS] = {
+  "PGS",
+  "CG",
+  "Newton"
 };
 
 

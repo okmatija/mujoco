@@ -16,7 +16,7 @@
 #define MUJOCO_MUJOCO_H_
 
 // header version; should match the library version as returned by mj_version()
-#define mjVERSION_HEADER 3010000
+#define mjVERSION_HEADER 3010001
 
 // needed to define size_t, fabs and log10
 #include <stdlib.h>
@@ -74,6 +74,10 @@ MJAPI extern const char* mjFRAMESTRING[mjNFRAME];
 MJAPI extern const char* mjVISSTRING[mjNVISFLAG][3];
 MJAPI extern const char* mjRNDSTRING[mjNRNDFLAG][3];
 MJAPI extern const char* mjTOPICSTRING[mjNTOPIC];
+MJAPI extern const char* mjINTEGRATORSTRING[mjNINTEGRATOR];
+MJAPI extern const char* mjCONESTRING[mjNCONE];
+MJAPI extern const char* mjJACOBIANSTRING[mjNJACOBIAN];
+MJAPI extern const char* mjSOLVERSTRING[mjNSOLVERS];
 
 
 //---------------------------------- Virtual file system -------------------------------------------

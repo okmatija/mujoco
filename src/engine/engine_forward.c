@@ -866,8 +866,10 @@ static void warmstart(const mjModel* m, mjData* d) {
 static void solveIslandTask(const mjModel* m, mjData* d, void* arg, int thread_id, int island) {
   if (m->opt.solver == mjSOL_NEWTON) {
     mj_solNewton_island(m, d, island, m->opt.iterations);
-  } else {
+  } else if (m->opt.solver == mjSOL_CG) {
     mj_solCG_island(m, d, island, m->opt.iterations);
+  } else {
+    mj_solPGS_island(m, d, island, m->opt.iterations);
   }
 }
 
@@ -908,9 +910,7 @@ void mj_fwdConstraint(const mjModel* m, mjData* d) {
   if (islands_supported) {
     switch ((mjtSolver) m->opt.solver) {
     case mjSOL_PGS:
-      for (int island=0; island < nisland; island++) {
-        mj_solPGS_island(m, d, island, m->opt.iterations);
-      }
+      mju_dispatch(m, d, solveIslandTask, NULL, nisland);
       break;
 
     case mjSOL_CG:
@@ -931,6 +931,9 @@ void mj_fwdConstraint(const mjModel* m, mjData* d) {
       mju_scatter(d->qfrc_constraint, d->ifrc_constraint, d->map_idof2dof, nidof);
       mju_gather(d->efc_force, d->iefc_force, d->map_efc2iefc, nefc);
       break;
+
+    default:
+      mjERROR("invalid solver");
     }
 
     // run noslip solver per island if enabled
@@ -955,6 +958,9 @@ void mj_fwdConstraint(const mjModel* m, mjData* d) {
     case mjSOL_NEWTON:                  // Newton
       mj_solNewton(m, d, m->opt.iterations);
       break;
+
+    default:
+      mjERROR("invalid solver");
     }
 
     // run noslip solver if enabled

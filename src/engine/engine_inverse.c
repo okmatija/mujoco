@@ -160,6 +160,9 @@ static void mj_discreteAcc(const mjModel* m, mjData* d) {
     // set qfrc = (M - dt*qDeriv) * qacc
     mju_mulSymVecSparse(qfrc, d->qH, qacc, m->nv, m->M_rownnz, m->M_rowadr, m->M_colind);
     break;
+
+  default:
+    mjERROR("invalid integrator");
   }
 
   // solve for qacc: qfrc = M * qacc
