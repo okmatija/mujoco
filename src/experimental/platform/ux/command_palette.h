@@ -12,275 +12,199 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+// A VS Code-style command palette, written as a flat C API in the spirit of
+// Dear ImGui (and of cimgui / dear_bindings): no C++ in the public surface, so
+// it can be driven from C and bound to other languages (Jai, Odin, ...) by
+// translating this header directly -- no generator required.
+//
+// The whole interface is plain data and function pointers:
+//   * opaque handles            (ImCmdPalette, ImCmdList),
+//   * a POD command record       (ImCmd),
+//   * callbacks as fn-pointer + void* user_data (never std::function),
+//   * strings as const char*     (the list copies what it stores),
+//   * value bytes by pointer     (ImCmd::user / the field *ptr),
+//   * no <imgui.h> dependency here (it is an implementation detail of the .cc;
+//     callbacks that draw value widgets call ImGui from the host side).
+//
+// Usage each frame (host pseudocode):
+//   ImCmdList_Clear(list);
+//   ImCmd cmd = { ">Reset", "Reset the sim", 0, OnReset, 0,0,0, host, false };
+//   ImCmdList_Add(list, &cmd);
+//   ImCmdList_AddFieldF64(list, "mjModel.opt.timestep", &m->opt.timestep, 2e-3);
+//   ImCmdPalette_Draw(pal, list, &desc);   // runs callbacks, draws if open
+//
+// Commands are namespaced by a leading character in their name -- by convention
+// '>' UI actions, '.' / dotted model-data fields, '/' agent commands -- so
+// typing that character narrows the fuzzy results to one context. Choosing a '/'
+// entry submits its text (ImCmdDrawDesc::on_submit_plain); any other entry runs
+// its `run` callback and closes the palette.
+
 #ifndef MUJOCO_SRC_EXPERIMENTAL_PLATFORM_UX_COMMAND_PALETTE_H_
 #define MUJOCO_SRC_EXPERIMENTAL_PLATFORM_UX_COMMAND_PALETTE_H_
 
-#include <cstddef>
-#include <cstdio>
-#include <functional>
-#include <string>
-#include <type_traits>
-#include <vector>
+#include <stdbool.h>
 
-#include <imgui.h>
+#ifdef __cplusplus
+extern "C" {
+#endif
 
-namespace mujoco::platform {
+// ----------------------------------------------------------------------------
+// Plain-old-data types
+// ----------------------------------------------------------------------------
 
-// A VS Code-style command palette. The owner opens it (e.g. on Ctrl+Shift+P) and
-// passes one flat list of commands to Draw() each frame, fuzzy-searched against
-// the input. Commands are namespaced by a leading character in their name -- by
-// convention '>' UI actions, '.' model/data fields, '/' agent commands -- so
-// typing that character narrows the fuzzy results to one context. Selecting an
-// entry runs its callback; '/' entries instead submit their text (see Draw).
-//
-// This widget is intentionally self-contained and knows nothing about the app:
-// a command is a {name, action, optional value-widget} record (see Command), so
-// it is easy to reuse elsewhere.
-class CommandPalette {
- public:
-  struct Command {
-    std::string name;
-    // Runs when the entry is chosen (Enter / click) -- for '>' and '.' entries.
-    std::function<void()> run;
-    // Optional dimmed one-line hint shown in the value column, for entries that
-    // have no value widget (e.g. '>' UI actions, '/' agent commands).
-    std::string description;
-    // Optional: makes the command's value adjustable in place. Once the user has
-    // navigated into the list with Up/Down, Left/Right call this with delta -1/+1
-    // (and the palette stays open) instead of just moving the text cursor. Use it
-    // for stepped values -- a flag toggles, an enum advances. Entries without it
-    // ignore Left/Right (numeric inputs are typed instead; see `draw_value`).
-    std::function<void(int delta)> cycle;
-    // Optional: draws an editable widget for the value (checkbox, input, ...) in
-    // the value column. When set it supersedes `description` there; the row's
-    // selectable allows it to overlap so the widget receives the clicks.
-    std::function<void()> draw_value;
-    // Optional: restores the value to its default. When set (and `modified`),
-    // a revert button is shown in a column on the right.
-    std::function<void()> reset;
-    // Whether the value differs from its default (gates the revert button).
-    bool modified = false;
-    // The default value as text, shown on a second line of the revert tooltip.
-    std::string default_text;
-  };
+// 2D vector / axis-aligned rectangle. Deliberately distinct from ImGui's ImVec2
+// / ImVec4 so this header never has to include a C++ header.
+typedef struct ImCmdVec2 { float x, y; } ImCmdVec2;
+typedef struct ImCmdRect { float x, y, w, h; } ImCmdRect;
 
-  // How the typed text is matched against command names.
-  //   kPrefix    -- name starts with the query ("prefix" / classic autocomplete)
-  //   kSubstring -- query appears anywhere in the name ("contains")
-  //   kFuzzy     -- query characters appear in order with gaps (subsequence)
-  enum class SearchMode { kPrefix, kSubstring, kFuzzy };
+// How the typed text is matched against command names.
+typedef enum ImCmdSearchMode {
+  ImCmdSearchMode_Prefix,     // name starts with the query (classic autocomplete)
+  ImCmdSearchMode_Substring,  // query appears anywhere in the name ("contains")
+  ImCmdSearchMode_Fuzzy,      // query chars appear in order with gaps (subsequence)
+} ImCmdSearchMode;
 
-  // Matching options (also exposed as controls in the cog settings panel).
-  void set_search_mode(SearchMode mode) { search_mode_ = mode; }
-  SearchMode search_mode() const { return search_mode_; }
-  void set_case_insensitive(bool on) { case_insensitive_ = on; }
-  bool case_insensitive() const { return case_insensitive_; }
+// Callback signatures. Every callback takes the command's `user` pointer (or, for
+// the draw-config callbacks, the matching *_user pointer) as its first argument,
+// the C analogue of a captured `this`.
+typedef void (*ImCmdRunCallback)(void* user);                  // entry chosen
+typedef void (*ImCmdCycleCallback)(void* user, int delta);     // Left/Right step
+typedef void (*ImCmdValueCallback)(void* user);                // draw value widget
+typedef void (*ImCmdResetCallback)(void* user);                // restore default
+typedef void (*ImCmdRenderCallback)(void* user);               // host-drawn panel
+typedef void (*ImCmdSubmitCallback)(void* user, const char* text);  // '/' submit
+typedef bool (*ImCmdGetBoolCallback)(void* user);              // read a flag
+typedef void (*ImCmdSetBoolCallback)(void* user, bool value);  // write a flag
 
-  void Open();
-  // Opens the palette pre-filled with `text` (e.g. ">Physics"); used by the
-  // capture script to show command-mode interactions.
-  void OpenWith(const std::string& text);
-  // Replaces the input text without opening/closing (used by the capture script
-  // to "type" a question one character at a time).
-  void SetText(const std::string& text);
-  void Close();
-  void Toggle();
-  bool is_open() const { return open_; }
-  // Center of the palette window from the last Draw (for the capture cursor).
-  ImVec2 window_center() const { return center_; }
+// One palette entry. The host fills this for ImCmdList_Add; the field helpers
+// below fill it for you. Strings are borrowed only for the duration of the Add
+// call (the list copies them); `user` and any pointer it carries must stay valid
+// until the next ImCmdPalette_Draw returns. All callbacks and the two trailing
+// strings are optional (pass NULL / 0).
+typedef struct ImCmd {
+  const char* name;          // namespaced by a leading '>' '.' '/'; required
+  const char* description;   // dimmed one-line hint (entries with no value widget)
+  const char* default_text;  // shown on the revert tooltip's second line
+  ImCmdRunCallback run;          // chosen via Enter / click
+  ImCmdCycleCallback cycle;      // Left/Right adjust in place (flags, enums)
+  ImCmdValueCallback draw_value; // draws an editable value widget in the column
+  ImCmdResetCallback reset;      // restores the default (revert button)
+  void* user;                    // passed to every callback above
+  bool modified;                 // value differs from default (shows '*' + revert)
+} ImCmd;
 
-  // Draws the palette (if open), horizontally centered near the top of `rect`
-  // (x, y, width, height), capped at 80% of the viewport height (the list
-  // scrolls past that). `commands` is the single list fuzzy-matched against the
-  // whole input. Choosing an entry whose name starts with '/' submits its text
-  // via `on_submit_plain` (so the agent / app can route it); any other entry
-  // runs its `run` callback and closes.
-  //
-  // Typed text that matches no entry but starts with '/' is also submitted as-is
-  // on Enter (so an argument-bearing command like "/model sonnet" or
-  // "/prompt how do I..." works). `render_below` is invoked inside the palette
-  // window -- to draw the agent conversation -- while in agent context (the
-  // input starts with '/' or is empty). `render_settings` is invoked inside the
-  // cog settings panel, after the palette's own options, so the host (and its
-  // plugins) can add their own settings there. All callbacks are optional.
-  void Draw(const std::vector<Command>& commands, const ImVec4& rect,
-            const std::function<void()>& render_below = {},
-            const std::function<void(const std::string&)>& on_submit_plain = {},
-            const std::function<void()>& render_settings = {});
+// Per-frame inputs to ImCmdPalette_Draw that are not the command list. Zero-
+// initialize and set what you need; every callback is optional.
+typedef struct ImCmdDrawDesc {
+  ImCmdRect rect;  // host area: palette is centered on x..x+w, top edge at y
 
- private:
-  bool open_ = false;
-  bool focus_input_ = false;
-  // One-shot after Open()/OpenWith(): on the frame the input gains focus, move
-  // the cursor to the end and clear the selection so a pre-filled string (from
-  // OpenWith) isn't select-all'd and wiped by the first keystroke.
-  bool init_cursor_end_ = false;
-  int selection_ = 0;
-  // True once the user has pressed Up/Down to move into the completion list;
-  // while set, Left/Right act on the highlighted command's value (cycle it, or
-  // Right focuses a numeric input) instead of moving the query text cursor.
-  // Reset whenever the query text changes.
-  bool in_list_ = false;
-  // One-shot: Right on a selected value-input row gives that widget keyboard
-  // focus next render (so the value can be typed).
-  bool focus_value_ = false;
-  std::string last_query_;  // query from the previous Draw, to detect edits.
-  char input_[256] = "";
-  ImVec2 center_{0.0f, 0.0f};
-  // Points at the command list during Draw so the Tab-completion callback can
-  // see it (the callback runs inside InputText, before the list is filtered).
-  const std::vector<Command>* completion_list_ = nullptr;
-  // Matching options (default: fuzzy, case-insensitive).
-  SearchMode search_mode_ = SearchMode::kFuzzy;
-  bool case_insensitive_ = true;
-  bool highlight_matches_ = true;  // bold the matched characters in the list.
-  // When set (toggled by the cog button), the settings panel replaces the
-  // completion list.
-  bool show_settings_ = false;
+  // Drawn inside the palette window (e.g. an agent conversation) while in agent
+  // context -- when the input starts with '/' or is empty.
+  ImCmdRenderCallback render_below;
+  void* render_below_user;
 
-  // Filters `list` by `query` (current search mode), runs Up/Down/Left/Right
-  // navigation, and draws the rows. Returns the command chosen by Enter on the
-  // selected row, or nullptr -- clicks move the list focus or edit values, they
-  // don't choose. `entered` is the InputText's Enter result for this frame.
-  const Command* DrawCompletionList(const std::vector<Command>& list,
-                                    const std::string& query, bool entered);
-  // Draws the settings panel (search mode, case sensitivity, match
-  // highlighting), then the host's `render_settings`, in the list area.
-  void DrawSettings(const std::function<void()>& render_settings);
-  // Calls `on_submit_plain`, then clears and refocuses the box (the shared
-  // "submit a line" path for '/' agent commands).
-  void SubmitPlain(const std::string& text,
-                   const std::function<void(const std::string&)>& on_submit_plain);
+  // Receives the text of a chosen / typed '/' command so the host can route it.
+  ImCmdSubmitCallback on_submit_plain;
+  void* on_submit_plain_user;
 
-  static int InputTextCallback(ImGuiInputTextCallbackData* data);
-};
+  // Drawn inside the cog settings panel, after the palette's own options, so the
+  // host (and its plugins) can add settings there.
+  ImCmdRenderCallback render_settings;
+  void* render_settings_user;
+} ImCmdDrawDesc;
 
-// Free functions that append CommandPalette::Command records for editable
-// fields, so any subsystem can surface its members in the palette's dotted-path
-// field list without hand-writing the value widget, the '*'-when-modified
-// marker, or the revert-to-default button. They build Commands from raw pointers
-// (or a getter/setter pair) only, so they stay independent of any particular app
-// -- the palette merely consumes the Commands. The command list is the first
-// argument (these are bound-argument helpers, not state, so there is no class).
-//
-// `path` is the dotted code path of the field (e.g. "mjModel.opt.gravity"), so
-// fuzzy/prefix matching on the dots reads like navigating the struct. Each call
-// appends one command to `out`. A bound pointer must outlive the drawn command;
-// since the command list is typically rebuilt every frame, a pointer into live
-// state is fine (and lets '*' track changes made elsewhere).
+// Opaque handles. Create with the *_Create functions, free with *_Destroy.
+typedef struct ImCmdPalette ImCmdPalette;  // persistent palette state
+typedef struct ImCmdList ImCmdList;        // the per-frame command list (an arena)
 
-namespace command_palette_detail {
+// ----------------------------------------------------------------------------
+// Palette
+// ----------------------------------------------------------------------------
 
-// Appends "*" to a modified field's name so the change shows and typing "*"
-// filters to all changed fields. The value widget's id (###path) stays unmarked,
-// so editing isn't disrupted when the marker appears/disappears.
-inline std::string Marked(const std::string& path, bool modified) {
-  return modified ? path + "*" : path;
-}
-// Formats a default for the revert tooltip ("%g" for floats, plain for ints).
-template <class T>
-std::string NumStr(T v) {
-  if constexpr (std::is_integral_v<T>) {
-    return std::to_string(v);
-  } else {
-    char buf[32];
-    std::snprintf(buf, sizeof(buf), "%g", static_cast<double>(v));
-    return std::string(buf);
-  }
-}
-template <class T>
-constexpr ImGuiDataType DataTypeOf() {
-  if constexpr (std::is_same_v<T, int>) {
-    return ImGuiDataType_S32;
-  } else if constexpr (std::is_same_v<T, float>) {
-    return ImGuiDataType_Float;
-  } else {
-    return ImGuiDataType_Double;
-  }
-}
+ImCmdPalette* ImCmdPalette_Create(void);
+void ImCmdPalette_Destroy(ImCmdPalette* p);
 
-}  // namespace command_palette_detail
+void ImCmdPalette_Open(ImCmdPalette* p);
+// Opens pre-filled with `text` (e.g. ">Physics"), cursor parked at the end.
+void ImCmdPalette_OpenWith(ImCmdPalette* p, const char* text);
+// Replaces the input text without opening/closing (e.g. to "type" a question).
+void ImCmdPalette_SetText(ImCmdPalette* p, const char* text);
+void ImCmdPalette_Close(ImCmdPalette* p);
+void ImCmdPalette_Toggle(ImCmdPalette* p);
+bool ImCmdPalette_IsOpen(const ImCmdPalette* p);
+// Center of the palette window from the last Draw (for an external cursor).
+ImCmdVec2 ImCmdPalette_WindowCenter(const ImCmdPalette* p);
 
-// A boolean field: a checkbox value, Enter / Left-Right toggling, and a revert
-// button when the value differs from `dflt`.
-void RegisterFlagField(std::vector<CommandPalette::Command>& out,
-                       const std::string& path, std::function<bool()> get,
-                       std::function<void(bool)> set, bool dflt);
+// Matching options (also exposed as controls in the cog settings panel).
+void ImCmdPalette_SetSearchMode(ImCmdPalette* p, ImCmdSearchMode mode);
+ImCmdSearchMode ImCmdPalette_GetSearchMode(const ImCmdPalette* p);
+void ImCmdPalette_SetCaseInsensitive(ImCmdPalette* p, bool enabled);
+bool ImCmdPalette_GetCaseInsensitive(const ImCmdPalette* p);
 
-// A scalar field (T = int / float / double): a numeric input bound to *ptr,
-// revert to `def`.
-template <class T>
-void RegisterScalarField(std::vector<CommandPalette::Command>& out,
-                         const std::string& path, T* ptr, T def) {
-  const ImGuiDataType dt = command_palette_detail::DataTypeOf<T>();
-  const bool modified = *ptr != def;
-  const std::string id = "###" + path;
-  auto draw = [id, ptr, dt] { ImGui::InputScalar(id.c_str(), dt, ptr); };
-  auto reset = [ptr, def] { *ptr = def; };
-  out.push_back({command_palette_detail::Marked(path, modified), {}, "", {},
-                 draw, reset, modified, command_palette_detail::NumStr(def)});
-}
+// Draws the palette (if open) and drives it: filters `list` against the typed
+// text, runs keyboard / mouse navigation, and when an entry is chosen either
+// submits it (names starting with '/') via desc->on_submit_plain or runs its
+// `run` callback and closes. `desc` must be non-NULL; `list` may be NULL/empty.
+void ImCmdPalette_Draw(ImCmdPalette* p, const ImCmdList* list,
+                       const ImCmdDrawDesc* desc);
 
-// An n-element array field (T = int / float / double): an N-input bound to
-// ptr[0..n), revert to def[0..n).
-template <class T>
-void RegisterArrayField(std::vector<CommandPalette::Command>& out,
-                        const std::string& path, T* ptr, int n, const T* def) {
-  const ImGuiDataType dt = command_palette_detail::DataTypeOf<T>();
-  // Copy the defaults by value: callers often pass a pointer into a per-frame
-  // local (e.g. mj_defaultOption's output), but reset runs later, on a click.
-  const std::vector<T> defs(def, def + n);
-  bool modified = false;
-  std::string def_text;
-  for (int k = 0; k < n; ++k) {
-    modified |= (ptr[k] != defs[k]);
-    def_text += (k ? " " : "") + command_palette_detail::NumStr(defs[k]);
-  }
-  const std::string id = "###" + path;
-  auto draw = [id, ptr, dt, n] { ImGui::InputScalarN(id.c_str(), dt, ptr, n); };
-  auto reset = [ptr, defs] {
-    for (std::size_t k = 0; k < defs.size(); ++k) ptr[k] = defs[k];
-  };
-  out.push_back({command_palette_detail::Marked(path, modified), {}, "", {},
-                 draw, reset, modified, def_text});
-}
+// ----------------------------------------------------------------------------
+// Command list (rebuilt every frame)
+// ----------------------------------------------------------------------------
 
-// An enum field (T = an int-backed enum or int): a combo of `names` in the value
-// column, Enter advances / Left-Right cycles, revert to `def`.
-template <class T>
-void RegisterEnumField(std::vector<CommandPalette::Command>& out,
-                       const std::string& path, T* ptr,
-                       std::vector<const char*> names, T def) {
-  const int n = static_cast<int>(names.size());
-  const int cur = static_cast<int>(*ptr);
-  const int def_i = static_cast<int>(def);
-  auto cyc = [ptr, n](int delta) {
-    const int v = static_cast<int>(*ptr);
-    *ptr = static_cast<T>(((v + delta) % n + n) % n);
-  };
-  const std::string id = "###" + path;
-  auto combo = [id, ptr, names, n] {
-    int v = static_cast<int>(*ptr);
-    if (ImGui::Combo(id.c_str(), &v, names.data(), n)) {
-      *ptr = static_cast<T>(v);
-    }
-  };
-  auto reset = [ptr, def] { *ptr = def; };
-  const std::string def_text =
-      (def_i >= 0 && def_i < n) ? names[def_i] : std::string();
-  out.push_back({command_palette_detail::Marked(path, cur != def_i),
-                 [cyc] { cyc(1); }, "", cyc, combo, reset, cur != def_i,
-                 def_text});
-}
+ImCmdList* ImCmdList_Create(void);
+void ImCmdList_Destroy(ImCmdList* list);
+// Drops every command and reclaims the copied strings / field bindings for
+// reuse. Call once at the start of each rebuild.
+void ImCmdList_Clear(ImCmdList* list);
 
-// A field that can't be expressed as a plain pointer (e.g. one reached only
-// through an accessor pair): supply the value widget and the revert action, plus
-// the modified state and the default shown in the revert tooltip.
-void RegisterCustomField(std::vector<CommandPalette::Command>& out,
-                         const std::string& path, std::function<void()> draw,
-                         std::function<void()> reset, bool modified,
-                         std::string default_text);
+// Appends one fully-formed command. `name`, `description` and `default_text` are
+// copied into the list, so they may be temporaries; the callbacks and `user`
+// are stored as-is.
+void ImCmdList_Add(ImCmdList* list, const ImCmd* cmd);
 
-}  // namespace mujoco::platform
+// Convenience builders for editable fields. They render the value widget, the
+// '*'-when-modified marker, and the revert-to-default button for you. `path` is
+// copied and `def` is stored by value; `ptr` must stay valid through the next
+// Draw (a pointer into live state is fine, and lets '*' track external changes).
+void ImCmdList_AddFieldS32(ImCmdList* list, const char* path, int* ptr, int def);
+void ImCmdList_AddFieldF32(ImCmdList* list, const char* path, float* ptr,
+                           float def);
+void ImCmdList_AddFieldF64(ImCmdList* list, const char* path, double* ptr,
+                           double def);
+// N-element variants (an N-wide numeric input bound to ptr[0..count)).
+void ImCmdList_AddFieldArrayS32(ImCmdList* list, const char* path, int* ptr,
+                                int count, const int* def);
+void ImCmdList_AddFieldArrayF32(ImCmdList* list, const char* path, float* ptr,
+                                int count, const float* def);
+void ImCmdList_AddFieldArrayF64(ImCmdList* list, const char* path, double* ptr,
+                                int count, const double* def);
+
+// A boolean field reached through a getter/setter (the general case -- it covers
+// bitfields and unsigned-char flags, not just a bool). Enter / Left-Right toggle.
+void ImCmdList_AddFieldFlag(ImCmdList* list, const char* path,
+                            ImCmdGetBoolCallback get, ImCmdSetBoolCallback set,
+                            void* user, bool def);
+// Convenience overload for a flag that really is a `bool` in memory.
+void ImCmdList_AddFieldFlagPtr(ImCmdList* list, const char* path, bool* ptr,
+                               bool def);
+
+// An int-backed enum: a combo of `names` (count entries) in the value column,
+// Enter advances / Left-Right cycle. `names` (the array and its strings) is
+// copied. `ptr` may point at any int-sized enum.
+void ImCmdList_AddFieldEnum(ImCmdList* list, const char* path, int* ptr,
+                            const char* const* names, int count, int def);
+
+// A field that is not a plain pointer (reached only through an accessor): supply
+// the value widget and the revert action, the modified state, and the default
+// shown in the revert tooltip. `draw` runs inside a stable ImGui ID scope keyed
+// on `path`, so give its widgets a constant label (e.g. "##v").
+void ImCmdList_AddFieldCustom(ImCmdList* list, const char* path,
+                              ImCmdValueCallback draw, ImCmdResetCallback reset,
+                              void* user, bool modified, const char* default_text);
+
+#ifdef __cplusplus
+}  // extern "C"
+#endif
 
 #endif  // MUJOCO_SRC_EXPERIMENTAL_PLATFORM_UX_COMMAND_PALETTE_H_
