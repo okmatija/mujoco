@@ -1,0 +1,53 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>MuJoCo Live</title>
+    <style>
+      body {
+        margin: 0;
+        overflow: hidden;
+        background: #1a1a2e;
+      }
+      canvas {
+        width: 100vw;
+        height: 100vh;
+        display: block;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas
+      id="canvas"
+      oncontextmenu="event.preventDefault()"
+    ></canvas>
+    <script>
+      var Module = {
+        canvas: (() => {
+          const canvas = document.getElementById("canvas");
+          return canvas;
+        })(),
+        locateFile: function(path, prefix) {
+          if (path.endsWith('.data')) {
+            return 'web_client_wasm/web_client_cc.data';
+          }
+          if (path.includes('filament/assets/')) {
+            const filename = path.substring(path.lastIndexOf('/') + 1);
+            return 'google3/third_party/mujoco/src/experimental/filament/assets/' + filename;
+          }
+          return prefix + path;
+        }
+      };
+      function resizeCanvas() {
+        Module.canvas.width = window.innerWidth;
+        Module.canvas.height = window.innerHeight;
+        Module.canvas.style.width = window.innerWidth + "px";
+        Module.canvas.style.height = window.innerHeight + "px";
+      }
+      // Run immediately to ensure initial dimensions are perfectly set
+      resizeCanvas();
+      window.addEventListener("resize", resizeCanvas);
+    </script>
+    <script async src="web_client_wasm/web_client_cc.js"></script>
+  </body>
+</html>
