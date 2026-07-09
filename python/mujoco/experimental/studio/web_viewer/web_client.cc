@@ -549,6 +549,17 @@ void CaptureAndSendInput() {
   CmdInput cmdInput;
   cmdInput.mScreenSize[0] = static_cast<uint16_t>(io.DisplaySize.x);
   cmdInput.mScreenSize[1] = static_cast<uint16_t>(io.DisplaySize.y);
+  // An unstable screen size forces the remote UI to relayout every frame
+  // (visible as UI flicker), so make changes loud.
+  static uint16_t sLastScreenSize[2] = {0, 0};
+  if (cmdInput.mScreenSize[0] != sLastScreenSize[0] ||
+      cmdInput.mScreenSize[1] != sLastScreenSize[1]) {
+    LOG(Info, "Screen size sent to client changed: %ux%u -> %ux%u",
+        sLastScreenSize[0], sLastScreenSize[1], cmdInput.mScreenSize[0],
+        cmdInput.mScreenSize[1]);
+    sLastScreenSize[0] = cmdInput.mScreenSize[0];
+    sLastScreenSize[1] = cmdInput.mScreenSize[1];
+  }
   cmdInput.mFontDPIScaling = 1.f;
   cmdInput.mDesiredFps = 60.0f;
   cmdInput.mCompressionUse = gUseCompression;
@@ -1413,6 +1424,14 @@ static void RegisterAssetProviders() {
 }
 
 int main(int argc, char** argv) {
+#if defined(__EMSCRIPTEN__)
+  // Diagnostic: ?nocompress=1 disables NetImgui delta compression so the
+  // client streams full draw frames every frame.
+  gUseCompression = !EM_ASM_INT({
+    return new URLSearchParams(window.location.search).has("nocompress") ? 1
+                                                                         : 0;
+  });
+#endif
   RegisterAssetProviders();
 
   mujoco::platform::Window::Config config;
