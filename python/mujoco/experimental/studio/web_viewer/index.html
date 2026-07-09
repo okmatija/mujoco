@@ -22,6 +22,24 @@
       oncontextmenu="event.preventDefault()"
     ></canvas>
     <script>
+      // When any pixel-capture diagnostic is active, force
+      // preserveDrawingBuffer so readPixels outside the render callback sees
+      // the last completed frame (otherwise the backbuffer is cleared after
+      // compositing on most GPUs and captures come back black).
+      (() => {
+        const params = new URLSearchParams(location.search);
+        if (params.has("framegrab") || params.has("flickerprobe") ||
+            params.has("flickercatch")) {
+          const orig = HTMLCanvasElement.prototype.getContext;
+          HTMLCanvasElement.prototype.getContext = function (type, attrs) {
+            if (type === "webgl2" || type === "webgl") {
+              attrs = Object.assign({}, attrs || {},
+                                    {preserveDrawingBuffer: true});
+            }
+            return orig.call(this, type, attrs);
+          };
+        }
+      })();
       var Module = {
         canvas: (() => {
           const canvas = document.getElementById("canvas");
@@ -186,35 +204,49 @@
           requestAnimationFrame(watch);
         }, 6000);
       }
-      // Diagnostic hook: ?framegrab=1 downloads two full-canvas snapshots
-      // 500ms apart (mjwv_grab0/1.png), for inspecting rendering issues.
+      // Diagnostic hook: ?framegrab=1 captures 10 CONSECUTIVE frames of the
+      // full canvas starting 8s after load, then downloads them as
+      // mjwv_seq0..9.png (allow multiple downloads when Chrome asks).
+      // Frames are captured back-to-back first and encoded/downloaded after,
+      // so the capture itself doesn't perturb frame pacing.
       if (new URLSearchParams(location.search).has("framegrab")) {
-        const grab = (name) => {
+        setTimeout(() => {
           const c = document.getElementById("canvas");
           const gl = c.getContext("webgl2");
           if (!gl) return;
           const W = gl.drawingBufferWidth, H = gl.drawingBufferHeight;
-          const buf = new Uint8Array(W * H * 4);
-          gl.readPixels(0, 0, W, H, gl.RGBA, gl.UNSIGNED_BYTE, buf);
-          const t = document.createElement("canvas");
-          t.width = W; t.height = H;
-          const ctx = t.getContext("2d");
-          const img = ctx.createImageData(W, H);
-          for (let y = 0; y < H; y++) {
-            img.data.set(buf.subarray((H - 1 - y) * W * 4, (H - y) * W * 4),
-                         y * W * 4);
-          }
-          ctx.putImageData(img, 0, 0);
-          const a = document.createElement("a");
-          a.href = t.toDataURL("image/png");
-          a.download = name;
-          a.click();
-        };
-        setTimeout(() => requestAnimationFrame(() => {
-          grab("mjwv_grab0.png");
-          setTimeout(() => requestAnimationFrame(() => grab("mjwv_grab1.png")),
-                     500);
-        }), 8000);
+          const frames = [];
+          const capture = () => {
+            const buf = new Uint8Array(W * H * 4);
+            gl.readPixels(0, 0, W, H, gl.RGBA, gl.UNSIGNED_BYTE, buf);
+            frames.push(buf);
+            if (frames.length < 10) {
+              requestAnimationFrame(capture);
+            } else {
+              // Stitch all frames vertically into ONE image (a single
+              // download also works in headless Chrome, which blocks
+              // multiple downloads).
+              const t = document.createElement("canvas");
+              t.width = W; t.height = H * frames.length;
+              const ctx = t.getContext("2d");
+              frames.forEach((f, i) => {
+                const img = ctx.createImageData(W, H);
+                for (let y = 0; y < H; y++) {
+                  img.data.set(
+                      f.subarray((H - 1 - y) * W * 4, (H - y) * W * 4),
+                      y * W * 4);
+                }
+                ctx.putImageData(img, 0, i * H);
+              });
+              const a = document.createElement("a");
+              a.href = t.toDataURL("image/png");
+              a.download = "mjwv_seq.png";
+              a.click();
+              console.error("[framegrab] downloaded 10-frame strip");
+            }
+          };
+          requestAnimationFrame(capture);
+        }, 8000);
       }
       // Diagnostic hook: ?autosweep=1 sweeps synthetic mouse moves across
       // the canvas, so hover-triggered failures reproduce in a headless

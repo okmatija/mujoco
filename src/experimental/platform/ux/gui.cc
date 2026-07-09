@@ -365,11 +365,19 @@ ImVec4 ConfigureDockingLayout(bool show_toolbar, bool show_status_bar) {
   const float kStatusBarHeight =
       show_status_bar ? 32.f * scale * font_scale : 0.0f;
 
-  const ImVec2 dockspace_pos{viewport->WorkPos.x,
-                             viewport->WorkPos.y + kToolsBarHeight};
+  // Lay out from the absolute viewport origin with an explicitly computed
+  // menu bar height, NOT from WorkPos/WorkSize: the work area only reflects
+  // the menu bar's reservation from the previous frame, so any hiccup in
+  // that reservation shifts the whole dock layout by a menu-bar height for
+  // a frame and every docked window re-clips (visible as UI-wide flicker).
+  // The menu bar's height equals the frame height by definition.
+  const float menu_bar_height = ImGui::GetFrameHeight();
+  const ImVec2 toolbar_pos{viewport->Pos.x, viewport->Pos.y + menu_bar_height};
+  const ImVec2 dockspace_pos{
+      viewport->Pos.x, viewport->Pos.y + menu_bar_height + kToolsBarHeight};
   const ImVec2 dockspace_size{
-      viewport->WorkSize.x,
-      viewport->WorkSize.y - kToolsBarHeight - kStatusBarHeight};
+      viewport->Size.x, viewport->Size.y - menu_bar_height - kToolsBarHeight -
+                            kStatusBarHeight};
 
   ImGuiID root = ImGui::GetID("Root");
   const bool first_time = (ImGui::DockBuilderGetNode(root) == nullptr);
@@ -447,7 +455,7 @@ ImVec4 ConfigureDockingLayout(bool show_toolbar, bool show_status_bar) {
     const float toolbar_vpad =
         std::max(0.f, (36.f * scale * font_scale - ImGui::GetFrameHeight()) * 0.5f);
     style.Var(ImGuiStyleVar_WindowPadding, ImVec2(4 * scale, toolbar_vpad));
-    ImGui::SetNextWindowPos(viewport->WorkPos, ImGuiCond_Always);
+    ImGui::SetNextWindowPos(toolbar_pos, ImGuiCond_Always);
     ImGui::SetNextWindowSize(ImVec2(viewport->Size.x, 36.f * scale * font_scale),
                              ImGuiCond_Always);
     ImGui::Begin("ToolBar", nullptr, kFixedFlags);
