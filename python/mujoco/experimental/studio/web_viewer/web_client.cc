@@ -894,6 +894,41 @@ void ProcessCmdDrawFrame(CmdDrawFrame* pCmdDrawFrame) {
     LOG(Info, "First remote draw frame applied (%d cmds, %d vtx)",
         pDrawData->CmdLists[0]->CmdBuffer.Size, pDrawData->TotalVtxCount);
   }
+
+  // Fingerprint the frame's clip rects: if the fingerprint alternates
+  // between values while the UI is idle, the incoming draw data itself
+  // alternates (remote/transport bug); if it stays constant while pixels
+  // flicker, the local rendering of identical data is at fault.
+  {
+    uint64_t h = 1469598103934665603ull;
+    auto mix = [&h](uint32_t v) {
+      h ^= v;
+      h *= 1099511628211ull;
+    };
+    const ImDrawList* dl = pDrawData->CmdLists[0];
+    for (int i = 0; i < dl->CmdBuffer.Size; ++i) {
+      const ImVec4& r = dl->CmdBuffer[i].ClipRect;
+      mix(static_cast<uint32_t>(r.x * 8.f));
+      mix(static_cast<uint32_t>(r.y * 8.f));
+      mix(static_cast<uint32_t>(r.z * 8.f));
+      mix(static_cast<uint32_t>(r.w * 8.f));
+      mix(dl->CmdBuffer[i].ElemCount);
+    }
+    static uint64_t sLastHash = 0;
+    static int sHashLogs = 0;
+    static uint32_t sFramesSinceChange = 0;
+    ++sFramesSinceChange;
+    if (h != sLastHash && sHashLogs < 60) {
+      LOG(Info,
+          "[drawhash] %08x%08x cmds=%d vtx=%d (stable for %u frames)",
+          static_cast<uint32_t>(h >> 32), static_cast<uint32_t>(h),
+          dl->CmdBuffer.Size, pDrawData->TotalVtxCount, sFramesSinceChange);
+      sLastHash = h;
+      sHashLogs++;
+      sFramesSinceChange = 0;
+    }
+  }
+
   if (gRemoteDrawData) netImguiDelete(gRemoteDrawData);
   gRemoteDrawData = pDrawData;
 }
