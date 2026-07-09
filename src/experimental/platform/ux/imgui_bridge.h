@@ -60,6 +60,9 @@ class ImguiBridge {
   mjrfScene* scene_ = nullptr;
   std::vector<UniquePtr<mjrfRenderable>> renderables_;
   std::vector<UniquePtr<mjrfMesh>> meshes_;
+  // Last frame's meshes, kept alive one extra frame so the in-flight render
+  // never has its buffers destroyed under it.
+  std::vector<UniquePtr<mjrfMesh>> prev_meshes_;
   std::unordered_map<uintptr_t, UniquePtr<mjrfTexture>> textures_;
   uintptr_t next_tex_id_ = 1;
 };

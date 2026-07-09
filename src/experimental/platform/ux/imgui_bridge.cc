@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <memory>
 #include <utility>
@@ -179,7 +180,13 @@ void ImguiBridge::Update() {
     PrepareRenderables(0);
     return;
   }
-  commands->ScaleClipRects(scale);
+  // Do NOT call commands->ScaleClipRects(scale): it mutates the draw data
+  // in place, and draw lists that persist across frames (the web client's
+  // streamed remote UI is rendered from the same lists until the next
+  // network frame arrives) would be scaled repeatedly — clip rects grow by
+  // the DPI scale on every re-render, intermittently clipping widgets out
+  // and letting scrolled-out content show. Clip rects are scaled locally
+  // in the per-command scissor computation below instead.
 
   // 2 floats for position, 2 floats for uv, 4 bytes for color.
   constexpr size_t kExpectedVertexSize =
@@ -215,8 +222,22 @@ void ImguiBridge::Update() {
     return;
   }
 
+  // Defer destroying last frame's meshes by one frame: they may still be
+  // referenced by the in-flight render, and destroying GPU buffers mid-use
+  // is driver-dependent (harmless on some, corrupted draws on others).
+  prev_meshes_ = std::move(meshes_);
   meshes_.clear();
   int renderable_index = 0;
+
+  // Diagnostic fingerprint of everything this pass assigns (scissors,
+  // textures, element counts). Logged on change (capped): if pixels
+  // alternate while this stays constant, the variance is below the bridge
+  // (GPU resource lifecycle), not in draw-data processing.
+  uint64_t frame_hash = 1469598103934665603ull;
+  auto mix = [&frame_hash](uint64_t v) {
+    frame_hash ^= v;
+    frame_hash *= 1099511628211ull;
+  };
   for (int n = 0; n < commands->CmdListsCount; ++n) {
     const ImDrawList* cmds = commands->CmdLists[n];
 
@@ -256,21 +277,22 @@ void ImguiBridge::Update() {
       material.color_texture = GetTexture(command.GetTexID());
 
       material.decor_ux = true;
-      // Intersect the clip rect with the viewport. Clip rects may extend
+      // Intersect the clip rect (scaled to physical pixels here, not via the
+      // mutating ScaleClipRects) with the viewport. Clip rects may extend
       // slightly outside it (modal dialogs by design; bottom/right-docked
       // windows by fractional DPI rounding, since width/height are truncated
       // ints while the scaled clip rect is not), and filament's scissor test
       // rejects out-of-window rects. Never substitute a full-window scissor
       // for an out-of-range one: that disables clipping entirely and lets
       // scrolled-out widgets paint over the rest of the UI.
-      const float clip_x0 =
-          std::clamp(command.ClipRect.x, 0.0f, static_cast<float>(width));
-      const float clip_y0 =
-          std::clamp(command.ClipRect.y, 0.0f, static_cast<float>(height));
-      const float clip_x1 =
-          std::clamp(command.ClipRect.z, clip_x0, static_cast<float>(width));
-      const float clip_y1 =
-          std::clamp(command.ClipRect.w, clip_y0, static_cast<float>(height));
+      const float clip_x0 = std::clamp(command.ClipRect.x * scale.x, 0.0f,
+                                       static_cast<float>(width));
+      const float clip_y0 = std::clamp(command.ClipRect.y * scale.y, 0.0f,
+                                       static_cast<float>(height));
+      const float clip_x1 = std::clamp(command.ClipRect.z * scale.x, clip_x0,
+                                       static_cast<float>(width));
+      const float clip_y1 = std::clamp(command.ClipRect.w * scale.y, clip_y0,
+                                       static_cast<float>(height));
       material.scissor[0] = clip_x0;
       material.scissor[1] = height - clip_y1;
       material.scissor[2] = clip_x1 - clip_x0;
@@ -280,9 +302,30 @@ void ImguiBridge::Update() {
       const float size[] = {scale.x, scale.y, 1.0f};
       mjrf_setRenderableSize(renderable.get(), size);
 
+      mix(static_cast<uint64_t>(material.scissor[0] * 8.f));
+      mix(static_cast<uint64_t>(material.scissor[1] * 8.f));
+      mix(static_cast<uint64_t>(material.scissor[2] * 8.f));
+      mix(static_cast<uint64_t>(material.scissor[3] * 8.f));
+      mix(reinterpret_cast<uintptr_t>(material.color_texture));
+      mix(command.ElemCount);
+
       index_offset += command.ElemCount;
       ++renderable_index;
     }
+  }
+
+  static uint64_t last_frame_hash = 0;
+  static int hash_logs = 0;
+  static uint32_t frames_since_change = 0;
+  ++frames_since_change;
+  if (frame_hash != last_frame_hash && hash_logs < 40) {
+    std::fprintf(stderr,
+                 "[bridgehash] %016llx cmds=%d (stable for %u frames)\n",
+                 static_cast<unsigned long long>(frame_hash), renderable_index,
+                 frames_since_change);
+    last_frame_hash = frame_hash;
+    hash_logs++;
+    frames_since_change = 0;
   }
 }
 
