@@ -119,10 +119,12 @@ static bool Client_Startup(ImGuiContext*& context,
       LoadFontAsset(assets_dir, "AtkinsonHyperlegibleNext[wght].ttf");
   auto icon_font_data = LoadFontAsset(assets_dir, "fontawesome-webfont.ttf");
 
+  // Font sizes match the native viewer (platform/hal/window.cc) so the UI
+  // has the same proportions in the browser as in native Studio.
   if (!main_font_data.empty()) {
     void* font_copy = ImGui::MemAlloc(main_font_data.size());
     memcpy(font_copy, main_font_data.data(), main_font_data.size());
-    io.Fonts->AddFontFromMemoryTTF(font_copy, main_font_data.size(), 20.0f);
+    io.Fonts->AddFontFromMemoryTTF(font_copy, main_font_data.size(), 16.0f);
   }
 
   if (!icon_font_data.empty()) {
@@ -131,7 +133,7 @@ static bool Client_Startup(ImGuiContext*& context,
     constexpr ImWchar icon_ranges[] = {0xf000, 0xf3ff, 0x000};
     void* icon_copy = ImGui::MemAlloc(icon_font_data.size());
     memcpy(icon_copy, icon_font_data.data(), icon_font_data.size());
-    io.Fonts->AddFontFromMemoryTTF(icon_copy, icon_font_data.size(), 14.0f,
+    io.Fonts->AddFontFromMemoryTTF(icon_copy, icon_font_data.size(), 13.0f,
                                    &icon_cfg, icon_ranges);
   }
 

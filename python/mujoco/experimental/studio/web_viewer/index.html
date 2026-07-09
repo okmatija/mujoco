@@ -130,30 +130,91 @@
             requestAnimationFrame(probe);
           };
           requestAnimationFrame(probe);
-          // Dump two consecutive frames of the strip as PNG data URLs so the
-          // alternating states can be inspected visually.
-          let dumps = 0;
-          const dump = () => {
-            if (dumps >= 2) return;
-            const buf = new Uint8Array(W * H * 4);
-            gl.readPixels(0, gl.drawingBufferHeight - H, W, H,
-                          gl.RGBA, gl.UNSIGNED_BYTE, buf);
+        }, 6000);
+      }
+      // Diagnostic hook: ?flickercatch=1 watches the toolbar strip and, on
+      // the first frame where >4000 pixels change (a flicker burst),
+      // downloads the before/after frame pair as PNG files.
+      if (new URLSearchParams(location.search).has("flickercatch")) {
+        setTimeout(() => {
+          const c = document.getElementById("canvas");
+          const gl = c.getContext("webgl2");
+          if (!gl) { console.error("[flickercatch] no webgl2 ctx"); return; }
+          const W = Math.min(1400, gl.drawingBufferWidth);
+          const H = 80;
+          console.error(`[flickercatch] armed, dpr=${window.devicePixelRatio}` +
+              ` buffer=${gl.drawingBufferWidth}x${gl.drawingBufferHeight}`);
+          const toPng = (buf, name) => {
             const t = document.createElement("canvas");
             t.width = W; t.height = H;
             const ctx = t.getContext("2d");
             const img = ctx.createImageData(W, H);
-            // readPixels is bottom-up; flip rows.
             for (let y = 0; y < H; y++) {
               img.data.set(buf.subarray((H - 1 - y) * W * 4, (H - y) * W * 4),
                            y * W * 4);
             }
             ctx.putImageData(img, 0, 0);
-            console.error(`[flickerdump${dumps}] ` + t.toDataURL("image/png"));
-            dumps++;
-            requestAnimationFrame(dump);
+            const a = document.createElement("a");
+            a.href = t.toDataURL("image/png");
+            a.download = name;
+            a.click();
           };
-          setTimeout(() => requestAnimationFrame(dump), 3000);
+          let prev = null, caught = false;
+          const watch = () => {
+            if (caught) return;
+            const buf = new Uint8Array(W * H * 4);
+            gl.readPixels(0, gl.drawingBufferHeight - H, W, H,
+                          gl.RGBA, gl.UNSIGNED_BYTE, buf);
+            if (prev) {
+              let changed = 0;
+              for (let i = 0; i < buf.length; i += 4) {
+                if (buf[i] !== prev[i] || buf[i+1] !== prev[i+1] ||
+                    buf[i+2] !== prev[i+2]) changed++;
+              }
+              if (changed > 4000) {
+                caught = true;
+                console.error(`[flickercatch] burst: ${changed} px changed;` +
+                              " downloading frame pair");
+                toPng(prev, "mjwv_before.png");
+                toPng(buf, "mjwv_after.png");
+                return;
+              }
+            }
+            prev = buf;
+            requestAnimationFrame(watch);
+          };
+          requestAnimationFrame(watch);
         }, 6000);
+      }
+      // Diagnostic hook: ?framegrab=1 downloads two full-canvas snapshots
+      // 500ms apart (mjwv_grab0/1.png), for inspecting rendering issues.
+      if (new URLSearchParams(location.search).has("framegrab")) {
+        const grab = (name) => {
+          const c = document.getElementById("canvas");
+          const gl = c.getContext("webgl2");
+          if (!gl) return;
+          const W = gl.drawingBufferWidth, H = gl.drawingBufferHeight;
+          const buf = new Uint8Array(W * H * 4);
+          gl.readPixels(0, 0, W, H, gl.RGBA, gl.UNSIGNED_BYTE, buf);
+          const t = document.createElement("canvas");
+          t.width = W; t.height = H;
+          const ctx = t.getContext("2d");
+          const img = ctx.createImageData(W, H);
+          for (let y = 0; y < H; y++) {
+            img.data.set(buf.subarray((H - 1 - y) * W * 4, (H - y) * W * 4),
+                         y * W * 4);
+          }
+          ctx.putImageData(img, 0, 0);
+          const a = document.createElement("a");
+          a.href = t.toDataURL("image/png");
+          a.download = name;
+          a.click();
+        };
+        setTimeout(() => requestAnimationFrame(() => {
+          grab("mjwv_grab0.png");
+          setTimeout(() => requestAnimationFrame(() => grab("mjwv_grab1.png")),
+                     500);
+        }), 8000);
       }
       // Diagnostic hook: ?autosweep=1 sweeps synthetic mouse moves across
       // the canvas, so hover-triggered failures reproduce in a headless

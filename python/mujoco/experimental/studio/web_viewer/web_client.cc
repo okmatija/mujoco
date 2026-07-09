@@ -1264,6 +1264,51 @@ void MainLoopImpl() {
   // call to ImGui::NewFrame().
   if (gRemoteDrawData && gRemoteDrawData->Valid) {
     ImDrawData* localDrawData = ImGui::GetDrawData();
+    // One-shot coordinate-space dump: every scale/clip bug so far has been a
+    // units mismatch between these quantities.
+    static bool sDumpedCoords = false;
+    if (!sDumpedCoords && localDrawData) {
+      sDumpedCoords = true;
+      const ImGuiIO& dio = ImGui::GetIO();
+      LOG(Info,
+          "[coords] local io.DisplaySize=%.1fx%.1f FramebufferScale=%.2fx%.2f"
+          " window=%dx%d canvasScale=%.2f",
+          dio.DisplaySize.x, dio.DisplaySize.y, dio.DisplayFramebufferScale.x,
+          dio.DisplayFramebufferScale.y, g_app.window->GetWidth(),
+          g_app.window->GetHeight(), g_app.window->GetScale());
+      LOG(Info,
+          "[coords] localDrawData DisplaySize=%.1fx%.1f Pos=%.1f,%.1f"
+          " FbScale=%.2f | remote DisplaySize=%.1fx%.1f Pos=%.1f,%.1f"
+          " FbScale=%.2f",
+          localDrawData->DisplaySize.x, localDrawData->DisplaySize.y,
+          localDrawData->DisplayPos.x, localDrawData->DisplayPos.y,
+          localDrawData->FramebufferScale.x, gRemoteDrawData->DisplaySize.x,
+          gRemoteDrawData->DisplaySize.y, gRemoteDrawData->DisplayPos.x,
+          gRemoteDrawData->DisplayPos.y, gRemoteDrawData->FramebufferScale.x);
+      auto dump_list = [](const char* tag, const ImDrawList* dl) {
+        if (!dl || dl->VtxBuffer.Size == 0) return;
+        float vx0 = 1e9f, vy0 = 1e9f, vx1 = -1e9f, vy1 = -1e9f;
+        for (int v = 0; v < dl->VtxBuffer.Size; ++v) {
+          const ImVec2& p = dl->VtxBuffer[v].pos;
+          vx0 = std::min(vx0, p.x); vy0 = std::min(vy0, p.y);
+          vx1 = std::max(vx1, p.x); vy1 = std::max(vy1, p.y);
+        }
+        float cx0 = 1e9f, cy0 = 1e9f, cx1 = -1e9f, cy1 = -1e9f;
+        for (int c = 0; c < dl->CmdBuffer.Size; ++c) {
+          const ImVec4& r = dl->CmdBuffer[c].ClipRect;
+          cx0 = std::min(cx0, r.x); cy0 = std::min(cy0, r.y);
+          cx1 = std::max(cx1, r.z); cy1 = std::max(cy1, r.w);
+        }
+        LOG(Info,
+            "[coords] %s: %d cmds, vtx bounds (%.1f,%.1f)-(%.1f,%.1f),"
+            " clip bounds (%.1f,%.1f)-(%.1f,%.1f)",
+            tag, dl->CmdBuffer.Size, vx0, vy0, vx1, vy1, cx0, cy0, cx1, cy1);
+      };
+      dump_list("remote", gRemoteDrawData->CmdLists[0]);
+      if (localDrawData->CmdListsCount > 0) {
+        dump_list("local", localDrawData->CmdLists[0]);
+      }
+    }
     if (localDrawData) {
       // Save local draw lists.
       ImVector<ImDrawList*> localLists;
