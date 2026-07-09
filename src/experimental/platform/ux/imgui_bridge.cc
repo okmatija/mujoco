@@ -14,6 +14,7 @@
 
 #include "experimental/platform/ux/imgui_bridge.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -255,19 +256,25 @@ void ImguiBridge::Update() {
       material.color_texture = GetTexture(command.GetTexID());
 
       material.decor_ux = true;
-      material.scissor[0] = command.ClipRect.x;
-      material.scissor[1] = height - command.ClipRect.w;
-      material.scissor[2] = command.ClipRect.z - command.ClipRect.x;
-      material.scissor[3] = command.ClipRect.w - command.ClipRect.y;
-      // Modal dialogs try to cover the whole window, but also a little outside
-      // of it. This doesn't work well with filament's scissor test, so we clip
-      // them to the window.
-      if (material.scissor[0] < 0 || material.scissor[1] < 0) {
-        material.scissor[0] = 0;
-        material.scissor[1] = 0;
-        material.scissor[2] = width;
-        material.scissor[3] = height;
-      }
+      // Intersect the clip rect with the viewport. Clip rects may extend
+      // slightly outside it (modal dialogs by design; bottom/right-docked
+      // windows by fractional DPI rounding, since width/height are truncated
+      // ints while the scaled clip rect is not), and filament's scissor test
+      // rejects out-of-window rects. Never substitute a full-window scissor
+      // for an out-of-range one: that disables clipping entirely and lets
+      // scrolled-out widgets paint over the rest of the UI.
+      const float clip_x0 =
+          std::clamp(command.ClipRect.x, 0.0f, static_cast<float>(width));
+      const float clip_y0 =
+          std::clamp(command.ClipRect.y, 0.0f, static_cast<float>(height));
+      const float clip_x1 =
+          std::clamp(command.ClipRect.z, clip_x0, static_cast<float>(width));
+      const float clip_y1 =
+          std::clamp(command.ClipRect.w, clip_y0, static_cast<float>(height));
+      material.scissor[0] = clip_x0;
+      material.scissor[1] = height - clip_y1;
+      material.scissor[2] = clip_x1 - clip_x0;
+      material.scissor[3] = clip_y1 - clip_y0;
       mjrf_setRenderableMaterial(renderable.get(), &material);
 
       const float size[] = {scale.x, scale.y, 1.0f};
