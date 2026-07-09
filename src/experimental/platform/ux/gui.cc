@@ -525,7 +525,21 @@ void StepControlGui(StepControl* step_control, int& speed_index) {
                                  5.f * ImGui::GetStyle().FontScaleDpi,
                              ImGui::GetStyle().FramePadding.y));
 
-  const auto [misaligned, measured] = IsSpeedMisaligned(*step_control);
+  const auto [misaligned_now, measured] = IsSpeedMisaligned(*step_control);
+
+  // Hysteresis: IsSpeedMisaligned flips at exactly the 10% band edge, and
+  // measurement noise straddling it would toggle the preview text (and with
+  // it the combo width) every few frames — a toolbar-wide layout flicker.
+  // Require the state to leave a wider band before switching back.
+  static bool misaligned = false;
+  const float desired = step_control->GetSpeed();
+  const float deviation = std::abs(measured - desired);
+  misaligned = misaligned ? (deviation > 0.08f * desired)
+                          : (deviation > 0.12f * desired);
+  if (misaligned_now != misaligned && deviation > 0.2f * desired) {
+    misaligned = misaligned_now;  // far outside both bands: follow immediately
+  }
+
   char speed_preview[64];
   if (misaligned) {
     snprintf(speed_preview, sizeof(speed_preview), "%s %s (%-4.1f%%)",
@@ -535,7 +549,12 @@ void StepControlGui(StepControl* step_control, int& speed_index) {
              kPercentRealTime[speed_index]);
   }
 
-  ImGui::SetNextItemWidth(ImGui::CalcTextSize(speed_preview).x +
+  // Size the combo for the worst-case text so toggling the measured-speed
+  // suffix (or its digit count changing) never shifts the toolbar layout.
+  char speed_sizing[64];
+  snprintf(speed_sizing, sizeof(speed_sizing), "%s %s (-99.9%%)",
+           ICON_FA_TACHOMETER, kPercentRealTime[speed_index]);
+  ImGui::SetNextItemWidth(ImGui::CalcTextSize(speed_sizing).x +
                           ImGui::GetStyle().FramePadding.x * 2.f);
   if (ImGui::BeginCombo("##Speed", speed_preview,
                         ImGuiComboFlags_NoArrowButton)) {
