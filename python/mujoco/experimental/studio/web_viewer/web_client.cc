@@ -253,6 +253,14 @@ std::unordered_map<ClientTextureID, TextureEntry> gTextureCPU;
 std::vector<ImWchar> gPendingInputChars;
 float gMouseWheelPos[2] = {0, 0};
 
+// When true, the next CmdInput asks the client to send one uncompressed
+// draw frame (CmdInput::mCompressionSkip). Set on (re)connect and whenever
+// a delta frame arrives whose reference frame we don't have — without it,
+// a browser joining mid-stream drops every delta-compressed frame forever
+// and the remote UI never appears. Mirrors mbCompressionSkipOncePending in
+// NetImguiServer RemoteClient.
+bool gRequestKeyframe = true;
+
 //=================================================================================================
 // Debug logging functions — all diagnostic output is centralized here.
 // Each function encapsulates its own throttling logic so call sites stay clean.
@@ -544,6 +552,7 @@ void CaptureAndSendInput() {
   cmdInput.mFontDPIScaling = 1.f;
   cmdInput.mDesiredFps = 60.0f;
   cmdInput.mCompressionUse = gUseCompression;
+  cmdInput.mCompressionSkip = gRequestKeyframe;
 
   // Send mouse position and wheel only when the local UI is not capturing.
   if (!localWantsMouse) {
@@ -669,6 +678,9 @@ void CaptureAndSendInput() {
   pendingSend.pCommand = &cmdInput;
   pendingSend.SizeCurrent = 0;
   Network::DataSend(gClientSocket, pendingSend);
+  if (pendingSend.IsDone() && cmdInput.mCompressionSkip) {
+    gRequestKeyframe = false;
+  }
 }
 
 //=================================================================================================
@@ -695,9 +707,9 @@ void ProcessCmdDrawFrame(CmdDrawFrame* pCmdDrawFrame) {
       netImguiDeleteSafe(pCmdDrawFrame);
       pCmdDrawFrame = pUncompressedFrame;
     } else {
-      // Missing previous / reference frame data.
-      // Ignore this delta-encoded drawframe and wait for a new uncompressed
-      // keyframe.
+      // Missing previous / reference frame data. Ignore this delta-encoded
+      // drawframe and ask the client for a fresh uncompressed keyframe.
+      gRequestKeyframe = true;
       netImguiDeleteSafe(pCmdDrawFrame);
       return;
     }
@@ -867,6 +879,10 @@ void ProcessCmdDrawFrame(CmdDrawFrame* pCmdDrawFrame) {
   pCmdList->_IdxWritePtr = pCmdList->IdxBuffer.Data + pCmdList->IdxBuffer.Size;
   pCmdList->_VtxCurrentIdx = pCmdList->VtxBuffer.Size;
 
+  if (gRemoteDrawData == nullptr) {
+    LOG(Info, "First remote draw frame applied (%d cmds, %d vtx)",
+        pDrawData->CmdLists[0]->CmdBuffer.Size, pDrawData->TotalVtxCount);
+  }
   if (gRemoteDrawData) netImguiDelete(gRemoteDrawData);
   gRemoteDrawData = pDrawData;
 }
@@ -1050,6 +1066,9 @@ void MainLoopImpl() {
         debug_log_handshake_result(pendingSend.IsDone(), pendingSend.IsError(),
                                    sendAttempts, pendingSend.SizeCurrent);
         sHandshakeSent = true;
+        // Fresh connection: the client may resume delta compression against
+        // a frame from a previous session; ask for an uncompressed keyframe.
+        gRequestKeyframe = true;
       }
 
       // Input is sent after SDL events (Phase 2) so io.MouseWheel
