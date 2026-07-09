@@ -984,7 +984,29 @@ void UpdateAndShowTelemetryGUI() {
 //=================================================================================================
 // Main loop — called once per frame.
 //=================================================================================================
+void MainLoopImpl();
+
+// An exception escaping the RAF callback kills the main loop silently (the
+// canvas freezes on the last rendered frame and input capture stops, with
+// only an opaque "Uncaught <ptr>" in the console). Catch, log, and stop
+// explicitly instead.
 void MainLoop() {
+  try {
+    MainLoopImpl();
+  } catch (const std::exception& e) {
+    LOG(Error, "FATAL: uncaught exception in MainLoop: %s", e.what());
+#if defined(__EMSCRIPTEN__)
+    emscripten_cancel_main_loop();
+#endif
+  } catch (...) {
+    LOG(Error, "FATAL: uncaught non-std exception in MainLoop");
+#if defined(__EMSCRIPTEN__)
+    emscripten_cancel_main_loop();
+#endif
+  }
+}
+
+void MainLoopImpl() {
   static bool sHandshakeSent = false;
   static int sMainFrameCount = 0;
   static int sTotalCmdsReceived = 0;

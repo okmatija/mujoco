@@ -54,8 +54,18 @@ class MaterialManager {
   // end of the frame.
   void PrepareToRender();
 
-  // Removes any unused MaterialInstances.
+  // Removes any unused MaterialInstances. Instances that are still bound to a
+  // live Renderable (see AddBinding) are kept even if unused this frame:
+  // rebinding happens later in the frame than this call, so last frame's
+  // instances may still be attached to filament components, and destroying
+  // them then would trip filament's "still in use" precondition.
   void RemoveUnusedMaterials();
+
+  // Tracks how many Renderables currently have the MaterialInstance with the
+  // given key attached to their filament components. A key of 0 (no binding)
+  // is ignored.
+  void AddBinding(MaterialKey key);
+  void ReleaseBinding(MaterialKey key);
 
   // Returns a MaterialType that best matches the given material data and mesh.
   MaterialType GetMaterialType(const mjrfMaterial& material, const Mesh* mesh);
@@ -83,6 +93,7 @@ class MaterialManager {
   ObjectManager* object_mgr_;
   std::unordered_map<MaterialKey, filament::MaterialInstance*> instances_;
   std::unordered_set<MaterialKey> used_keys_;
+  std::unordered_map<MaterialKey, int> bind_counts_;
 };
 }  // namespace mujoco
 

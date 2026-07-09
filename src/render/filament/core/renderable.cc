@@ -62,6 +62,7 @@ Renderable::Renderable(filament::Engine* engine,
 }
 
 Renderable::~Renderable() noexcept {
+  material_mgr_->ReleaseBinding(bound_key_);
   filament::Engine* engine = GetEngine();
   utils::EntityManager& em = utils::EntityManager::get();
   for (Part& part : parts_) {
@@ -387,13 +388,16 @@ void Renderable::BindMaterialInstance(const mjrfRenderRequest& request) {
 MaterialManager::MaterialKey Renderable::SetMaterialInstance(
     MaterialManager::MaterialKey key) {
   MaterialManager::MaterialKey prev = curr_state_.material_key;
-  if (key != curr_state_.material_key) {
+  if (key != bound_key_) {
     filament::MaterialInstance* instance = material_mgr_->GetInstance(key);
     filament::RenderableManager& rm = GetEngine()->getRenderableManager();
     for (Part& part : parts_) {
       filament::RenderableManager::Instance ri = rm.getInstance(part.entity);
       rm.setMaterialInstanceAt(ri, 0, instance);
     }
+    material_mgr_->ReleaseBinding(bound_key_);
+    material_mgr_->AddBinding(key);
+    bound_key_ = key;
   }
   return prev;
 }

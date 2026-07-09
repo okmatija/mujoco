@@ -58,6 +58,11 @@ if(EMSCRIPTEN)
     -Wl,--whole-archive $<TARGET_FILE:mujoco> -Wl,--no-whole-archive
   )
 
+  # Compile with exception support so the try/catch around MainLoop can
+  # catch throws escaping the RAF callback (emscripten disables EH by
+  # default at compile time; -fexceptions below only covers linking).
+  target_compile_options(web_client PRIVATE -fexceptions)
+
   # Filament's OpenGL backend requires WebGL2 / full ES3 bindings.
   target_link_options(web_client PRIVATE
     --bind

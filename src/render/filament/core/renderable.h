@@ -176,6 +176,11 @@ class Renderable : public mjrfRenderable {
   mjrfMaterial material_;
   std::deque<DrawState> draw_queue_;
   DrawState curr_state_;
+  // Key of the MaterialInstance currently attached to the filament
+  // components (0 = none). Tracked separately from curr_state_ because
+  // Prepare() resets curr_state_ while the components stay bound until the
+  // next BindMaterialInstance.
+  MaterialManager::MaterialKey bound_key_ = 0;
   filament::Scene* assigned_scene_ = nullptr;
   std::vector<Part> parts_;
   filament::math::mat4f transform_;
