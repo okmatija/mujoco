@@ -17,7 +17,6 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
-#include <cstdio>
 #include <cstring>
 #include <memory>
 #include <utility>
@@ -222,22 +221,8 @@ void ImguiBridge::Update() {
     return;
   }
 
-  // Defer destroying last frame's meshes by one frame: they may still be
-  // referenced by the in-flight render, and destroying GPU buffers mid-use
-  // is driver-dependent (harmless on some, corrupted draws on others).
-  prev_meshes_ = std::move(meshes_);
   meshes_.clear();
   int renderable_index = 0;
-
-  // Diagnostic fingerprint of everything this pass assigns (scissors,
-  // textures, element counts). Logged on change (capped): if pixels
-  // alternate while this stays constant, the variance is below the bridge
-  // (GPU resource lifecycle), not in draw-data processing.
-  uint64_t frame_hash = 1469598103934665603ull;
-  auto mix = [&frame_hash](uint64_t v) {
-    frame_hash ^= v;
-    frame_hash *= 1099511628211ull;
-  };
   for (int n = 0; n < commands->CmdListsCount; ++n) {
     const ImDrawList* cmds = commands->CmdLists[n];
 
@@ -302,30 +287,9 @@ void ImguiBridge::Update() {
       const float size[] = {scale.x, scale.y, 1.0f};
       mjrf_setRenderableSize(renderable.get(), size);
 
-      mix(static_cast<uint64_t>(material.scissor[0] * 8.f));
-      mix(static_cast<uint64_t>(material.scissor[1] * 8.f));
-      mix(static_cast<uint64_t>(material.scissor[2] * 8.f));
-      mix(static_cast<uint64_t>(material.scissor[3] * 8.f));
-      mix(reinterpret_cast<uintptr_t>(material.color_texture));
-      mix(command.ElemCount);
-
       index_offset += command.ElemCount;
       ++renderable_index;
     }
-  }
-
-  static uint64_t last_frame_hash = 0;
-  static int hash_logs = 0;
-  static uint32_t frames_since_change = 0;
-  ++frames_since_change;
-  if (frame_hash != last_frame_hash && hash_logs < 40) {
-    std::fprintf(stderr,
-                 "[bridgehash] %016llx cmds=%d (stable for %u frames)\n",
-                 static_cast<unsigned long long>(frame_hash), renderable_index,
-                 frames_since_change);
-    last_frame_hash = frame_hash;
-    hash_logs++;
-    frames_since_change = 0;
   }
 }
 

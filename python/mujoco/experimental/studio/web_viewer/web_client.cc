@@ -894,41 +894,6 @@ void ProcessCmdDrawFrame(CmdDrawFrame* pCmdDrawFrame) {
     LOG(Info, "First remote draw frame applied (%d cmds, %d vtx)",
         pDrawData->CmdLists[0]->CmdBuffer.Size, pDrawData->TotalVtxCount);
   }
-
-  // Fingerprint the frame's clip rects: if the fingerprint alternates
-  // between values while the UI is idle, the incoming draw data itself
-  // alternates (remote/transport bug); if it stays constant while pixels
-  // flicker, the local rendering of identical data is at fault.
-  {
-    uint64_t h = 1469598103934665603ull;
-    auto mix = [&h](uint32_t v) {
-      h ^= v;
-      h *= 1099511628211ull;
-    };
-    const ImDrawList* dl = pDrawData->CmdLists[0];
-    for (int i = 0; i < dl->CmdBuffer.Size; ++i) {
-      const ImVec4& r = dl->CmdBuffer[i].ClipRect;
-      mix(static_cast<uint32_t>(r.x * 8.f));
-      mix(static_cast<uint32_t>(r.y * 8.f));
-      mix(static_cast<uint32_t>(r.z * 8.f));
-      mix(static_cast<uint32_t>(r.w * 8.f));
-      mix(dl->CmdBuffer[i].ElemCount);
-    }
-    static uint64_t sLastHash = 0;
-    static int sHashLogs = 0;
-    static uint32_t sFramesSinceChange = 0;
-    ++sFramesSinceChange;
-    if (h != sLastHash && sHashLogs < 60) {
-      LOG(Info,
-          "[drawhash] %08x%08x cmds=%d vtx=%d (stable for %u frames)",
-          static_cast<uint32_t>(h >> 32), static_cast<uint32_t>(h),
-          dl->CmdBuffer.Size, pDrawData->TotalVtxCount, sFramesSinceChange);
-      sLastHash = h;
-      sHashLogs++;
-      sFramesSinceChange = 0;
-    }
-  }
-
   if (gRemoteDrawData) netImguiDelete(gRemoteDrawData);
   gRemoteDrawData = pDrawData;
 }
@@ -1299,51 +1264,6 @@ void MainLoopImpl() {
   // call to ImGui::NewFrame().
   if (gRemoteDrawData && gRemoteDrawData->Valid) {
     ImDrawData* localDrawData = ImGui::GetDrawData();
-    // One-shot coordinate-space dump: every scale/clip bug so far has been a
-    // units mismatch between these quantities.
-    static bool sDumpedCoords = false;
-    if (!sDumpedCoords && localDrawData) {
-      sDumpedCoords = true;
-      const ImGuiIO& dio = ImGui::GetIO();
-      LOG(Info,
-          "[coords] local io.DisplaySize=%.1fx%.1f FramebufferScale=%.2fx%.2f"
-          " window=%dx%d canvasScale=%.2f",
-          dio.DisplaySize.x, dio.DisplaySize.y, dio.DisplayFramebufferScale.x,
-          dio.DisplayFramebufferScale.y, g_app.window->GetWidth(),
-          g_app.window->GetHeight(), g_app.window->GetScale());
-      LOG(Info,
-          "[coords] localDrawData DisplaySize=%.1fx%.1f Pos=%.1f,%.1f"
-          " FbScale=%.2f | remote DisplaySize=%.1fx%.1f Pos=%.1f,%.1f"
-          " FbScale=%.2f",
-          localDrawData->DisplaySize.x, localDrawData->DisplaySize.y,
-          localDrawData->DisplayPos.x, localDrawData->DisplayPos.y,
-          localDrawData->FramebufferScale.x, gRemoteDrawData->DisplaySize.x,
-          gRemoteDrawData->DisplaySize.y, gRemoteDrawData->DisplayPos.x,
-          gRemoteDrawData->DisplayPos.y, gRemoteDrawData->FramebufferScale.x);
-      auto dump_list = [](const char* tag, const ImDrawList* dl) {
-        if (!dl || dl->VtxBuffer.Size == 0) return;
-        float vx0 = 1e9f, vy0 = 1e9f, vx1 = -1e9f, vy1 = -1e9f;
-        for (int v = 0; v < dl->VtxBuffer.Size; ++v) {
-          const ImVec2& p = dl->VtxBuffer[v].pos;
-          vx0 = std::min(vx0, p.x); vy0 = std::min(vy0, p.y);
-          vx1 = std::max(vx1, p.x); vy1 = std::max(vy1, p.y);
-        }
-        float cx0 = 1e9f, cy0 = 1e9f, cx1 = -1e9f, cy1 = -1e9f;
-        for (int c = 0; c < dl->CmdBuffer.Size; ++c) {
-          const ImVec4& r = dl->CmdBuffer[c].ClipRect;
-          cx0 = std::min(cx0, r.x); cy0 = std::min(cy0, r.y);
-          cx1 = std::max(cx1, r.z); cy1 = std::max(cy1, r.w);
-        }
-        LOG(Info,
-            "[coords] %s: %d cmds, vtx bounds (%.1f,%.1f)-(%.1f,%.1f),"
-            " clip bounds (%.1f,%.1f)-(%.1f,%.1f)",
-            tag, dl->CmdBuffer.Size, vx0, vy0, vx1, vy1, cx0, cy0, cx1, cy1);
-      };
-      dump_list("remote", gRemoteDrawData->CmdLists[0]);
-      if (localDrawData->CmdListsCount > 0) {
-        dump_list("local", localDrawData->CmdLists[0]);
-      }
-    }
     if (localDrawData) {
       // Save local draw lists.
       ImVector<ImDrawList*> localLists;
@@ -1504,14 +1424,6 @@ static void RegisterAssetProviders() {
 }
 
 int main(int argc, char** argv) {
-#if defined(__EMSCRIPTEN__)
-  // Diagnostic: ?nocompress=1 disables NetImgui delta compression so the
-  // client streams full draw frames every frame.
-  gUseCompression = !EM_ASM_INT({
-    return new URLSearchParams(window.location.search).has("nocompress") ? 1
-                                                                         : 0;
-  });
-#endif
   RegisterAssetProviders();
 
   mujoco::platform::Window::Config config;

@@ -230,14 +230,7 @@ class ViewerApp:
   def build_gui(self) -> None:
     """Emit full Studio UI."""
     ux.setup_theme(self.theme)
-    dock_rect = ux.configure_docking_layout()
-    # An unstable dock rect means the whole layout shifts and re-clips every
-    # frame (visible as UI-wide flicker), so make changes loud.
-    dock_key = repr(dock_rect)
-    if dock_key != getattr(self, '_last_dock_rect', None):
-      print(f'[dock] central rect changed: '
-            f'{getattr(self, "_last_dock_rect", None)} -> {dock_key}', flush=True)
-      self._last_dock_rect = dock_key
+    ux.configure_docking_layout()
 
     # -- Main menu bar --------------------------------------------------------
     if imgui.BeginMainMenuBar():
