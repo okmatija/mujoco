@@ -46,6 +46,48 @@
         Module.canvas.style.width = window.innerWidth + "px";
         Module.canvas.style.height = window.innerHeight + "px";
       });
+      // Diagnostic hook: ?ubocheck=1 reports which named uniform block is
+      // bound with a range smaller than the shader declares (the cause of
+      // WebGL "uniform buffer too small" errors, which don't name the block).
+      if (new URLSearchParams(location.search).has("ubocheck")) {
+        const P = WebGL2RenderingContext.prototype;
+        const bound = new Map();  // binding index -> bound size
+        const origRange = P.bindBufferRange;
+        P.bindBufferRange = function (target, index, buffer, offset, size) {
+          if (target === this.UNIFORM_BUFFER) bound.set(index, size);
+          return origRange.call(this, target, index, buffer, offset, size);
+        };
+        const origBase = P.bindBufferBase;
+        P.bindBufferBase = function (target, index, buffer) {
+          if (target === this.UNIFORM_BUFFER) bound.set(index, Infinity);
+          return origBase.call(this, target, index, buffer);
+        };
+        const reported = new Set();
+        const origDraw = P.drawElementsInstanced;
+        P.drawElementsInstanced = function (...args) {
+          const prog = this.getParameter(this.CURRENT_PROGRAM);
+          if (prog) {
+            const n = this.getProgramParameter(prog, this.ACTIVE_UNIFORM_BLOCKS);
+            for (let i = 0; i < n; i++) {
+              const need = this.getActiveUniformBlockParameter(
+                  prog, i, this.UNIFORM_BLOCK_DATA_SIZE);
+              const binding = this.getActiveUniformBlockParameter(
+                  prog, i, this.UNIFORM_BLOCK_BINDING);
+              const have = bound.get(binding);
+              if (have !== undefined && have < need) {
+                const name = this.getActiveUniformBlockName(prog, i);
+                const key = `${name}:${have}<${need}`;
+                if (!reported.has(key)) {
+                  reported.add(key);
+                  console.error(`[ubocheck] block '${name}' binding=${binding}` +
+                                ` bound=${have} < needed=${need}`);
+                }
+              }
+            }
+          }
+          return origDraw.apply(this, args);
+        };
+      }
       // Diagnostic hook: ?autosweep=1 sweeps synthetic mouse moves across
       // the canvas, so hover-triggered failures reproduce in a headless
       // browser with no human input.
