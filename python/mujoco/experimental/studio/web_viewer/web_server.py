@@ -71,34 +71,22 @@ def _run_cancellable(main_loop_func):
 
 
 def _find_live_files_dir() -> Optional[str]:
-  """Locate the MuJoCo Live static files (index.html, WASM) via runfiles."""
-  # When run via `blaze run`, runfiles are available relative to the binary.
-  # The live_wasm outputs are at the live_dir directory below
-  runfiles_dir = os.environ.get("RUNFILES_DIR")
-  if not runfiles_dir:
-    # Try to find runfiles relative to the current binary.
-    binary_path = os.path.abspath(__file__)
-    # Walk up to find the .runfiles directory.
-    parts = binary_path.split(os.sep)
-    for i in range(len(parts) - 1, -1, -1):
-      if parts[i].endswith(".runfiles"):
-        runfiles_dir = os.sep.join(parts[: i + 1])
-        break
+  """Locate the web viewer static files (index.html, WASM).
 
-  if not runfiles_dir:
-    return None
+  The `dist` directory next to this file is populated by the Emscripten build
+  of the `web_client` target (web_client.js/.wasm/.data, index.html and the
+  Filament assets). Set MUJOCO_WEB_VIEWER_DIST to serve from a different
+  directory (e.g. an Emscripten build tree).
+  """
+  env_dir = os.environ.get("MUJOCO_WEB_VIEWER_DIST")
+  if env_dir:
+    if os.path.isdir(env_dir):
+      return env_dir
+    logger.warning(f"[Link] MUJOCO_WEB_VIEWER_DIST is not a directory: {env_dir}")
 
-  live_dir = os.path.join(
-      runfiles_dir,
-      "google3",
-      "third_party",
-      "mujoco",
-      "src",
-      "experimental",
-      "py",
-  )
-  if os.path.isdir(live_dir):
-    return live_dir
+  dist_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dist")
+  if os.path.isdir(dist_dir):
+    return dist_dir
 
   return None
 
@@ -528,8 +516,7 @@ class LiveServer:
   2. A WebSocket-to-TCP proxy that bridges the NetImgui protocol between
      the C++ LinkServer and the browser.
 
-  Externally: run example_link.py, visit http://localhost:8080.
-  Internally (Google): Requires SSH port forwarding for remote access.
+  Run the simulation with the web viewer, then visit http://localhost:8080.
   """
 
   def __init__(

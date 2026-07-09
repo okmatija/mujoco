@@ -173,6 +173,13 @@ endif()
 
 # WASM Live target.
 if(EMSCRIPTEN)
+    # Browser client for the Python web viewer (streams a Python-side
+    # simulation and its ImGui UI into the browser via NetImgui).
+    add_subdirectory(
+        ${PROJECT_SOURCE_DIR}/python/mujoco/experimental/studio/web_viewer
+        ${CMAKE_CURRENT_BINARY_DIR}/web_viewer
+    )
+
     add_executable(mujoco_studio)
     target_sources(mujoco_studio PRIVATE emscripten.cc)
     target_compile_options(mujoco_studio PRIVATE -g)

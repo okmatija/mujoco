@@ -16,7 +16,7 @@
 #include "NetImgui_Client.h"
 #include "NetImgui_CmdPackets.h"
 #include "NetImgui_Network.h"
-#include "third_party/netimgui/google/logging.h"
+#include "google/logging.h"
 
 using namespace NetImgui::Internal;
 

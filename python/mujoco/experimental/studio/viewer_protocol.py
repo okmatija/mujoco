@@ -23,7 +23,6 @@ from mujoco.experimental.studio import endpoints
 from mujoco.experimental.studio import handler_registry
 from mujoco.experimental.studio import messages
 from mujoco.experimental.studio import ux
-import numpy as np
 
 GFX_MODES = (
     'classic',
@@ -58,31 +57,6 @@ class ViewerConfig:
   height: int = 800
   gfx: str = ''
   viewer_mode: ViewerMode = ViewerMode.NATIVE
-
-
-# Legacy message types kept for backward compatibility.
-# Will be removed when callers are migrated.
-
-
-@dataclasses.dataclass
-class SimToView:
-  """A message sent from the simulation to the viewer."""
-
-  model: mujoco.MjModel | None = None
-  state: np.ndarray | None = None
-  state_sig: int = 0
-  user_data: dict[str, Any] = dataclasses.field(default_factory=dict)
-
-
-@dataclasses.dataclass
-class ViewToSim:
-  """A message sent from the viewer to the simulation."""
-
-  state: np.ndarray | None = None
-  state_sig: int = 0
-  reset: bool = False
-  send_rate: float = 60.0
-  user_data: dict[str, Any] = dataclasses.field(default_factory=dict)
 
 
 # -----------------------------------------------------------------------------

@@ -6,7 +6,7 @@
 //    terminate the linked list when appending a new texture command.
 //  - Added logging for network events.
 #include "NetImgui_Shared.h"
-#include "third_party/netimgui/google/logging.h"
+#include "google/logging.h"
 
 #if NETIMGUI_ENABLED
 #include <stdio.h>

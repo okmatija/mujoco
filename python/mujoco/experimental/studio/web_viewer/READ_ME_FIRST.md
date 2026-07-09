@@ -6,7 +6,7 @@ browser using NetImgui for the Dear ImGui UI and Filament for 3D rendering.
 
 ## What was copied
 
-### `experimental/studio/` (this directory)
+### `experimental/studio/web_viewer/` (this directory)
 
 Files from `//third_party/py/mujoco/experimental/studio/` in the CL:
 

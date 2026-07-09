@@ -1,6 +1,6 @@
 // NetImgui WASM Viewer — renders remote ImGui draw data in a browser.
-// Google-specific code that bridges the NetImgui server protocol to a
-// WebGL/SDL2/Emscripten rendering context.
+// Bridges the NetImgui server protocol to a WebGL/SDL2/Emscripten rendering
+// context.
 
 #include <SDL.h>
 #include <SDL_opengl.h>
@@ -11,27 +11,29 @@
 
 #include <algorithm>
 #include <cinttypes>
+#include <cstddef>
 #include <cstring>
+#include <fstream>
 #include <iostream>
 #include <memory>
 #include <span>
+#include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
+#include <imgui.h>
+#include <implot.h>
+#include <mujoco/mujoco.h>
 #include "NetImgui_Api.h"
 #include "NetImgui_CmdPackets.h"
 #include "NetImgui_Network.h"
-#include "third_party/dear_imgui/backends/imgui_impl_sdl2.h"
-#include "third_party/dear_imgui/imgui.h"
-#include "third_party/implot/implot.h"
-#include "third_party/mujoco/include/mujoco.h"
-#include "third_party/mujoco/src/experimental/filament/render_context_filament.h"
-#include "third_party/mujoco/src/experimental/platform/hal/renderer.h"
-#include "third_party/mujoco/src/experimental/platform/hal/window.h"
-#include "third_party/mujoco/src/experimental/platform/sim/model_holder.h"
-#include "third_party/mujoco/src/experimental/platform/ux/interaction.h"
-#include "third_party/netimgui/google/logging.h"
-#include "third_party/py/mujoco/experimental/studio/live_state.h"
+#include "experimental/platform/hal/renderer.h"
+#include "experimental/platform/hal/window.h"
+#include "experimental/platform/sim/model_holder.h"
+#include "experimental/platform/ux/interaction.h"
+#include "google/logging.h"
+#include "live_state.h"
 
 #if defined(__EMSCRIPTEN__)
 #include <emscripten.h>
@@ -46,7 +48,7 @@
 extern "C" GLenum __wrap_glGetError(void) { return GL_NO_ERROR; }
 #endif
 
-using mujoco::link::kLiveStateSize;
+using mujoco::studio::kLiveStateSize;
 
 struct AppState {
   std::unique_ptr<mujoco::platform::Window> window;
@@ -1315,7 +1317,63 @@ void OnFetchError(emscripten_fetch_t* fetch) {
 
 #endif
 
+// Loads an asset from the Emscripten virtual filesystem. The Filament assets
+// (materials, IBL) are bundled into web_client.data at link time via
+// --preload-file and mounted at /assets.
+static std::vector<std::byte> LoadAsset(std::string_view path) {
+  std::string_view subpath = path.substr(path.find(':') + 1);
+  std::string file_path = std::string("/assets/") + std::string(subpath);
+
+  std::ifstream file(file_path, std::ios::binary | std::ios::ate);
+  if (!file.is_open()) {
+    return {};
+  }
+  auto file_size = file.tellg();
+  file.seekg(0, std::ios::beg);
+  std::vector<std::byte> buffer(file_size);
+  if (!file.read(reinterpret_cast<char*>(buffer.data()), file_size)) {
+    return {};
+  }
+  return buffer;
+}
+
+// Holds loaded resource data for the MuJoCo resource provider.
+struct ResourceData {
+  std::vector<std::byte> bytes;
+};
+
+// Registers a resource provider so that "filament:" asset requests from the
+// renderer resolve to the preloaded /assets files.
+static void RegisterAssetProviders() {
+  mjpResourceProvider resource_provider;
+  mjp_defaultResourceProvider(&resource_provider);
+
+  resource_provider.open = [](mjResource* resource) {
+    auto* data = new ResourceData();
+    data->bytes = LoadAsset(resource->name);
+    if (data->bytes.empty()) {
+      delete data;
+      return 0;
+    }
+    resource->data = data;
+    return static_cast<int>(data->bytes.size());
+  };
+  resource_provider.read = [](mjResource* resource, const void** buffer) {
+    auto* data = static_cast<ResourceData*>(resource->data);
+    *buffer = data->bytes.data();
+    return static_cast<int>(data->bytes.size());
+  };
+  resource_provider.close = [](mjResource* resource) {
+    delete static_cast<ResourceData*>(resource->data);
+    resource->data = nullptr;
+  };
+  resource_provider.prefix = "filament";
+  mjp_registerResourceProvider(&resource_provider);
+}
+
 int main(int argc, char** argv) {
+  RegisterAssetProviders();
+
   mujoco::platform::Window::Config config;
   config.gfx_mode = mujoco::platform::GraphicsMode::FilamentWebGl;
   config.load_fonts = false;

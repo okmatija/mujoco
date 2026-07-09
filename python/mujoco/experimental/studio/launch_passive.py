@@ -93,7 +93,6 @@ def run_viewer_target(
 
   Raises:
     ValueError: If the viewer mode requested in config is unknown.
-    NotImplementedError: If web mode is requested.
   """
 
   if config.viewer_mode == viewer_protocol.ViewerMode.NATIVE:
@@ -103,7 +102,9 @@ def run_viewer_target(
         config, viewer_endpoint, handlers=handlers
     )
   elif config.viewer_mode == viewer_protocol.ViewerMode.WEB:
-    raise NotImplementedError('Web viewer not implemented yet')
+    from mujoco.experimental.studio.web_viewer import web_viewer  # pylint: disable=g-import-not-at-top
+
+    viewer = web_viewer.WebViewer(config, viewer_endpoint, handlers=handlers)
   else:
     raise ValueError(f'Unknown viewer mode: {config.viewer_mode!r}')
 

@@ -19,7 +19,7 @@
 #include <vector>
 
 #include "NetImgui_CmdPackets.h"
-#include "third_party/netimgui/google/logging.h"
+#include "google/logging.h"
 
 namespace NetImgui {
 namespace Internal {

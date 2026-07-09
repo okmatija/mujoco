@@ -4,7 +4,7 @@
 //    in read-only memory by the compiler.
 //  - Added logging for network events.
 #include "NetImgui_Shared.h"
-#include "third_party/netimgui/google/logging.h"
+#include "google/logging.h"
 
 #if defined(_MSC_VER)
 #pragma warning(disable : 4221)
@@ -18,6 +18,8 @@
 #include <stdio.h>
 #include <sys/socket.h>
 #include <sys/types.h>
+
+#include <string>  // Required for std::string / std::to_string with GCC
 #include <time.h>
 #include <unistd.h>
 

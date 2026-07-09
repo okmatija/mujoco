@@ -433,6 +433,7 @@ setuptools.setup(
         CMakeExtension('mujoco.experimental.studio.renderer'),
         CMakeExtension('mujoco.experimental.studio.ux'),
         CMakeExtension('mujoco.experimental.studio.sim'),
+        CMakeExtension('mujoco.experimental.studio.web_viewer.ui_server'),
         # ImGui/ImPlot extensions
         CMakeExtension('mujoco.experimental.dear_imgui.dear_imgui'),
         CMakeExtension('mujoco.experimental.implot.implot'),

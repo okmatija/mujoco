@@ -1,67 +1,80 @@
-// MuJoCo Link
+// Copyright 2026 DeepMind Technologies Limited
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// MuJoCo web viewer UI server.
 //
 // A Python module to stream a MuJoCo simulation and ImGui UI to the browser.
 //
-// This pybind11 module provides a lightweight Viewer class that:
+// This pybind11 module provides a lightweight UiServer class that:
 // 1. Creates a headless ImGui context (no window, no renderer).
 // 2. Connects as a netimgui client, streaming ImGui draw data to a remote
 //    viewer.
 // 3. Receives input events from the remote viewer and injects them into
 //    the ImGui context.
 
-#include <string.h>
-#include <sys/time.h>
-
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
+#include <cstring>
+#include <filesystem>  // NOLINT(build/c++17)
+#include <fstream>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
-#include "file/base/helpers.h"
-#include "file/base/options.h"
-#include "file/base/path.h"
-#include "third_party/dear_imgui/imgui.h"
-#include "third_party/implot/implot.h"
-#include "third_party/mujoco/google/runfiles/runfiles.h"
-#include "third_party/mujoco/include/mujoco.h"
-#include "third_party/netimgui/Code/Client/NetImgui_Api.h"
-#include "third_party/netimgui/google/logging.h"
-#include "third_party/py/mujoco/experimental/studio/live_state.h"
-#include "third_party/py/mujoco/structs.h"
-#include "third_party/pybind11/include/pybind11/pybind11.h"
-#include "third_party/pybind11/include/pybind11/stl.h"
+#include <imgui.h>
+#include <implot.h>
+#include <mujoco/mujoco.h>
+#include "NetImgui_Api.h"
+#include "google/logging.h"
+#include "live_state.h"
+#include "structs.h"
+#include <pybind11/pybind11.h>
+#include <pybind11/stl.h>
 
 namespace py = pybind11;
 
-static std::vector<std::byte> LoadFontAsset(std::string_view filename) {
-  constexpr char kFontPath[] =
-      "third_party/mujoco/src/experimental/platform/data/";
+// Loads a font file from the given assets directory. Returns an empty vector
+// if the file cannot be read; fonts are optional and ImGui falls back to its
+// built-in font.
+static std::vector<std::byte> LoadFontAsset(const std::string& assets_dir,
+                                            std::string_view filename) {
+  if (assets_dir.empty()) return {};
+  const std::string file_path =
+      (std::filesystem::path(assets_dir) / filename).string();
 
-  auto runfiles_dir = mujoco::GetRunfilesDir();
-  if (!runfiles_dir.ok()) return {};
-
-  std::string file_path =
-      file::JoinPath(runfiles_dir.value(), "google3", kFontPath, filename);
-
-  // Fonts are optional — if not found, ImGui will use its built-in font.
-  std::string contents;
-  if (!file::GetContents(file_path, &contents, file::Defaults()).ok()) {
+  std::ifstream file(file_path, std::ios::binary | std::ios::ate);
+  if (!file.is_open()) {
     return {};
   }
-
-  std::vector<std::byte> buffer(contents.size());
-  memcpy(buffer.data(), contents.data(), contents.size());
+  auto file_size = file.tellg();
+  file.seekg(0, std::ios::beg);
+  std::vector<std::byte> buffer(file_size);
+  if (!file.read(reinterpret_cast<char*>(buffer.data()), file_size)) {
+    return {};
+  }
   return buffer;
 }
 
-// Headless ImGui + netimgui viewer for MuJoCo Link.
+// Headless ImGui + netimgui viewer for the MuJoCo web viewer.
 //
 // This class manages a headless ImGui context that streams its draw data
-// via the netimgui protocol to a remote viewer. Unlike the pyviewer's Viewer
-// class (viewer.cc), this does NOT create a window, initialize a renderer,
-// or handle mouse/keyboard input directly. All rendering and input handling
-// happens on the remote client (MuJoCo Live in the browser).
+// via the netimgui protocol to a remote viewer. Unlike the NativeViewer's
+// Viewer class (native_viewer.cc), this does NOT create a window, initialize
+// a renderer, or handle mouse/keyboard input directly. All rendering and
+// input handling happens on the remote client (web_client.cc in the browser).
 //
 // The lifecycle follows the SampleNoBackend pattern:
 //   Client_Startup()   — create context, load fonts, init NetImgui
@@ -70,8 +83,9 @@ static std::vector<std::byte> LoadFontAsset(std::string_view filename) {
 
 // Initialize the Dear ImGui Context and the NetImgui library.
 // Based on SampleNoBackend::Client_Startup() from
-// //third_party/netimgui/Samples/SampleNoBackend/SampleNoBackend.cpp
-static bool Client_Startup(ImGuiContext*& context) {
+// netimgui/Code/Sample/SampleNoBackend/SampleNoBackend.cpp
+static bool Client_Startup(ImGuiContext*& context,
+                           const std::string& assets_dir) {
   IMGUI_CHECKVERSION();
   context = ImGui::CreateContext();
   ImGui::SetCurrentContext(context);
@@ -101,8 +115,9 @@ static bool Client_Startup(ImGuiContext*& context) {
 
   ImGui::StyleColorsLight();
 
-  auto main_font_data = LoadFontAsset("OpenSans-Regular.ttf");
-  auto icon_font_data = LoadFontAsset("fontawesome-webfont.ttf");
+  auto main_font_data =
+      LoadFontAsset(assets_dir, "AtkinsonHyperlegibleNext[wght].ttf");
+  auto icon_font_data = LoadFontAsset(assets_dir, "fontawesome-webfont.ttf");
 
   if (!main_font_data.empty()) {
     void* font_copy = ImGui::MemAlloc(main_font_data.size());
@@ -135,7 +150,7 @@ static bool Client_Startup(ImGuiContext*& context) {
 
 // Release resources.
 // Based on SampleNoBackend::Client_Shutdown() from
-// //third_party/netimgui/Samples/SampleNoBackend/SampleNoBackend.cpp
+// netimgui/Code/Sample/SampleNoBackend/SampleNoBackend.cpp
 static void Client_Shutdown(ImGuiContext*& context) {
   NetImgui::Shutdown();
   ImPlot::DestroyContext();
@@ -147,7 +162,7 @@ static void Client_Shutdown(ImGuiContext*& context) {
 
 // Manage connection to the netimgui proxy.
 // Based on SampleNoBackend::Client_Connect() from
-// //third_party/netimgui/Samples/SampleNoBackend/SampleNoBackend.cpp
+// netimgui/Code/Sample/SampleNoBackend/SampleNoBackend.cpp
 static void Client_Connect(const char* title, int port) {
   bool connected = NetImgui::IsConnected();
   bool pending = NetImgui::IsConnectionPending();
@@ -169,10 +184,11 @@ static void Client_Connect(const char* title, int port) {
   }
 }
 
-class LinkServer {
+class UiServer {
  public:
-  LinkServer(const std::string& title, int port) : title_(title), port_(port) {
-    if (!Client_Startup(context_)) {
+  UiServer(const std::string& title, int port, const std::string& assets_dir)
+      : title_(title), port_(port) {
+    if (!Client_Startup(context_, assets_dir)) {
       return;
     }
 
@@ -186,11 +202,12 @@ class LinkServer {
         NetImgui::IsConnectionPending() ? "true" : "false");
   }
 
-  ~LinkServer() { Client_Shutdown(context_); }
+  ~UiServer() { Client_Shutdown(context_); }
 
   bool IsConnected() const { return NetImgui::IsConnected(); }
 
   bool NewFrame() {
+    py::gil_scoped_release no_gil;
     ImGui::SetCurrentContext(context_);
     static int frame_count = 0;
     frame_count++;
@@ -199,7 +216,19 @@ class LinkServer {
     // This ensures that every call to NewFrame() that returns true
     // guarantees an active ImGui frame, eliminating the need for
     // is_frame_active() in the Python API.
+    auto last_signal_check = std::chrono::steady_clock::now();
     while (true) {
+      // While blocked (e.g. no browser connected), periodically check for
+      // Python signals so Ctrl+C interrupts the wait instead of hanging.
+      auto now = std::chrono::steady_clock::now();
+      if (now - last_signal_check > std::chrono::milliseconds(200)) {
+        last_signal_check = now;
+        py::gil_scoped_acquire acquire;
+        if (PyErr_CheckSignals() != 0) {
+          throw py::error_already_set();
+        }
+      }
+
       Client_Connect(title_.c_str(), port_);
 
       if (!NetImgui::IsConnected()) {
@@ -226,6 +255,7 @@ class LinkServer {
   }
 
   void EndFrame() {
+    py::gil_scoped_release no_gil;
     ImGui::SetCurrentContext(context_);
     static int end_frame_count = 0;
     end_frame_count++;
@@ -237,21 +267,21 @@ class LinkServer {
     NetImgui::EndFrame();
   }
 
-  // Serialize visualization state as raw bytes for the Live browser app.
+  // Serialize visualization state as raw bytes for the browser app.
   py::bytes GetVisState(const mujoco::python::MjvCameraWrapper& camera,
                         const mujoco::python::MjvOptionWrapper& vis_options,
                         const mujoco::python::MjModelWrapper& model,
                         const std::vector<uint8_t>& render_flags) {
-    auto buffer = mujoco::link::SerializeLiveState(
+    auto buffer = mujoco::studio::SerializeLiveState(
         *camera.get(), *vis_options.get(), model.get()->opt, model.get()->vis,
         model.get()->stat, render_flags);
     return py::bytes(buffer.data(), buffer.size());
   }
 
   // Returns the fixed size of the visualization state in bytes.
-  static int GetVisStateSize() { return mujoco::link::kLiveStateSize; }
+  static int GetVisStateSize() { return mujoco::studio::kLiveStateSize; }
 
-  uint64_t GetContext() const { return reinterpret_cast<uint64_t>(context_); }
+  intptr_t GetContext() const { return reinterpret_cast<intptr_t>(context_); }
 
  private:
   std::string title_;
@@ -260,16 +290,18 @@ class LinkServer {
   bool is_drawing_remote_ = false;
 };
 
-PYBIND11_MODULE(ui_server, m) {
-  m.doc() = "MuJoCo Link Server: NetImgui UI server and state streaming";
+PYBIND11_MODULE(ui_server, m, pybind11::mod_gil_not_used()) {
+  py::module_::import("mujoco._structs");
+  m.doc() = "MuJoCo web viewer UI server: NetImgui client and state streaming";
 
-  py::class_<LinkServer>(m, "LinkServer")
-      .def(py::init<const std::string&, int>(), py::arg("title"),
-           py::arg("port") = 8888)
-      .def("is_connected", &LinkServer::IsConnected)
-      .def("new_frame", &LinkServer::NewFrame)
-      .def("end_frame", &LinkServer::EndFrame)
-      .def("get_context", &LinkServer::GetContext)
-      .def("get_vis_state", &LinkServer::GetVisState)
-      .def_static("get_vis_state_size", &LinkServer::GetVisStateSize);
+  py::class_<UiServer>(m, "UiServer")
+      .def(py::init<const std::string&, int, const std::string&>(),
+           py::arg("title"), py::arg("port") = 8888,
+           py::arg("assets_dir") = "")
+      .def("is_connected", &UiServer::IsConnected)
+      .def("new_frame", &UiServer::NewFrame)
+      .def("end_frame", &UiServer::EndFrame)
+      .def("get_context", &UiServer::GetContext)
+      .def("get_vis_state", &UiServer::GetVisState)
+      .def_static("get_vis_state_size", &UiServer::GetVisStateSize);
 }

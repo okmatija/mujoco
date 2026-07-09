@@ -38,12 +38,16 @@ target_link_libraries(ux PRIVATE ${STUDIO_COMMON_LIBS})
 mujoco_pybind11_module(sim sim.cc)
 target_link_libraries(sim PRIVATE ${STUDIO_COMMON_LIBS})
 
+# Web viewer (headless NetImgui UI server streaming to the browser).
+add_subdirectory(web_viewer)
+
 set(MUJOCO_STUDIO_TARGETS
     parser
     native_viewer_cc
     renderer
     ux
     sim
+    ${MUJOCO_WEB_VIEWER_TARGETS}
     PARENT_SCOPE
 )
 
@@ -91,6 +95,7 @@ if(APPLE)
       renderer
       ux
       sim
+      ui_server
       dear_imgui
       implot
   )

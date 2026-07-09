@@ -42,3 +42,4 @@ MUJOCO_LOG.TXT
 wasm/**/dist/
 **/node_modules/
 
+python/mujoco/experimental/studio/web_viewer/dist/

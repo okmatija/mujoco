@@ -1,19 +1,34 @@
-// Serialization of visualization state sent to the MuJoCo Live browser app.
+// Copyright 2026 DeepMind Technologies Limited
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// Serialization of visualization state sent to the web viewer browser app.
 //
 // The visualization state is a fixed-size block of plain C structs sent
 // alongside physics state from the Python simulation to the browser viewer.
 // Layout: [mjvCamera][mjvOption][mjOption][mjVisual][mjStatistic][render_flags]
 
-#ifndef THIRD_PARTY_MUJOCO_SRC_EXPERIMENTAL_LINK_LIVE_STATE_H_
-#define THIRD_PARTY_MUJOCO_SRC_EXPERIMENTAL_LINK_LIVE_STATE_H_
+#ifndef MUJOCO_PYTHON_EXPERIMENTAL_STUDIO_WEB_VIEWER_LIVE_STATE_H_
+#define MUJOCO_PYTHON_EXPERIMENTAL_STUDIO_WEB_VIEWER_LIVE_STATE_H_
 
 #include <cstddef>
+#include <cstdint>
 #include <cstring>
 #include <vector>
 
-#include "third_party/mujoco/include/mujoco.h"
+#include <mujoco/mujoco.h>
 
-namespace mujoco::link {
+namespace mujoco::studio {
 
 // Fixed byte size of the visualization state block appended after physics
 // state.  Both sides (Linux x86_64 Python and Emscripten WASM) use identical
@@ -52,13 +67,13 @@ inline std::vector<char> SerializeLiveState(
 
   // Pack render flags (mjNRNDFLAG bytes).
   memset(ptr, 0, mjNRNDFLAG);
-  for (int i = 0; i < mjNRNDFLAG && i < render_flags.size(); ++i) {
+  for (size_t i = 0; i < mjNRNDFLAG && i < render_flags.size(); ++i) {
     ptr[i] = static_cast<char>(render_flags[i]);
   }
 
   return buffer;
 }
 
-}  // namespace mujoco::link
+}  // namespace mujoco::studio
 
-#endif  // THIRD_PARTY_MUJOCO_SRC_EXPERIMENTAL_LINK_LIVE_STATE_H_
+#endif  // MUJOCO_PYTHON_EXPERIMENTAL_STUDIO_WEB_VIEWER_LIVE_STATE_H_

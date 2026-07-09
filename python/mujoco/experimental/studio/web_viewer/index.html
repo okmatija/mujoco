@@ -29,25 +29,24 @@
         })(),
         locateFile: function(path, prefix) {
           if (path.endsWith('.data')) {
-            return 'web_client_wasm/web_client_cc.data';
+            return 'web_client.data';
           }
-          if (path.includes('filament/assets/')) {
+          if (path.includes('assets/')) {
             const filename = path.substring(path.lastIndexOf('/') + 1);
-            return 'google3/third_party/mujoco/src/experimental/filament/assets/' + filename;
+            return 'assets/' + filename;
           }
           return prefix + path;
         }
       };
-      function resizeCanvas() {
-        Module.canvas.width = window.innerWidth;
-        Module.canvas.height = window.innerHeight;
+      // Only set the CSS size of the canvas; SDL's Emscripten backend detects
+      // external CSS resizes and manages the backing store itself (CSS size
+      // times devicePixelRatio). Writing canvas.width/height here would fight
+      // SDL and desynchronize ImGui layout, rendering, and mouse coordinates.
+      window.addEventListener("resize", function () {
         Module.canvas.style.width = window.innerWidth + "px";
         Module.canvas.style.height = window.innerHeight + "px";
-      }
-      // Run immediately to ensure initial dimensions are perfectly set
-      resizeCanvas();
-      window.addEventListener("resize", resizeCanvas);
+      });
     </script>
-    <script async src="web_client_wasm/web_client_cc.js"></script>
+    <script async src="web_client.js"></script>
   </body>
 </html>
