@@ -181,7 +181,11 @@ def _run_state_server(
     server = await asyncio.start_server(handle_ws_client, host, ws_port)
     logger.info(f"[StateWS] Listening on ws://{host}:{ws_port}")
 
-    async with server:
+    # Not `async with`: on Python >= 3.12 Server.__aexit__ awaits
+    # wait_closed(), which blocks until every accepted connection is closed,
+    # so cancellation (SIGTERM from StateServer.stop) would hang the process
+    # while a browser is connected. Close explicitly instead.
+    try:
       while True:
         await asyncio.sleep(1.0 / 60.0)  # ~60Hz polling
 
@@ -208,6 +212,10 @@ def _run_state_server(
         except (ConnectionResetError, BrokenPipeError, OSError):
           logger.info("[StateWS] Browser disconnected")
           active_writer = None
+    finally:
+      if active_writer is not None:
+        active_writer.close()
+      server.close()
 
   _run_cancellable(main_loop)
 
@@ -269,7 +277,14 @@ class StateServer:
     self._state_thread.start()
 
   def stop(self) -> None:
-    """Stop the state server."""
+    """Stop the state server, escalating to SIGKILL if it hangs."""
     if self._state_thread:
       self._state_thread.terminate()
-      self._state_thread.join(timeout=5)
+      self._state_thread.join(timeout=2)
+      if self._state_thread.is_alive():
+        logger.warning(
+            f"[StateWS] Process {self._state_thread.pid} ignored SIGTERM;"
+            " killing."
+        )
+        self._state_thread.kill()
+        self._state_thread.join(timeout=2)

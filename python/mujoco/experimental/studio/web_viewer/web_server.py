@@ -46,6 +46,21 @@ if not logger.handlers:
   logger.propagate = False
 
 
+def _terminate_process(proc, timeout: float = 2.0) -> None:
+  """Terminates a server process, escalating to SIGKILL if it hangs.
+
+  A wedged child that outlives stop() keeps its sockets alive, which
+  prevents the C++ NetImgui client from ever noticing the disconnect and
+  reconnecting to the replacement server.
+  """
+  proc.terminate()
+  proc.join(timeout=timeout)
+  if proc.is_alive():
+    logger.warning(f"[Link] Process {proc.pid} ignored SIGTERM; killing.")
+    proc.kill()
+    proc.join(timeout=timeout)
+
+
 def _run_cancellable(main_loop_func):
   """Runs an asyncio loop with SIGINT/SIGTERM structured task cancellation."""
 
@@ -407,7 +422,12 @@ def _run_proxy(host, tcp_port, ws_port):
         f"[LinkProxy] Proxy listening on TCP:{tcp_port} and WS:{ws_port}"
     )
 
-    async with tcp_server, ws_server:
+    # Not `async with`: on Python >= 3.12 Server.__aexit__ awaits
+    # wait_closed(), which blocks until every accepted connection is closed —
+    # the C++ app's bridge socket never is, so cancellation (SIGTERM from
+    # LiveServer.stop) would hang the process forever. Close the accepted
+    # sockets and the listeners explicitly instead.
+    try:
       while True:
         # Wait for TCP connection from C++ app (if not already connected)
         while tcp_reader is None:
@@ -504,6 +524,13 @@ def _run_proxy(host, tcp_port, ws_port):
             pass
         tcp_reader = None
         tcp_writer = None
+    finally:
+      if tcp_writer is not None:
+        tcp_writer.close()
+      if active_ws_writer is not None:
+        active_ws_writer.close()
+      tcp_server.close()
+      ws_server.close()
 
   _run_cancellable(main_loop)
 
@@ -547,12 +574,9 @@ class LiveServer:
   def stop(self) -> None:
     """Stop the server."""
     self._running = False
-    if self._http_thread:
-      self._http_thread.terminate()
-      self._http_thread.join(timeout=5)
-    if self._proxy_thread:
-      self._proxy_thread.terminate()
-      self._proxy_thread.join(timeout=5)
+    for proc in (self._http_thread, self._proxy_thread):
+      if proc:
+        _terminate_process(proc)
 
   def _start_http_server(self) -> None:
     """Start the HTTP server that serves MuJoCo Live files."""
