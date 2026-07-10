@@ -60,6 +60,7 @@ def main(argv: list[str]) -> None:
 
   camera = mujoco.MjvCamera()
   mujoco.mjv_defaultFreeCamera(model, camera)
+  perturb = mujoco.MjvPerturb()
   vis_options = mujoco.MjvOption()
   render_flags = [1, 0, 1, 0, 1, 0, 1, 0, 0, 0, 1]
 
@@ -73,7 +74,7 @@ def main(argv: list[str]) -> None:
   sig = int(mujoco.mjtState.mjSTATE_INTEGRATION)
   state_size = mujoco.mj_stateSize(model, sig)
   payload_bytes = (
-      state_size * np.float64().itemsize + ui_server.get_vis_state_size()
+      state_size * np.float64().itemsize + ui_server.get_render_state_size()
   )
   state_server = state_server_module.StateServer(
       state_ws_port=8891, state_size=payload_bytes, state_sig=sig
@@ -81,13 +82,13 @@ def main(argv: list[str]) -> None:
   state_server.start()
 
   # HTTP server (page, WASM, /model.mjb) + NetImgui WS-to-TCP proxy.
-  live_server = web_server_module.LiveServer(
+  web_server = web_server_module.WebServer(
       http_port=8080,
       tcp_port=8888,
       ws_port=8890,
       mjb_data=web_viewer_module._serialize_model(model),
   )
-  live_server.start()
+  web_server.start()
 
   print('hello_web running at http://localhost:8080 (Ctrl+C to quit)')
 
@@ -117,10 +118,10 @@ def main(argv: list[str]) -> None:
 
       # Stream the physics + visualization state to the browser.
       mujoco.mj_getState(model, data, state, sig)
-      vis_bytes = ui_server.get_vis_state(
-          camera, vis_options, model, render_flags
+      render_state_bytes = ui_server.get_render_state(
+          camera, perturb, vis_options, model, render_flags
       )
-      state_server.update_state(state.tobytes() + vis_bytes)
+      state_server.update_state(state.tobytes() + render_state_bytes)
 
       # End the frame; NetImgui streams the UI draw data to the browser.
       ui_server.end_frame()
@@ -128,7 +129,7 @@ def main(argv: list[str]) -> None:
   except KeyboardInterrupt:
     pass
   finally:
-    live_server.stop()
+    web_server.stop()
     state_server.stop()
 
 

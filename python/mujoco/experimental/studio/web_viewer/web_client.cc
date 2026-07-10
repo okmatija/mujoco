@@ -33,7 +33,7 @@
 #include "experimental/platform/sim/model_holder.h"
 #include "experimental/platform/ux/interaction.h"
 #include "google/logging.h"
-#include "live_state.h"
+#include "render_state.h"
 
 #if defined(__EMSCRIPTEN__)
 #include <emscripten.h>
@@ -48,7 +48,7 @@
 extern "C" GLenum __wrap_glGetError(void) { return GL_NO_ERROR; }
 #endif
 
-using mujoco::studio::kLiveStateSize;
+using mujoco::studio::kRenderStateSize;
 
 struct AppState {
   std::unique_ptr<mujoco::platform::Window> window;
@@ -67,13 +67,10 @@ struct AppState {
 AppState g_app;
 
 //=================================================================================================
-// State WebSocket — receives simulation state from the Python Link server.
+// State WebSocket — receives simulation state from the Python StateServer.
 //=================================================================================================
 #if defined(__EMSCRIPTEN__)
 EMSCRIPTEN_WEBSOCKET_T gStateSocket = 0;
-
-static mjvCamera s_last_received_camera = {};
-static bool s_received_first_camera = false;
 
 // Data transfer rate tracking stats.
 static double s_last_rate_time = 0;
@@ -90,19 +87,19 @@ EM_BOOL OnStateWsMessage(int eventType,
       g_app.model_holder->ok()) {
     s_sim_bytes_accum += wsEvent->numBytes;
     const uint8_t* data = wsEvent->data;
-    // Parse: [4 bytes sig (int32 LE)] [N*8 bytes physics state] [Live state]
+    // Parse: [4 bytes sig (int32 LE)] [N*8 bytes physics state] [render state]
     int32_t sig;
     memcpy(&sig, data, 4);
 
     int payload_bytes = wsEvent->numBytes - 4;
 
-    // Determine how many bytes are physics state vs Live state.
-    // If the payload includes Live state, subtract its fixed size.
+    // Determine how many bytes are physics state vs render state.
+    // If the payload includes render state, subtract its fixed size.
     int physics_bytes = payload_bytes;
-    bool has_live_state = false;
-    if (payload_bytes > kLiveStateSize) {
-      physics_bytes = payload_bytes - kLiveStateSize;
-      has_live_state = true;
+    bool has_render_state = false;
+    if (payload_bytes > kRenderStateSize) {
+      physics_bytes = payload_bytes - kRenderStateSize;
+      has_render_state = true;
     }
 
     int state_count = physics_bytes / sizeof(mjtNum);
@@ -111,21 +108,18 @@ EM_BOOL OnStateWsMessage(int eventType,
     g_app.backend_state_sig = sig;
     g_app.backend_state_dirty = true;
 
-    // Apply Live state if present.
-    if (has_live_state) {
+    // Apply render state if present. The headless viewer owns the camera and
+    // perturbation state (all input is forwarded to it and handled by the
+    // same code as the native viewer); the browser just renders them.
+    if (has_render_state) {
       const uint8_t* vis_ptr = data + 4 + physics_bytes;
       mjModel* model = g_app.model_holder->model();
 
-      mjvCamera incoming_cam;
-      memcpy(&incoming_cam, vis_ptr, sizeof(mjvCamera));
-      if (!s_received_first_camera ||
-          memcmp(&incoming_cam, &s_last_received_camera, sizeof(mjvCamera)) !=
-              0) {
-        memcpy(&g_app.camera, &incoming_cam, sizeof(mjvCamera));
-        memcpy(&s_last_received_camera, &incoming_cam, sizeof(mjvCamera));
-        s_received_first_camera = true;
-      }
+      memcpy(&g_app.camera, vis_ptr, sizeof(mjvCamera));
       vis_ptr += sizeof(mjvCamera);
+
+      memcpy(&g_app.perturb, vis_ptr, sizeof(mjvPerturb));
+      vis_ptr += sizeof(mjvPerturb);
 
       memcpy(&g_app.vis_options, vis_ptr, sizeof(mjvOption));
       vis_ptr += sizeof(mjvOption);
@@ -523,7 +517,7 @@ void CaptureAndSendInput() {
   // When the local UI wants to capture mouse or keyboard, suppress the
   // corresponding input from being forwarded to the remote client. This
   // prevents clicks/keys meant for the local status overlay (or any other
-  // local window) from leaking through to the link server.
+  // local window) from leaking through to the UI server.
   const bool localWantsMouse = io.WantCaptureMouse;
   const bool localWantsKeyboard = io.WantCaptureKeyboard;
 
@@ -898,54 +892,6 @@ void ProcessCmdDrawFrame(CmdDrawFrame* pCmdDrawFrame) {
   gRemoteDrawData = pDrawData;
 }
 
-// BUG: This function fails to detect mouse over window frames (title bars,
-// scrollbars) because those elements often use full-screen clipping rectangles
-// in the remote draw data, which are ignored by the is_fullscreen check.
-// Interactive elements inside windows work correctly.
-bool IsMouseOverRemoteUI() {
-  if (!gRemoteDrawData) return false;
-  ImGuiIO& io = ImGui::GetIO();
-  ImVec2 mouse_pos = io.MousePos;
-
-  // Ignore invalid mouse positions
-  if (mouse_pos.x < 0 || mouse_pos.y < 0) return false;
-
-  for (int i = 0; i < gRemoteDrawData->CmdListsCount; ++i) {
-    const ImDrawList* cmd_list = gRemoteDrawData->CmdLists[i];
-    for (int j = 0; j < cmd_list->CmdBuffer.Size; ++j) {
-      const ImDrawCmd& cmd = cmd_list->CmdBuffer[j];
-      if (cmd.ElemCount > 0) {
-        // Ignore clip rects that cover the entire display area (likely
-        // background)
-        bool is_fullscreen =
-            (cmd.ClipRect.x <= gRemoteDrawData->DisplayPos.x &&
-             cmd.ClipRect.y <= gRemoteDrawData->DisplayPos.y &&
-             cmd.ClipRect.z >= gRemoteDrawData->DisplayPos.x +
-                                   gRemoteDrawData->DisplaySize.x &&
-             cmd.ClipRect.w >= gRemoteDrawData->DisplayPos.y +
-                                   gRemoteDrawData->DisplaySize.y);
-
-        // Relaxed check: ignore clip rects that cover more than 80% of the
-        // screen. This prevents the Dockspace window from blocking camera
-        // controls.
-        float cmd_area = (cmd.ClipRect.z - cmd.ClipRect.x) *
-                         (cmd.ClipRect.w - cmd.ClipRect.y);
-        float screen_area =
-            gRemoteDrawData->DisplaySize.x * gRemoteDrawData->DisplaySize.y;
-        bool is_large_background = (cmd_area / screen_area) > 0.8f;
-
-        if (!is_fullscreen && !is_large_background) {
-          if (mouse_pos.x >= cmd.ClipRect.x && mouse_pos.x <= cmd.ClipRect.z &&
-              mouse_pos.y >= cmd.ClipRect.y && mouse_pos.y <= cmd.ClipRect.w) {
-            return true;
-          }
-        }
-      }
-    }
-  }
-  return false;
-}
-
 void UpdateAndShowTelemetryGUI() {
   const double now = ImGui::GetTime();
   if (now - s_last_rate_time >= 1.0) {
@@ -1062,7 +1008,7 @@ void MainLoopImpl() {
     if (strcmp(status, "Open") == 0) {
       if (!sHandshakeSent) {
         CmdVersion cmdVersion;
-        StringCopy(cmdVersion.mClientName, "MuJoCo Live");
+        StringCopy(cmdVersion.mClientName, "MuJoCo Web Viewer");
         debug_log_handshake_send(cmdVersion);
 
         PendingCom pendingSend;
@@ -1182,10 +1128,6 @@ void MainLoopImpl() {
   // =========================================================================
   // Phase 2 & 3: Event loop and ImGui NewFrame via window abstraction.
   // =========================================================================
-  static bool sLeftButtonDown = false;
-  static bool sRightButtonDown = false;
-  static bool sDragStartedOnRemoteUI = false;
-
   mujoco::platform::Window::Status status = g_app.window->NewFrame();
   if (status == mujoco::platform::Window::kQuitting) {
 #if defined(__EMSCRIPTEN__)
@@ -1196,57 +1138,11 @@ void MainLoopImpl() {
     return;
   }
 
-  ImGuiIO& io = ImGui::GetIO();
-
-  const bool hoverRemote = IsMouseOverRemoteUI();
-
-  if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
-    sLeftButtonDown = true;
-    sDragStartedOnRemoteUI = hoverRemote;
-  } else if (ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
-    sLeftButtonDown = false;
-  }
-
-  if (ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
-    sRightButtonDown = true;
-    sDragStartedOnRemoteUI = hoverRemote;
-  } else if (ImGui::IsMouseReleased(ImGuiMouseButton_Right)) {
-    sRightButtonDown = false;
-  }
-
-  if (g_app.model_holder && g_app.model_holder->ok()) {
-    bool suppress_camera =
-        io.WantCaptureMouse || sDragStartedOnRemoteUI ||
-        (hoverRemote && !sLeftButtonDown && !sRightButtonDown);
-
-    if (!suppress_camera) {
-      int width = g_app.window->GetWidth();
-      int height = g_app.window->GetHeight();
-
-      if (sLeftButtonDown && (io.MouseDelta.x != 0 || io.MouseDelta.y != 0)) {
-        mujoco::platform::MoveCamera(
-            g_app.model_holder->model(), g_app.model_holder->data(),
-            &g_app.camera, mujoco::platform::CameraMotion::ORBIT,
-            static_cast<mjtNum>(io.MouseDelta.x) / width,
-            static_cast<mjtNum>(io.MouseDelta.y) / height);
-      } else if (sRightButtonDown &&
-                 (io.MouseDelta.x != 0 || io.MouseDelta.y != 0)) {
-        mujoco::platform::MoveCamera(
-            g_app.model_holder->model(), g_app.model_holder->data(),
-            &g_app.camera, mujoco::platform::CameraMotion::PLANAR_MOVE_H,
-            static_cast<mjtNum>(io.MouseDelta.x) / width,
-            static_cast<mjtNum>(io.MouseDelta.y) / height);
-      }
-
-      if (io.MouseWheel != 0) {
-        mujoco::platform::MoveCamera(g_app.model_holder->model(),
-                                     g_app.model_holder->data(), &g_app.camera,
-                                     mujoco::platform::CameraMotion::ZOOM, 0,
-                                     -static_cast<mjtNum>(io.MouseWheel));
-      }
-    }
-  }
-
+  // All scene interaction (camera orbit/zoom, perturbation, picking) is
+  // handled by the headless viewer: CaptureAndSendInput() forwards this
+  // frame's input over NetImgui, the headless ViewerApp runs the same event
+  // handlers as the native viewer, and the resulting camera/perturb state
+  // streams back over the state WebSocket (see OnStateWsMessage).
   CaptureAndSendInput();
 
   UpdateAndShowTelemetryGUI();
@@ -1430,8 +1326,8 @@ int main(int argc, char** argv) {
   config.gfx_mode = mujoco::platform::GraphicsMode::FilamentWebGl;
   config.load_fonts = false;
 
-  g_app.window = std::make_unique<mujoco::platform::Window>("MuJoCo Live", 1400,
-                                                            720, config);
+  g_app.window = std::make_unique<mujoco::platform::Window>(
+      "MuJoCo Web Viewer", 1400, 720, config);
   ImPlot::CreateContext();  // Needed if the server app uses ImPlot.
 
   g_app.renderer = new mujoco::platform::Renderer(

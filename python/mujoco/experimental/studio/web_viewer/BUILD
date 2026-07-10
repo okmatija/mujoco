@@ -162,7 +162,7 @@ pybind_extension(
     ],
     tags = ["notap"],
     deps = [
-        ":live_state",
+        ":render_state",
         "//file/base",
         "//file/base:options_cc",
         "//file/base:path",
@@ -176,8 +176,8 @@ pybind_extension(
     ],
 )
 
-# Serves the MuJoCo Live web page (HTML/WASM) and proxies the NetImgui
-# protocol between the C++ LinkServer and the browser.
+# Serves the web viewer page (HTML/WASM) and proxies the NetImgui
+# protocol between the headless UiServer and the browser.
 pytype_library(
     name = "ui_server_proxy",
     srcs = ["ui_server_proxy.py"],
@@ -189,7 +189,7 @@ pytype_library(
     srcs = ["state_server.py"],
 )
 
-# Web-based viewer for MuJoCo. Orchestrates the LinkServer, LiveServer, and StateServer to provide a
+# Web-based viewer for MuJoCo. Orchestrates the UiServer, WebServer, and StateServer to provide a
 # browser-based MuJoCo viewer.
 pytype_library(
     name = "web_server",
@@ -213,8 +213,8 @@ pytype_library(
 )
 
 cc_library(
-    name = "live_state",
-    hdrs = ["live_state.h"],
+    name = "render_state",
+    hdrs = ["render_state.h"],
     deps = ["//third_party/mujoco:libmujoco_hdrs"],
 )
 
@@ -253,7 +253,7 @@ cc_binary(
     tags = ["nobuilder"],
     target_compatible_with = ["//third_party/bazel_platforms/cpu:wasm32"],
     deps = [
-        ":live_state",
+        ":render_state",
         "//third_party/SDL2",
         "//third_party/dear_imgui",
         "//third_party/dear_imgui:imgui_sdl2",

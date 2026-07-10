@@ -1,10 +1,10 @@
-"""HTTP and proxy servers for serving MuJoCo Live to the browser.
+"""HTTP and UI proxy servers for serving the web viewer to the browser.
 
-This module provides the LiveServer class that:
-1. Serves MuJoCo Live static files (index.html, WASM) over HTTP.
+This module provides the WebServer class that:
+1. Serves the web viewer static files (index.html, WASM) over HTTP.
 2. Serves the model MJB over HTTP (GET /model.mjb).
 3. Runs a WebSocket-to-TCP proxy bridging the NetImgui protocol between
-   the C++ LinkServer and the browser.
+   the headless UiServer (ui_server.cc) and the browser.
 """
 
 import asyncio
@@ -24,7 +24,7 @@ import sys
 from typing import Optional
 
 
-class _LiveServerFormatter(logging.Formatter):
+class _WebServerFormatter(logging.Formatter):
 
   def format(self, record):
     level_char = record.levelname[0]
@@ -37,11 +37,11 @@ class _LiveServerFormatter(logging.Formatter):
     return f"{level_char}{date_str} {time_str} {filename}:{line}] {msg}"
 
 
-logger = logging.getLogger("LiveServer")
+logger = logging.getLogger("WebServer")
 logger.setLevel(logging.INFO)
 if not logger.handlers:
   handler = logging.StreamHandler(sys.stdout)
-  handler.setFormatter(_LiveServerFormatter())
+  handler.setFormatter(_WebServerFormatter())
   logger.addHandler(handler)
   logger.propagate = False
 
@@ -56,7 +56,7 @@ def _terminate_process(proc, timeout: float = 2.0) -> None:
   proc.terminate()
   proc.join(timeout=timeout)
   if proc.is_alive():
-    logger.warning(f"[Link] Process {proc.pid} ignored SIGTERM; killing.")
+    logger.warning(f"[Http] Process {proc.pid} ignored SIGTERM; killing.")
     proc.kill()
     proc.join(timeout=timeout)
 
@@ -85,7 +85,7 @@ def _run_cancellable(main_loop_func):
     logger.error(f"[{main_loop_func.__name__}] Unexpected error: {e}")
 
 
-def _find_live_files_dir() -> Optional[str]:
+def _find_static_files_dir() -> Optional[str]:
   """Locate the web viewer static files (index.html, WASM).
 
   The `dist` directory next to this file is populated by the Emscripten build
@@ -97,7 +97,7 @@ def _find_live_files_dir() -> Optional[str]:
   if env_dir:
     if os.path.isdir(env_dir):
       return env_dir
-    logger.warning(f"[Link] MUJOCO_WEB_VIEWER_DIST is not a directory: {env_dir}")
+    logger.warning(f"[Http] MUJOCO_WEB_VIEWER_DIST is not a directory: {env_dir}")
 
   dist_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dist")
   if os.path.isdir(dist_dir):
@@ -111,8 +111,8 @@ class _ThreadingHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
   allow_reuse_address = True
 
 
-class _LiveHTTPHandler(http.server.SimpleHTTPRequestHandler):
-  """HTTP handler that serves MuJoCo Live files and the model MJB."""
+class _WebViewerHTTPHandler(http.server.SimpleHTTPRequestHandler):
+  """HTTP handler that serves the web viewer files and the model MJB."""
 
   def __init__(self, *args, mjb_data=None, ws_port=8890, **kwargs):
     self._mjb_data = mjb_data
@@ -258,7 +258,7 @@ async def _ws_to_tcp(ws_reader, tcp_writer, ws_writer):
       msg_count += 1
       if msg_count <= 5 or msg_count % 100 == 0:
         logger.info(
-            f"[LinkProxy] ws_to_tcp: opcode={opcode}, len={len(payload)} (msg"
+            f"[UiProxy] ws_to_tcp: opcode={opcode}, len={len(payload)} (msg"
             f" #{msg_count})"
         )
 
@@ -283,11 +283,11 @@ async def _ws_to_tcp(ws_reader, tcp_writer, ws_writer):
         pass
 
   except asyncio.IncompleteReadError:
-    logger.info("[LinkProxy] ws_to_tcp: browser disconnected (incomplete read)")
+    logger.info("[UiProxy] ws_to_tcp: browser disconnected (incomplete read)")
   except ConnectionResetError:
-    logger.info("[LinkProxy] ws_to_tcp: browser connection reset")
+    logger.info("[UiProxy] ws_to_tcp: browser connection reset")
   except Exception as e:  # pylint: disable=broad-exception-caught
-    logger.error(f"[LinkProxy] ws_to_tcp error: {e}")
+    logger.error(f"[UiProxy] ws_to_tcp error: {e}")
 
 
 async def _tcp_to_ws(tcp_reader, ws_writer, stop_event):
@@ -303,7 +303,7 @@ async def _tcp_to_ws(tcp_reader, ws_writer, stop_event):
       except asyncio.TimeoutError:
         continue
       if not data:
-        logger.info("[LinkProxy] tcp_to_ws: TCP connection closed by server")
+        logger.info("[UiProxy] tcp_to_ws: TCP connection closed by server")
         break
 
       len_data = len(data)
@@ -321,15 +321,15 @@ async def _tcp_to_ws(tcp_reader, ws_writer, stop_event):
       msg_count += 1
       if msg_count <= 5 or msg_count % 100 == 0:
         logger.info(
-            f"[LinkProxy] tcp_to_ws: len={len(data)} (msg #{msg_count})"
+            f"[UiProxy] tcp_to_ws: len={len(data)} (msg #{msg_count})"
         )
       ws_writer.write(header + data)
       await ws_writer.drain()
 
   except ConnectionResetError:
-    logger.info("[LinkProxy] tcp_to_ws: WS connection reset")
+    logger.info("[UiProxy] tcp_to_ws: WS connection reset")
   except Exception as e:  # pylint: disable=broad-exception-caught
-    logger.error(f"[LinkProxy] tcp_to_ws error: {e}")
+    logger.error(f"[UiProxy] tcp_to_ws error: {e}")
 
   # Send a WebSocket close frame (opcode 0x08) so the browser fires onclose
   # immediately rather than waiting for the TCP FIN to propagate.
@@ -338,7 +338,7 @@ async def _tcp_to_ws(tcp_reader, ws_writer, stop_event):
     close_frame = bytearray([0x88, 0x02, 0x03, 0xE8])  # 1000 = normal closure
     ws_writer.write(close_frame)
     await ws_writer.drain()
-    logger.info("[LinkProxy] tcp_to_ws: Sent WebSocket close frame to browser")
+    logger.info("[UiProxy] tcp_to_ws: Sent WebSocket close frame to browser")
   except Exception:  # pylint: disable=broad-exception-caught
     pass
 
@@ -371,7 +371,7 @@ def _run_proxy(host, tcp_port, ws_port):
     async def handle_tcp_client(reader, writer):
       nonlocal tcp_reader, tcp_writer
       if tcp_writer is not None:
-        logger.info("[LinkProxy] Replacing previous TCP connection")
+        logger.info("[UiProxy] Replacing previous TCP connection")
         tcp_writer.close()
         try:
           await tcp_writer.wait_closed()
@@ -384,13 +384,13 @@ def _run_proxy(host, tcp_port, ws_port):
       sock = writer.get_extra_info("socket")
       if sock:
         sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-      logger.info("[LinkProxy] TCP connection accepted")
+      logger.info("[UiProxy] TCP connection accepted")
 
     async def handle_ws_connection(ws_reader, ws_writer):
       nonlocal active_ws_writer
-      logger.info("[LinkProxy] WebSocket connection attempt")
+      logger.info("[UiProxy] WebSocket connection attempt")
       if await _handle_ws_handshake(ws_reader, ws_writer):
-        logger.info("[LinkProxy] WebSocket connection accepted")
+        logger.info("[UiProxy] WebSocket connection accepted")
         # Disable Nagle on the WS socket too.
         sock = ws_writer.get_extra_info("socket")
         if sock:
@@ -398,13 +398,13 @@ def _run_proxy(host, tcp_port, ws_port):
 
         # Kick the previous browser if one is active.
         if active_ws_writer is not None:
-          logger.info("[LinkProxy] Kicking previous browser connection")
+          logger.info("[UiProxy] Kicking previous browser connection")
           active_ws_writer.close()
           kick_event.set()
 
         await ws_connections.put((ws_reader, ws_writer))
       else:
-        logger.info("[LinkProxy] WebSocket handshake failed")
+        logger.info("[UiProxy] WebSocket handshake failed")
         ws_writer.close()
 
     tcp_server = await asyncio.start_server(
@@ -419,19 +419,19 @@ def _run_proxy(host, tcp_port, ws_port):
     )
 
     logger.info(
-        f"[LinkProxy] Proxy listening on TCP:{tcp_port} and WS:{ws_port}"
+        f"[UiProxy] Proxy listening on TCP:{tcp_port} and WS:{ws_port}"
     )
 
     # Not `async with`: on Python >= 3.12 Server.__aexit__ awaits
     # wait_closed(), which blocks until every accepted connection is closed —
     # the C++ app's bridge socket never is, so cancellation (SIGTERM from
-    # LiveServer.stop) would hang the process forever. Close the accepted
+    # WebServer.stop) would hang the process forever. Close the accepted
     # sockets and the listeners explicitly instead.
     try:
       while True:
         # Wait for TCP connection from C++ app (if not already connected)
         while tcp_reader is None:
-          logger.info("[LinkProxy] Waiting for TCP connection...")
+          logger.info("[UiProxy] Waiting for TCP connection...")
           await asyncio.sleep(0.1)
 
         # Wait for browser WebSocket connection
@@ -440,36 +440,36 @@ def _run_proxy(host, tcp_port, ws_port):
         # Drain any stale queued WS connections (only use the latest)
         while not ws_connections.empty():
           old_r, old_w = ws_connections.get_nowait()
-          logger.info("[LinkProxy] Discarding stale WS connection")
+          logger.info("[UiProxy] Discarding stale WS connection")
           old_w.close()
 
         active_ws_writer = ws_writer
         kick_event.clear()
-        logger.info("[LinkProxy] Both connected. Starting bridge.")
+        logger.info("[UiProxy] Both connected. Starting bridge.")
 
         # --- Handshake phase ---
         # Read the browser's CmdVersion from the first WS binary frame.
         try:
           browser_version = await _read_ws_binary_frame(ws_reader)
           logger.info(
-              f"[LinkProxy] Received browser CmdVersion: {len(browser_version)}"
+              f"[UiProxy] Received browser CmdVersion: {len(browser_version)}"
               " bytes"
           )
         except Exception as e:
-          logger.error(f"[LinkProxy] Failed to read browser CmdVersion: {e}")
+          logger.error(f"[UiProxy] Failed to read browser CmdVersion: {e}")
           ws_writer.close()
           active_ws_writer = None
           continue
 
         # Always forward the full handshake to the C++ app.
-        logger.info("[LinkProxy] Forwarding CmdVersion handshake")
+        logger.info("[UiProxy] Forwarding CmdVersion handshake")
         tcp_writer.write(browser_version)
         await tcp_writer.drain()
 
         # Read the server's CmdVersion reply from TCP.
         server_version = await tcp_reader.readexactly(CMD_VERSION_SIZE)
         logger.info(
-            f"[LinkProxy] Received server CmdVersion: {len(server_version)}"
+            f"[UiProxy] Received server CmdVersion: {len(server_version)}"
             " bytes"
         )
 
@@ -477,7 +477,7 @@ def _run_proxy(host, tcp_port, ws_port):
         _write_ws_binary_frame(ws_writer, server_version)
         await ws_writer.drain()
 
-        logger.info("[LinkProxy] Handshake complete. Starting data bridge.")
+        logger.info("[UiProxy] Handshake complete. Starting data bridge.")
 
         # --- Data bridge phase ---
         stop_event = asyncio.Event()
@@ -502,10 +502,10 @@ def _run_proxy(host, tcp_port, ws_port):
             except asyncio.CancelledError:
               pass
         except Exception as e:
-          logger.error(f"[LinkProxy] Bridge error: {e}")
+          logger.error(f"[UiProxy] Bridge error: {e}")
 
         # Close the WS side.
-        logger.info("[LinkProxy] Bridge closed. Closing WS connection.")
+        logger.info("[UiProxy] Bridge closed. Closing WS connection.")
         ws_writer.close()
         try:
           await ws_writer.wait_closed()
@@ -515,7 +515,7 @@ def _run_proxy(host, tcp_port, ws_port):
 
         # Always tear down TCP so the C++ app reconnects and re-sends
         # all textures and draw commands to the next browser.
-        logger.info("[LinkProxy] Tearing down TCP to force full reconnect.")
+        logger.info("[UiProxy] Tearing down TCP to force full reconnect.")
         if tcp_writer is not None:
           tcp_writer.close()
           try:
@@ -535,13 +535,13 @@ def _run_proxy(host, tcp_port, ws_port):
   _run_cancellable(main_loop)
 
 
-class LiveServer:
-  """HTTP server and NetImgui proxy for MuJoCo Live.
+class WebServer:
+  """HTTP server and NetImgui UI proxy for the web viewer.
 
   This class manages:
-  1. An HTTP server that serves MuJoCo Live static files and the model MJB.
+  1. An HTTP server that serves the web viewer static files and the model MJB.
   2. A WebSocket-to-TCP proxy that bridges the NetImgui protocol between
-     the C++ LinkServer and the browser.
+     the headless UiServer (ui_server.cc) and the browser.
 
   Run the simulation with the web viewer, then visit http://localhost:8080.
   """
@@ -559,7 +559,7 @@ class LiveServer:
     self.http_port = http_port
     self.tcp_port = tcp_port
     self.ws_port = ws_port
-    self.static_files_dir = static_files_dir or _find_live_files_dir()
+    self.static_files_dir = static_files_dir or _find_static_files_dir()
     self.mjb_data = mjb_data
     self._running = False
     self._http_thread = None
@@ -579,12 +579,12 @@ class LiveServer:
         _terminate_process(proc)
 
   def _start_http_server(self) -> None:
-    """Start the HTTP server that serves MuJoCo Live files."""
+    """Start the HTTP server that serves the web viewer files."""
     if self.static_files_dir:
-      logger.info(f"[Link] Serving MuJoCo Live from: {self.static_files_dir}")
+      logger.info(f"[Http] Serving web viewer from: {self.static_files_dir}")
     else:
-      logger.warning("[Link] WARNING: Could not find MuJoCo Live static files.")
-      logger.warning("[Link]   The Live WASM files were not found in runfiles.")
+      logger.warning("[Http] WARNING: Could not find web viewer static files.")
+      logger.warning("[Http]   The WASM files were not found in runfiles.")
       return
 
     def run_server():
@@ -592,14 +592,14 @@ class LiveServer:
       signal.signal(signal.SIGTERM, lambda signum, frame: sys.exit(0))
       try:
         handler = functools.partial(
-            _LiveHTTPHandler,
+            _WebViewerHTTPHandler,
             directory=self.static_files_dir,
             mjb_data=self.mjb_data,
             ws_port=self.ws_port,
         )
         server = _ThreadingHTTPServer((self.host, self.http_port), handler)
         logger.info(
-            f"[Link] HTTP server on http://{self.host}:{self.http_port}"
+            f"[Http] HTTP server on http://{self.host}:{self.http_port}"
         )
         server.serve_forever()
       except (KeyboardInterrupt, SystemExit):

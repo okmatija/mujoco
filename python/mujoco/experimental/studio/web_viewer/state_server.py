@@ -22,7 +22,7 @@ import sys
 from typing import Optional
 
 
-class _LiveServerFormatter(logging.Formatter):
+class _StateServerFormatter(logging.Formatter):
 
   def format(self, record):
     level_char = record.levelname[0]
@@ -35,11 +35,11 @@ class _LiveServerFormatter(logging.Formatter):
     return f"{level_char}{date_str} {time_str} {filename}:{line}] {msg}"
 
 
-logger = logging.getLogger("LiveServer")
+logger = logging.getLogger("StateServer")
 logger.setLevel(logging.INFO)
 if not logger.handlers:
   handler = logging.StreamHandler(sys.stdout)
-  handler.setFormatter(_LiveServerFormatter())
+  handler.setFormatter(_StateServerFormatter())
   logger.addHandler(handler)
   logger.propagate = False
 
@@ -260,7 +260,7 @@ class StateServer:
   def start(self) -> None:
     """Start the state WebSocket server in a background process."""
     if self._shm_array is None:
-      logger.info("[Link] State server not started (no state configured).")
+      logger.info("[StateWS] State server not started (no state configured).")
       return
     self._state_thread = multiprocessing.Process(
         target=_run_state_server,

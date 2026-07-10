@@ -141,7 +141,7 @@ class WebViewer(viewer_protocol.Viewer):
     # HTTP + NetImgui proxy + state streaming servers. They are (re)started
     # whenever the model changes, since the served MJB bytes and the state
     # buffer size depend on the model.
-    self._live_server: web_server_module.LiveServer | None = None
+    self._web_server: web_server_module.WebServer | None = None
     self._state_server: state_server_module.StateServer | None = None
     self._start_servers()
 
@@ -164,7 +164,7 @@ class WebViewer(viewer_protocol.Viewer):
     sig, state_size = self._state_signature_and_size()
     payload_bytes = (
         state_size * np.float64().itemsize
-        + ui_server_module.UiServer.get_vis_state_size()
+        + ui_server_module.UiServer.get_render_state_size()
     )
 
     self._state_server = state_server_module.StateServer(
@@ -175,23 +175,23 @@ class WebViewer(viewer_protocol.Viewer):
     )
     self._state_server.start()
 
-    self._live_server = web_server_module.LiveServer(
+    self._web_server = web_server_module.WebServer(
         host=self._host,
         http_port=self._http_port,
         tcp_port=self._ui_tcp_port,
         ws_port=self._ui_ws_port,
         mjb_data=_serialize_model(self.model),
     )
-    self._live_server.start()
+    self._web_server.start()
     print(
         'MuJoCo web viewer running at '
         f'http://localhost:{self._http_port} (Ctrl+C to quit)'
     )
 
   def _stop_servers(self) -> None:
-    if self._live_server is not None:
-      self._live_server.stop()
-      self._live_server = None
+    if self._web_server is not None:
+      self._web_server.stop()
+      self._web_server = None
     if self._state_server is not None:
       self._state_server.stop()
       self._state_server = None
@@ -231,13 +231,14 @@ class WebViewer(viewer_protocol.Viewer):
       sig, state_size = self._state_signature_and_size()
       state = np.empty(state_size, np.float64)
       mujoco.mj_getState(self.model, self.data, state, sig)
-      vis_bytes = self._ui_server.get_vis_state(
+      render_state_bytes = self._ui_server.get_render_state(
           self.camera,
+          self.perturb,
           self.vis_options,
           self.model,
           list(self.render_flags.flags),
       )
-      self._state_server.update_state(state.tobytes() + vis_bytes)
+      self._state_server.update_state(state.tobytes() + render_state_bytes)
 
     # Finish the ImGui frame; NetImgui sends the draw data to the browser.
     self._ui_server.end_frame()

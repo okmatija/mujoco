@@ -39,7 +39,7 @@
 #include <mujoco/mujoco.h>
 #include "NetImgui_Api.h"
 #include "google/logging.h"
-#include "live_state.h"
+#include "render_state.h"
 #include "structs.h"
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
@@ -269,19 +269,21 @@ class UiServer {
     NetImgui::EndFrame();
   }
 
-  // Serialize visualization state as raw bytes for the browser app.
-  py::bytes GetVisState(const mujoco::python::MjvCameraWrapper& camera,
-                        const mujoco::python::MjvOptionWrapper& vis_options,
-                        const mujoco::python::MjModelWrapper& model,
-                        const std::vector<uint8_t>& render_flags) {
-    auto buffer = mujoco::studio::SerializeLiveState(
-        *camera.get(), *vis_options.get(), model.get()->opt, model.get()->vis,
-        model.get()->stat, render_flags);
+  // Serialize the render state (see render_state.h) as raw bytes for the
+  // browser app.
+  py::bytes GetRenderState(const mujoco::python::MjvCameraWrapper& camera,
+                           const mujoco::python::MjvPerturbWrapper& perturb,
+                           const mujoco::python::MjvOptionWrapper& vis_options,
+                           const mujoco::python::MjModelWrapper& model,
+                           const std::vector<uint8_t>& render_flags) {
+    auto buffer = mujoco::studio::SerializeRenderState(
+        *camera.get(), *perturb.get(), *vis_options.get(), model.get()->opt,
+        model.get()->vis, model.get()->stat, render_flags);
     return py::bytes(buffer.data(), buffer.size());
   }
 
-  // Returns the fixed size of the visualization state in bytes.
-  static int GetVisStateSize() { return mujoco::studio::kLiveStateSize; }
+  // Returns the fixed size of the render state in bytes.
+  static int GetRenderStateSize() { return mujoco::studio::kRenderStateSize; }
 
   intptr_t GetContext() const { return reinterpret_cast<intptr_t>(context_); }
 
@@ -304,6 +306,6 @@ PYBIND11_MODULE(ui_server, m, pybind11::mod_gil_not_used()) {
       .def("new_frame", &UiServer::NewFrame)
       .def("end_frame", &UiServer::EndFrame)
       .def("get_context", &UiServer::GetContext)
-      .def("get_vis_state", &UiServer::GetVisState)
-      .def_static("get_vis_state_size", &UiServer::GetVisStateSize);
+      .def("get_render_state", &UiServer::GetRenderState)
+      .def_static("get_render_state_size", &UiServer::GetRenderStateSize);
 }
