@@ -71,6 +71,13 @@ struct AppState {
 };
 AppState g_app;
 
+// Set when the Python side kicked this page because another browser tab took
+// over the single viewer slot (WebSocket close code 4000). Both reconnect
+// loops must stop — otherwise two tabs kick each other in an endless loop —
+// and the page shows a notice instead. Reloading the page takes the slot
+// back.
+bool gSuperseded = false;
+
 //=================================================================================================
 // State WebSocket — receives simulation state from the Python StateServer.
 //=================================================================================================
@@ -198,6 +205,13 @@ EM_BOOL OnStateWsClose(int eventType,
                        void* userData) {
   LOG(Info, "State WebSocket closed (code=%d)", wsEvent->code);
   gStateSocket = 0;
+  // Close code 4000: another browser tab took over the viewer slot.
+  if (wsEvent->code == 4000) {
+    gSuperseded = true;
+    LOG(Info,
+        "Another browser tab took over this viewer; not reconnecting. "
+        "Reload this page to take control back.");
+  }
   return EM_TRUE;
 }
 
@@ -943,6 +957,20 @@ void ProcessCmdDrawFrame(CmdDrawFrame* pCmdDrawFrame) {
 }
 
 void UpdateAndShowTelemetryGUI() {
+  if (gSuperseded) {
+    const ImGuiIO& io = ImGui::GetIO();
+    ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, 48.0f),
+                            ImGuiCond_Always, ImVec2(0.5f, 0.0f));
+    ImGui::Begin("##superseded", nullptr,
+                 ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+                     ImGuiWindowFlags_NoMove |
+                     ImGuiWindowFlags_AlwaysAutoResize);
+    ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.2f, 1.0f),
+                       "Viewer taken over by another tab or window.");
+    ImGui::TextUnformatted("Reload this page to take control back.");
+    ImGui::End();
+  }
+
   const double now = ImGui::GetTime();
   if (now - s_last_rate_time >= 1.0) {
     s_gui_bytes_per_sec = s_gui_bytes_accum;
@@ -1042,8 +1070,8 @@ void MainLoopImpl() {
   // restarted its servers after a model change. Receiving a payload with a
   // different model identity then triggers a page reload (OnStateWsMessage).
   static int sLastStateWsRetryFrame = 0;
-  if (gStateSocket == 0 && !sReloadPending && g_app.model_holder &&
-      g_app.model_holder->ok() &&
+  if (gStateSocket == 0 && !sReloadPending && !gSuperseded &&
+      g_app.model_holder && g_app.model_holder->ok() &&
       sMainFrameCount - sLastStateWsRetryFrame > 60) {
     sLastStateWsRetryFrame = sMainFrameCount;
     LOG(Info, "State WebSocket down; reconnecting...");
@@ -1054,7 +1082,7 @@ void MainLoopImpl() {
   // whenever its headless-side TCP connection cycles (server restart, or
   // another browser tab briefly taking the single UI slot).
   static int sLastUiWsRetryFrame = 0;
-  if (gClientSocket && !sReloadPending &&
+  if (gClientSocket && !sReloadPending && !gSuperseded &&
       sMainFrameCount - sLastUiWsRetryFrame > 60) {
     const char* uiStatus = Network::GetStatusString(gClientSocket);
     if (strncmp(uiStatus, "Closed", 6) == 0 || strcmp(uiStatus, "Error") == 0) {

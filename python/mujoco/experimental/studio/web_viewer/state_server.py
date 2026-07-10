@@ -151,6 +151,18 @@ def _write_ws_binary_frame(writer, data):
   writer.write(header + data)
 
 
+# WebSocket close code telling a browser that another browser took over the
+# single viewer slot. The client must stop reconnecting when it sees this
+# (otherwise two tabs kick each other in an endless loop).
+WS_CLOSE_SUPERSEDED = 4000
+
+
+def _write_ws_close_frame(writer, code, reason=b""):
+  """Write a WebSocket close frame with the given status code."""
+  payload = struct.pack("!H", code) + reason
+  writer.write(bytearray([0x88, len(payload)]) + payload)
+
+
 def _run_state_server(host, ws_port, shm_array, shm_capacity, generation):
   """Runs an asyncio state WebSocket server.
 
@@ -173,6 +185,12 @@ def _run_state_server(host, ws_port, shm_array, shm_capacity, generation):
           sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         if active_writer is not None:
           logger.info("[StateWS] Kicking previous browser connection")
+          try:
+            _write_ws_close_frame(
+                active_writer, WS_CLOSE_SUPERSEDED, b"superseded"
+            )
+          except (ConnectionResetError, BrokenPipeError, OSError):
+            pass
           active_writer.close()
         active_writer = writer
       else:
