@@ -85,6 +85,9 @@ class NativeViewer(viewer_protocol.Viewer):
     ctx = self._viewer.GetImGuiContext()
     imgui.SetCurrentContext(ctx)
     ux.set_imgui_context(ctx)
+    # Extension modules each hold their own copy of the ImPlot globals; share
+    # the context pointer or the plotting GUIs crash on a null context.
+    ux.set_implot_context(self._viewer.GetImPlotContext())
 
     # Dispatch lifecycle event so handlers can cache the viewer reference.
     self.dispatch(viewer_protocol.ViewerInitEvent(viewer=self))

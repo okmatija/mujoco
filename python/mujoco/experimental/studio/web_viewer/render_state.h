@@ -30,9 +30,11 @@
 //                derived quantities locally.
 //   * the rest — this fixed-size block: everything else Render() reads.
 //
-// The StateServer WebSocket payload is therefore:
-//   [4B sig][physics state (mjtNum[])][render state (this block)]
-// with this block laid out as:
+// The StateServer WebSocket payload is a sequence of tagged blocks (see
+// SerializeStatePayload below):
+//   [StatePayloadHeader][u32 tag][u32 size][payload]...
+// Readers skip blocks with unknown tags, so new blocks can be added without
+// breaking older clients. The fixed-size render state block is laid out as:
 //   [mjvCamera][mjvPerturb][mjvOption][mjOption][mjVisual][mjStatistic]
 //   [render_flags]
 
@@ -94,6 +96,161 @@ inline std::vector<char> SerializeRenderState(
   }
 
   return buffer;
+}
+
+// -----------------------------------------------------------------------------
+// State payload: the full StateServer WebSocket message.
+// -----------------------------------------------------------------------------
+
+// "MJWS" as little-endian bytes.
+inline constexpr uint32_t kStatePayloadMagic = 0x53574A4Du;
+inline constexpr uint16_t kStatePayloadVersion = 1;
+
+// Maximum number of extra geoms serialized per frame. Bounds the shared
+// memory buffer the StateServer allocates; WebViewer truncates longer lists.
+inline constexpr uint32_t kMaxExtraGeoms = 1024;
+
+// Block tags. Readers must skip unknown tags.
+enum StateBlockTag : uint32_t {
+  kTagPhysicsState = 1,  // [i32 mjtState spec][mjtNum values...]
+  kTagRenderState = 2,   // fixed-size block of kRenderStateSize bytes
+  kTagExtraGeoms = 3,    // n x mjvGeom (n = size / sizeof(mjvGeom))
+};
+
+struct StatePayloadHeader {
+  uint32_t magic = kStatePayloadMagic;
+  uint16_t version = kStatePayloadVersion;
+  uint16_t nblocks = 0;
+  // Identity of the model the payload refers to (CRC32 of the MJB bytes).
+  // When this changes, the browser must refetch /model.mjb before applying
+  // any further state.
+  uint32_t model_ident = 0;
+  uint32_t reserved = 0;
+};
+static_assert(sizeof(StatePayloadHeader) == 16);
+
+struct StateBlockHeader {
+  uint32_t tag = 0;
+  uint32_t size = 0;
+};
+static_assert(sizeof(StateBlockHeader) == 8);
+
+// Upper bound of a serialized payload, used to size the StateServer's shared
+// memory buffer. `physics_bytes` is mj_stateSize(...) * sizeof(mjtNum).
+inline size_t MaxStatePayloadSize(size_t physics_bytes) {
+  return sizeof(StatePayloadHeader) + 3 * sizeof(StateBlockHeader) +
+         (sizeof(int32_t) + physics_bytes) + kRenderStateSize +
+         kMaxExtraGeoms * sizeof(mjvGeom);
+}
+
+inline void AppendStateBlock(std::vector<char>& buffer, uint32_t tag,
+                             const void* data, size_t size) {
+  StateBlockHeader block_header{tag, static_cast<uint32_t>(size)};
+  const char* header_bytes = reinterpret_cast<const char*>(&block_header);
+  buffer.insert(buffer.end(), header_bytes,
+                header_bytes + sizeof(StateBlockHeader));
+  const char* data_bytes = static_cast<const char*>(data);
+  buffer.insert(buffer.end(), data_bytes, data_bytes + size);
+}
+
+// Serialize the complete state payload sent over the state WebSocket.
+inline std::vector<char> SerializeStatePayload(
+    uint32_t model_ident, int32_t physics_spec, const void* physics,
+    size_t physics_bytes, const mjvCamera& camera, const mjvPerturb& perturb,
+    const mjvOption& vis_options, const mjOption& opt, const mjVisual& vis,
+    const mjStatistic& stat, const std::vector<uint8_t>& render_flags,
+    const mjvGeom* extra_geoms, size_t extra_geom_count) {
+  extra_geom_count = extra_geom_count > kMaxExtraGeoms ? kMaxExtraGeoms
+                                                       : extra_geom_count;
+  std::vector<char> buffer;
+  buffer.reserve(MaxStatePayloadSize(physics_bytes));
+
+  StatePayloadHeader header;
+  header.nblocks = extra_geom_count > 0 ? 3 : 2;
+  header.model_ident = model_ident;
+  const char* header_bytes = reinterpret_cast<const char*>(&header);
+  buffer.insert(buffer.end(), header_bytes,
+                header_bytes + sizeof(StatePayloadHeader));
+
+  // Physics state: [i32 spec][mjtNum values...].
+  std::vector<char> physics_block(sizeof(int32_t) + physics_bytes);
+  memcpy(physics_block.data(), &physics_spec, sizeof(int32_t));
+  memcpy(physics_block.data() + sizeof(int32_t), physics, physics_bytes);
+  AppendStateBlock(buffer, kTagPhysicsState, physics_block.data(),
+                   physics_block.size());
+
+  // Render state.
+  std::vector<char> render_block = SerializeRenderState(
+      camera, perturb, vis_options, opt, vis, stat, render_flags);
+  AppendStateBlock(buffer, kTagRenderState, render_block.data(),
+                   render_block.size());
+
+  // Extra geoms (only when present).
+  if (extra_geom_count > 0) {
+    AppendStateBlock(buffer, kTagExtraGeoms, extra_geoms,
+                     extra_geom_count * sizeof(mjvGeom));
+  }
+
+  return buffer;
+}
+
+// Parsed view into a serialized payload. Pointers alias the input buffer and
+// are NOT guaranteed to be aligned — memcpy the data out before use.
+struct StatePayloadView {
+  uint32_t model_ident = 0;
+  int32_t physics_spec = 0;
+  const char* physics = nullptr;
+  size_t physics_bytes = 0;
+  const char* render_state = nullptr;  // kRenderStateSize bytes when non-null
+  const char* extra_geoms = nullptr;   // extra_geom_count * sizeof(mjvGeom)
+  size_t extra_geom_count = 0;
+};
+
+// Parses a payload produced by SerializeStatePayload. Returns false if the
+// buffer is malformed (bad magic/version or out-of-bounds block). Blocks
+// with unknown tags are skipped.
+inline bool ParseStatePayload(const void* data, size_t size,
+                              StatePayloadView* out) {
+  const char* bytes = static_cast<const char*>(data);
+  if (size < sizeof(StatePayloadHeader)) return false;
+
+  StatePayloadHeader header;
+  memcpy(&header, bytes, sizeof(header));
+  if (header.magic != kStatePayloadMagic) return false;
+  if (header.version != kStatePayloadVersion) return false;
+  out->model_ident = header.model_ident;
+
+  size_t offset = sizeof(StatePayloadHeader);
+  for (uint16_t i = 0; i < header.nblocks; ++i) {
+    if (offset + sizeof(StateBlockHeader) > size) return false;
+    StateBlockHeader block;
+    memcpy(&block, bytes + offset, sizeof(block));
+    offset += sizeof(StateBlockHeader);
+    if (offset + block.size > size) return false;
+    const char* payload = bytes + offset;
+
+    switch (block.tag) {
+      case kTagPhysicsState:
+        if (block.size < sizeof(int32_t)) return false;
+        memcpy(&out->physics_spec, payload, sizeof(int32_t));
+        out->physics = payload + sizeof(int32_t);
+        out->physics_bytes = block.size - sizeof(int32_t);
+        break;
+      case kTagRenderState:
+        if (block.size != kRenderStateSize) return false;
+        out->render_state = payload;
+        break;
+      case kTagExtraGeoms:
+        if (block.size % sizeof(mjvGeom) != 0) return false;
+        out->extra_geoms = payload;
+        out->extra_geom_count = block.size / sizeof(mjvGeom);
+        break;
+      default:
+        break;  // Unknown tag: skip.
+    }
+    offset += block.size;
+  }
+  return true;
 }
 
 }  // namespace mujoco::studio

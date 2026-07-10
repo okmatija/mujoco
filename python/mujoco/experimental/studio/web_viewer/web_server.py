@@ -126,6 +126,8 @@ class _WebViewerHTTPHandler(http.server.SimpleHTTPRequestHandler):
       self.send_header("Content-Type", "application/octet-stream")
       self.send_header("Content-Length", str(len(self._mjb_data)))
       self.send_header("Access-Control-Allow-Origin", "*")
+      # The model changes on hot-swap; never serve a cached copy.
+      self.send_header("Cache-Control", "no-store")
       self.end_headers()
       self.wfile.write(self._mjb_data)
     else:

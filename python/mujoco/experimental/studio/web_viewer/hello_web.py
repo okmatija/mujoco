@@ -73,11 +73,11 @@ def main(argv: list[str]) -> None:
   # State streaming server (latest-wins snapshots over WebSocket).
   sig = int(mujoco.mjtState.mjSTATE_INTEGRATION)
   state_size = mujoco.mj_stateSize(model, sig)
-  payload_bytes = (
-      state_size * np.float64().itemsize + ui_server.get_render_state_size()
+  max_payload = ui_server_module.UiServer.max_state_payload_size(
+      state_size * np.float64().itemsize
   )
   state_server = state_server_module.StateServer(
-      state_ws_port=8891, state_size=payload_bytes, state_sig=sig
+      state_ws_port=8891, max_payload_size=max_payload
   )
   state_server.start()
 
@@ -118,10 +118,11 @@ def main(argv: list[str]) -> None:
 
       # Stream the physics + visualization state to the browser.
       mujoco.mj_getState(model, data, state, sig)
-      render_state_bytes = ui_server.get_render_state(
-          camera, perturb, vis_options, model, render_flags
+      payload = ui_server.serialize_state_payload(
+          0, sig, state.tobytes(), camera, perturb, vis_options, model,
+          render_flags, []
       )
-      state_server.update_state(state.tobytes() + render_state_bytes)
+      state_server.update_state(payload)
 
       # End the frame; NetImgui streams the UI draw data to the browser.
       ui_server.end_frame()

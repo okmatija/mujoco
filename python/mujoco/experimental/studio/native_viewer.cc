@@ -205,6 +205,12 @@ class Viewer {
     return reinterpret_cast<intptr_t>(ImGui::GetCurrentContext());
   }
 
+  // See ux.set_implot_context: extension modules each hold their own copy of
+  // the ImPlot globals, so the context pointer must be shared explicitly.
+  intptr_t GetImPlotContext() {
+    return reinterpret_cast<intptr_t>(ImPlot::GetCurrentContext());
+  }
+
  private:
   std::unique_ptr<mujoco::platform::Window> window_;
   std::unique_ptr<mujoco::platform::Renderer> renderer_;
@@ -226,7 +232,8 @@ PYBIND11_MODULE(native_viewer_cc, m, pybind11::mod_gil_not_used()) {
       .def("UploadImage", &Viewer::UploadImage)
       .def("RenderToTexture", &Viewer::RenderToTexture)
       .def("GetDropFile", &Viewer::GetDropFile)
-      .def("GetImGuiContext", &Viewer::GetImGuiContext);
+      .def("GetImGuiContext", &Viewer::GetImGuiContext)
+      .def("GetImPlotContext", &Viewer::GetImPlotContext);
   m.def("IsCrd", &IsCrd);
   m.def("IsCuda", &IsCuda);
 }

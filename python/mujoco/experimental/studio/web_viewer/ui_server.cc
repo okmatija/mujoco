@@ -269,29 +269,102 @@ class UiServer {
     NetImgui::EndFrame();
   }
 
-  // Serialize the render state (see render_state.h) as raw bytes for the
-  // browser app.
-  py::bytes GetRenderState(const mujoco::python::MjvCameraWrapper& camera,
-                           const mujoco::python::MjvPerturbWrapper& perturb,
-                           const mujoco::python::MjvOptionWrapper& vis_options,
-                           const mujoco::python::MjModelWrapper& model,
-                           const std::vector<uint8_t>& render_flags) {
-    auto buffer = mujoco::studio::SerializeRenderState(
+  // Serialize the complete state WebSocket payload (see render_state.h):
+  // physics state, render state and extra geoms as tagged blocks.
+  py::bytes SerializeStatePayload(
+      uint32_t model_ident, int physics_spec, const py::bytes& physics_state,
+      const mujoco::python::MjvCameraWrapper& camera,
+      const mujoco::python::MjvPerturbWrapper& perturb,
+      const mujoco::python::MjvOptionWrapper& vis_options,
+      const mujoco::python::MjModelWrapper& model,
+      const std::vector<uint8_t>& render_flags,
+      const std::vector<mujoco::python::MjvGeomWrapper>& extra_geoms) {
+    std::vector<mjvGeom> geoms;
+    geoms.reserve(extra_geoms.size());
+    for (const auto& geom_wrapper : extra_geoms) {
+      if (geom_wrapper.get()) {
+        geoms.push_back(*geom_wrapper.get());
+      }
+    }
+
+    std::string physics = physics_state;
+    auto buffer = mujoco::studio::SerializeStatePayload(
+        model_ident, physics_spec, physics.data(), physics.size(),
         *camera.get(), *perturb.get(), *vis_options.get(), model.get()->opt,
-        model.get()->vis, model.get()->stat, render_flags);
+        model.get()->vis, model.get()->stat, render_flags, geoms.data(),
+        geoms.size());
     return py::bytes(buffer.data(), buffer.size());
   }
 
-  // Returns the fixed size of the render state in bytes.
-  static int GetRenderStateSize() { return mujoco::studio::kRenderStateSize; }
+  // Upper bound of a serialized payload for a model whose physics state is
+  // `physics_bytes` long. Used to size the StateServer's shared memory.
+  static size_t MaxStatePayloadSize(size_t physics_bytes) {
+    return mujoco::studio::MaxStatePayloadSize(physics_bytes);
+  }
+
+  // Uploads an RGB/RGBA image to the browser over the NetImgui texture
+  // channel so handlers can display it with imgui.Image(). Returns the
+  // texture id to use (allocates one when tex_id == 0). This is the UI-link
+  // counterpart of the native renderer's UploadImage.
+  uintptr_t UploadImage(uintptr_t tex_id, const py::bytes& pixels, int width,
+                        int height, int bpp) {
+    if (tex_id == 0) {
+      tex_id = next_tex_id_++;
+    }
+    std::string data = pixels;
+    if (width <= 0 || height <= 0 ||
+        data.size() < static_cast<size_t>(width) * height * bpp) {
+      LOG(Error, "UploadImage: bad dimensions %dx%dx%d for %zu bytes", width,
+          height, bpp, data.size());
+      return tex_id;
+    }
+
+    // NetImgui transfers RGBA8; expand RGB if needed.
+    std::vector<uint8_t> rgba;
+    const void* upload_data = data.data();
+    if (bpp == 3) {
+      rgba.resize(static_cast<size_t>(width) * height * 4);
+      for (size_t p = 0; p < static_cast<size_t>(width) * height; ++p) {
+        rgba[p * 4 + 0] = data[p * 3 + 0];
+        rgba[p * 4 + 1] = data[p * 3 + 1];
+        rgba[p * 4 + 2] = data[p * 3 + 2];
+        rgba[p * 4 + 3] = 255;
+      }
+      upload_data = rgba.data();
+    } else if (bpp != 4) {
+      LOG(Error, "UploadImage: unsupported bpp %d (expected 3 or 4)", bpp);
+      return tex_id;
+    }
+
+    py::gil_scoped_release no_gil;
+    ImGui::SetCurrentContext(context_);
+    NetImgui::SendDataTexture(static_cast<ImTextureID>(tex_id),
+                              const_cast<void*>(upload_data),
+                              static_cast<uint16_t>(width),
+                              static_cast<uint16_t>(height),
+                              NetImgui::eTexFormat::kTexFmtRGBA8);
+    return tex_id;
+  }
 
   intptr_t GetContext() const { return reinterpret_cast<intptr_t>(context_); }
+
+  // The ImPlot context created alongside the ImGui context. Python must pass
+  // this to ux.set_implot_context: extension modules each hold their own copy
+  // of the ImPlot globals, so the context pointer has to be shared explicitly
+  // (same pattern as get_context/set_imgui_context).
+  intptr_t GetImPlotContext() const {
+    return reinterpret_cast<intptr_t>(ImPlot::GetCurrentContext());
+  }
 
  private:
   std::string title_;
   int port_;
   ImGuiContext* context_ = nullptr;
   bool is_drawing_remote_ = false;
+  // User texture ids start well above the ids ImGui's managed texture system
+  // (font atlas) hands out, so the two can never collide in the browser's
+  // texture map.
+  uintptr_t next_tex_id_ = 0x10000;
 };
 
 PYBIND11_MODULE(ui_server, m, pybind11::mod_gil_not_used()) {
@@ -306,6 +379,9 @@ PYBIND11_MODULE(ui_server, m, pybind11::mod_gil_not_used()) {
       .def("new_frame", &UiServer::NewFrame)
       .def("end_frame", &UiServer::EndFrame)
       .def("get_context", &UiServer::GetContext)
-      .def("get_render_state", &UiServer::GetRenderState)
-      .def_static("get_render_state_size", &UiServer::GetRenderStateSize);
+      .def("get_implot_context", &UiServer::GetImPlotContext)
+      .def("serialize_state_payload", &UiServer::SerializeStatePayload)
+      .def("upload_image", &UiServer::UploadImage)
+      .def_static("max_state_payload_size", &UiServer::MaxStatePayloadSize);
+  m.attr("MAX_EXTRA_GEOMS") = mujoco::studio::kMaxExtraGeoms;
 }

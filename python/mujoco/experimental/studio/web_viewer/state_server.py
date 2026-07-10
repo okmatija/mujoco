@@ -4,7 +4,9 @@ This module provides the StateServer class that:
 1. Manages shared memory for zero-copy state transfer from the sim thread.
 2. Runs a WebSocket server in a child process that broadcasts state at ~60Hz.
 
-The wire format is: [4 bytes: state_sig (int32 LE)] [N bytes: state]
+Each WebSocket message is one opaque, variable-length payload produced by
+UiServer.serialize_state_payload (a sequence of tagged blocks; see
+render_state.h for the format). The server treats it as latest-wins bytes.
 """
 
 import asyncio
@@ -149,13 +151,12 @@ def _write_ws_binary_frame(writer, data):
   writer.write(header + data)
 
 
-def _run_state_server(
-    host, ws_port, shm_array, shm_size, generation, state_sig
-):
+def _run_state_server(host, ws_port, shm_array, shm_capacity, generation):
   """Runs an asyncio state WebSocket server.
 
-  Reads state from a shared multiprocessing.Array and broadcasts it to the
-  browser. The wire format is: [4 bytes: state_sig (int32 LE)] [N bytes: state]
+  Reads the latest payload from a shared multiprocessing.Array and broadcasts
+  it to the browser. The shared array holds [u32 length][payload bytes] so
+  payload sizes can vary per frame (e.g. with the number of extra geoms).
   """
 
   async def main_loop():
@@ -199,11 +200,11 @@ def _run_state_server(
           active_writer = None
           continue
 
-        # Read state from shared array.
-        state_bytes = bytes(shm_array[:shm_size])
-
-        # Build wire frame: [4B sig LE] [state bytes]
-        payload = struct.pack("<i", state_sig) + state_bytes
+        # Read the latest payload from the shared array: [u32 length][bytes].
+        (used,) = struct.unpack("<I", bytes(shm_array[:4]))
+        if used == 0 or used > shm_capacity:
+          continue
+        payload = bytes(shm_array[4 : 4 + used])
 
         # Send as WebSocket binary frame.
         try:
@@ -232,29 +233,37 @@ class StateServer:
       self,
       host: str = "0.0.0.0",
       state_ws_port: int = 8891,
-      state_size: int = 0,
-      state_sig: int = 0,
+      max_payload_size: int = 0,
   ):
     self.host = host
     self.state_ws_port = state_ws_port
-    self.state_sig = state_sig
     self._state_thread = None
 
-    # Shared memory for zero-copy state transfer to the state server process.
-    # state_size is the total payload size in bytes (physics state + vis state).
-    self._shm_byte_size = state_size
+    # Shared memory for zero-copy payload transfer to the state server
+    # process: [u32 length][payload bytes], so payloads can vary in size up
+    # to max_payload_size (see UiServer.max_state_payload_size).
+    self._shm_capacity = max_payload_size
     self._shm_array = (
-        multiprocessing.RawArray(ctypes.c_char, self._shm_byte_size)
-        if self._shm_byte_size > 0
+        multiprocessing.RawArray(ctypes.c_char, 4 + self._shm_capacity)
+        if self._shm_capacity > 0
         else None
     )
     self._generation = multiprocessing.Value("Q", 0)  # uint64 counter
 
-  def update_state(self, state_bytes: bytes) -> None:
-    """Update the latest simulation state. Called from the sim thread."""
+  def update_state(self, payload: bytes) -> None:
+    """Update the latest state payload. Called from the sim thread."""
     if self._shm_array is None:
       return
-    ctypes.memmove(self._shm_array, state_bytes, len(state_bytes))
+    if len(payload) > self._shm_capacity:
+      logger.error(
+          f"[StateWS] Payload of {len(payload)} bytes exceeds capacity"
+          f" {self._shm_capacity}; dropping."
+      )
+      return
+    ctypes.memmove(
+        self._shm_array, struct.pack("<I", len(payload)) + payload,
+        4 + len(payload),
+    )
     self._generation.value += 1
 
   def start(self) -> None:
@@ -268,9 +277,8 @@ class StateServer:
             self.host,
             self.state_ws_port,
             self._shm_array,
-            self._shm_byte_size,
+            self._shm_capacity,
             self._generation,
-            self.state_sig,
         ),
         daemon=True,
     )

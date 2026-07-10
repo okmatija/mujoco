@@ -32,6 +32,7 @@ separating the viewer and simulation.
 
 import os
 from typing import Any
+import zlib
 
 import mujoco
 from mujoco.experimental.studio import endpoints
@@ -133,16 +134,21 @@ class WebViewer(viewer_protocol.Viewer):
     )
 
     # Point the Python Dear ImGui bindings at the headless context so that
-    # viewer-side handlers (ViewerApp etc.) build their GUI into it.
+    # viewer-side handlers (ViewerApp etc.) build their GUI into it. The
+    # ImPlot context must be shared the same way — every extension module has
+    # its own copy of the ImGui/ImPlot globals, and the plotting GUIs crash
+    # on a null ImPlot context otherwise.
     ctx = self._ui_server.get_context()
     imgui.SetCurrentContext(ctx)
     ux.set_imgui_context(ctx)
+    ux.set_implot_context(self._ui_server.get_implot_context())
 
     # HTTP + NetImgui proxy + state streaming servers. They are (re)started
     # whenever the model changes, since the served MJB bytes and the state
     # buffer size depend on the model.
     self._web_server: web_server_module.WebServer | None = None
     self._state_server: state_server_module.StateServer | None = None
+    self._model_ident = 0
     self._start_servers()
 
     # Dispatch lifecycle event so handlers can cache the viewer reference.
@@ -161,17 +167,20 @@ class WebViewer(viewer_protocol.Viewer):
     """Starts (or restarts) the HTTP, proxy and state servers."""
     self._stop_servers()
 
-    sig, state_size = self._state_signature_and_size()
-    payload_bytes = (
+    mjb_data = _serialize_model(self.model)
+    # Identity of the served model, included in every state payload. When it
+    # changes, the browser refetches /model.mjb by reloading the page.
+    self._model_ident = zlib.crc32(mjb_data)
+
+    _, state_size = self._state_signature_and_size()
+    max_payload = ui_server_module.UiServer.max_state_payload_size(
         state_size * np.float64().itemsize
-        + ui_server_module.UiServer.get_render_state_size()
     )
 
     self._state_server = state_server_module.StateServer(
         host=self._host,
         state_ws_port=self._state_ws_port,
-        state_size=payload_bytes,
-        state_sig=sig,
+        max_payload_size=max_payload,
     )
     self._state_server.start()
 
@@ -180,7 +189,7 @@ class WebViewer(viewer_protocol.Viewer):
         http_port=self._http_port,
         tcp_port=self._ui_tcp_port,
         ws_port=self._ui_ws_port,
-        mjb_data=_serialize_model(self.model),
+        mjb_data=mjb_data,
     )
     self._web_server.start()
     print(
@@ -205,12 +214,13 @@ class WebViewer(viewer_protocol.Viewer):
     """Restarts the servers to serve the new model.
 
     The base Viewer's CRITICAL-priority handler has already replaced
-    self.model/self.data by the time this runs. The browser does not reconnect
-    automatically — reload the page after a model change.
+    self.model/self.data by the time this runs. The browser reconnects to the
+    new state server, notices the changed model identity in the payload, and
+    reloads itself to fetch the new model.
     """
     del event
     self._start_servers()
-    print('Model changed: reload the browser page to pick it up.')
+    print('Model changed: the browser page reloads automatically.')
     return False  # Do not consume; let other handlers see the event.
 
   # ---------------------------------------------------------------------------
@@ -231,14 +241,18 @@ class WebViewer(viewer_protocol.Viewer):
       sig, state_size = self._state_signature_and_size()
       state = np.empty(state_size, np.float64)
       mujoco.mj_getState(self.model, self.data, state, sig)
-      render_state_bytes = self._ui_server.get_render_state(
+      payload = self._ui_server.serialize_state_payload(
+          self._model_ident,
+          sig,
+          state.tobytes(),
           self.camera,
           self.perturb,
           self.vis_options,
           self.model,
           list(self.render_flags.flags),
+          self.extra_geoms[: ui_server_module.MAX_EXTRA_GEOMS],
       )
-      self._state_server.update_state(state.tobytes() + render_state_bytes)
+      self._state_server.update_state(payload)
 
     # Finish the ImGui frame; NetImgui sends the draw data to the browser.
     self._ui_server.end_frame()
@@ -254,6 +268,7 @@ class WebViewer(viewer_protocol.Viewer):
   def upload_image(
       self, tex_id: int, img: str | bytes, width: int, height: int, bpp: int
   ) -> int:
-    """Image upload is not supported in the web viewer (no local renderer)."""
-    del img, width, height, bpp
-    return tex_id
+    """Uploads an image to the browser over the NetImgui texture channel."""
+    if isinstance(img, str):
+      img = img.encode('latin-1')
+    return self._ui_server.upload_image(tex_id, img, width, height, bpp)

@@ -49,6 +49,8 @@ extern "C" GLenum __wrap_glGetError(void) { return GL_NO_ERROR; }
 #endif
 
 using mujoco::studio::kRenderStateSize;
+using mujoco::studio::ParseStatePayload;
+using mujoco::studio::StatePayloadView;
 
 struct AppState {
   std::unique_ptr<mujoco::platform::Window> window;
@@ -63,6 +65,9 @@ struct AppState {
   std::vector<mjtNum> backend_state;
   int backend_state_sig = 0;
   bool backend_state_dirty = false;
+
+  // User-injected geoms (Viewer.extra_geoms) received with the state payload.
+  std::vector<mjvGeom> extra_geoms;
 };
 AppState g_app;
 
@@ -80,65 +85,97 @@ static uint64_t s_sim_bytes_accum = 0;
 static uint64_t s_sim_bytes_per_sec = 0;
 static bool gUseCompression = true;
 
+// Identity of the model this page loaded (adopted from the first payload).
+// When the payload's identity changes, the Python side has swapped models:
+// reload the page, which refetches /model.mjb and reconnects everything.
+static uint32_t sModelIdent = 0;
+static bool sHaveModelIdent = false;
+static bool sReloadPending = false;
+
 EM_BOOL OnStateWsMessage(int eventType,
                          const EmscriptenWebSocketMessageEvent* wsEvent,
                          void* userData) {
-  if (!wsEvent->isText && wsEvent->numBytes > 4 && g_app.model_holder &&
-      g_app.model_holder->ok()) {
-    s_sim_bytes_accum += wsEvent->numBytes;
-    const uint8_t* data = wsEvent->data;
-    // Parse: [4 bytes sig (int32 LE)] [N*8 bytes physics state] [render state]
-    int32_t sig;
-    memcpy(&sig, data, 4);
+  if (wsEvent->isText || sReloadPending || !g_app.model_holder ||
+      !g_app.model_holder->ok()) {
+    return EM_TRUE;
+  }
+  s_sim_bytes_accum += wsEvent->numBytes;
 
-    int payload_bytes = wsEvent->numBytes - 4;
+  StatePayloadView view;
+  if (!ParseStatePayload(wsEvent->data, wsEvent->numBytes, &view)) {
+    LOG(Error, "Malformed state payload (%u bytes); dropping",
+        wsEvent->numBytes);
+    return EM_TRUE;
+  }
 
-    // Determine how many bytes are physics state vs render state.
-    // If the payload includes render state, subtract its fixed size.
-    int physics_bytes = payload_bytes;
-    bool has_render_state = false;
-    if (payload_bytes > kRenderStateSize) {
-      physics_bytes = payload_bytes - kRenderStateSize;
-      has_render_state = true;
-    }
+  if (!sHaveModelIdent) {
+    sModelIdent = view.model_ident;
+    sHaveModelIdent = true;
+  } else if (view.model_ident != sModelIdent) {
+    LOG(Info, "Model changed on the Python side (ident %u -> %u); reloading",
+        sModelIdent, view.model_ident);
+    sReloadPending = true;
+    EM_ASM({ setTimeout(function() { location.reload(); }, 0); });
+    return EM_TRUE;
+  }
 
-    int state_count = physics_bytes / sizeof(mjtNum);
-    g_app.backend_state.resize(state_count);
-    memcpy(g_app.backend_state.data(), data + 4, state_count * sizeof(mjtNum));
-    g_app.backend_state_sig = sig;
-    g_app.backend_state_dirty = true;
+  mjModel* model = g_app.model_holder->model();
 
-    // Apply render state if present. The headless viewer owns the camera and
-    // perturbation state (all input is forwarded to it and handled by the
-    // same code as the native viewer); the browser just renders them.
-    if (has_render_state) {
-      const uint8_t* vis_ptr = data + 4 + physics_bytes;
-      mjModel* model = g_app.model_holder->model();
-
-      memcpy(&g_app.camera, vis_ptr, sizeof(mjvCamera));
-      vis_ptr += sizeof(mjvCamera);
-
-      memcpy(&g_app.perturb, vis_ptr, sizeof(mjvPerturb));
-      vis_ptr += sizeof(mjvPerturb);
-
-      memcpy(&g_app.vis_options, vis_ptr, sizeof(mjvOption));
-      vis_ptr += sizeof(mjvOption);
-
-      memcpy(&model->opt, vis_ptr, sizeof(mjOption));
-      vis_ptr += sizeof(mjOption);
-
-      memcpy(&model->vis, vis_ptr, sizeof(mjVisual));
-      vis_ptr += sizeof(mjVisual);
-
-      memcpy(&model->stat, vis_ptr, sizeof(mjStatistic));
-      vis_ptr += sizeof(mjStatistic);
-
-      // Apply render flags to the renderer's scene if available.
-      if (g_app.renderer) {
-        memcpy(g_app.renderer->GetRenderFlags(), vis_ptr, mjNRNDFLAG);
-      }
+  // Physics state. Guard against a size mismatch (e.g. a stale packet from
+  // before a model change) — mj_setState with a wrong-sized vector would
+  // corrupt mjData.
+  if (view.physics != nullptr) {
+    const size_t expected_bytes =
+        mj_stateSize(model, view.physics_spec) * sizeof(mjtNum);
+    if (view.physics_bytes == expected_bytes) {
+      g_app.backend_state.resize(view.physics_bytes / sizeof(mjtNum));
+      memcpy(g_app.backend_state.data(), view.physics, view.physics_bytes);
+      g_app.backend_state_sig = view.physics_spec;
+      g_app.backend_state_dirty = true;
+    } else {
+      LOG(Warning, "Physics state size mismatch (%zu != %zu); dropping",
+          view.physics_bytes, expected_bytes);
     }
   }
+
+  // Render state. The headless viewer owns the camera and perturbation state
+  // (all input is forwarded to it and handled by the same code as the native
+  // viewer); the browser just renders them.
+  if (view.render_state != nullptr) {
+    const char* vis_ptr = view.render_state;
+
+    memcpy(&g_app.camera, vis_ptr, sizeof(mjvCamera));
+    vis_ptr += sizeof(mjvCamera);
+
+    memcpy(&g_app.perturb, vis_ptr, sizeof(mjvPerturb));
+    vis_ptr += sizeof(mjvPerturb);
+
+    memcpy(&g_app.vis_options, vis_ptr, sizeof(mjvOption));
+    vis_ptr += sizeof(mjvOption);
+
+    memcpy(&model->opt, vis_ptr, sizeof(mjOption));
+    vis_ptr += sizeof(mjOption);
+
+    memcpy(&model->vis, vis_ptr, sizeof(mjVisual));
+    vis_ptr += sizeof(mjVisual);
+
+    memcpy(&model->stat, vis_ptr, sizeof(mjStatistic));
+    vis_ptr += sizeof(mjStatistic);
+
+    // Apply render flags to the renderer's scene if available.
+    if (g_app.renderer) {
+      memcpy(g_app.renderer->GetRenderFlags(), vis_ptr, mjNRNDFLAG);
+    }
+  }
+
+  // Extra geoms (Viewer.extra_geoms on the Python side). The payload data is
+  // not guaranteed to be aligned; memcpy into the vector.
+  g_app.extra_geoms.resize(view.extra_geom_count);
+  if (view.extra_geom_count > 0) {
+    memcpy(g_app.extra_geoms.data(), view.extra_geoms,
+           view.extra_geom_count * sizeof(mjvGeom));
+  }
+
   return EM_TRUE;
 }
 
@@ -164,10 +201,23 @@ EM_BOOL OnStateWsClose(int eventType,
   return EM_TRUE;
 }
 
+// Hostname the page was served from. The WebSocket endpoints (UI proxy and
+// state server) live on the same host as the HTTP server, just on different
+// ports — never hardcode localhost, or the viewer only works when the
+// browser runs on the serving machine.
+std::string GetPageHostname() {
+  char* hostname =
+      emscripten_run_script_string("window.location.hostname || 'localhost'");
+  if (hostname != nullptr && hostname[0] != '\0') {
+    return hostname;
+  }
+  return "localhost";
+}
+
 void ConnectStateWebSocket() {
   // Build URL relative to the page origin, using port 8891.
   char url[256];
-  snprintf(url, sizeof(url), "ws://%s:8891", "localhost");
+  snprintf(url, sizeof(url), "ws://%s:8891", GetPageHostname().c_str());
 
   EmscriptenWebSocketCreateAttributes attr;
   emscripten_websocket_init_create_attributes(&attr);
@@ -987,6 +1037,35 @@ void MainLoopImpl() {
   static int sTexturesReceived = 0;
   sMainFrameCount++;
 
+#if defined(__EMSCRIPTEN__)
+  // Reconnect the state WebSocket if it dropped — e.g. the Python side
+  // restarted its servers after a model change. Receiving a payload with a
+  // different model identity then triggers a page reload (OnStateWsMessage).
+  static int sLastStateWsRetryFrame = 0;
+  if (gStateSocket == 0 && !sReloadPending && g_app.model_holder &&
+      g_app.model_holder->ok() &&
+      sMainFrameCount - sLastStateWsRetryFrame > 60) {
+    sLastStateWsRetryFrame = sMainFrameCount;
+    LOG(Info, "State WebSocket down; reconnecting...");
+    ConnectStateWebSocket();
+  }
+
+  // Reconnect the NetImgui UI socket too — the proxy tears the bridge down
+  // whenever its headless-side TCP connection cycles (server restart, or
+  // another browser tab briefly taking the single UI slot).
+  static int sLastUiWsRetryFrame = 0;
+  if (gClientSocket && !sReloadPending &&
+      sMainFrameCount - sLastUiWsRetryFrame > 60) {
+    const char* uiStatus = Network::GetStatusString(gClientSocket);
+    if (strncmp(uiStatus, "Closed", 6) == 0 || strcmp(uiStatus, "Error") == 0) {
+      sLastUiWsRetryFrame = sMainFrameCount;
+      LOG(Info, "UI WebSocket closed; reconnecting...");
+      Network::Disconnect(gClientSocket);
+      gClientSocket = Network::Connect(GetPageHostname().c_str(), 8890);
+    }
+  }
+#endif
+
   // =========================================================================
   // Phase 1: Network — process incoming data BEFORE the ImGui frame.
   // This is the equivalent of NetImguiServer::App::UpdateClientDraw() in the
@@ -1208,7 +1287,8 @@ void MainLoopImpl() {
     if (width > 0 && height > 0) {
       g_app.renderer->Render(g_app.model_holder->model(),
                              g_app.model_holder->data(), &g_app.perturb,
-                             &g_app.camera, &g_app.vis_options, width, height);
+                             &g_app.camera, &g_app.vis_options, width, height,
+                             /*pixels=*/{}, std::span(g_app.extra_geoms));
     }
   }
 
@@ -1337,13 +1417,13 @@ int main(int argc, char** argv) {
   SDL_StartTextInput();
 
 #if defined(__EMSCRIPTEN__)
-  const char* host = "localhost";
+  const std::string host = GetPageHostname();
 #else
-  const char* host = "127.0.0.1";
+  std::string host = "127.0.0.1";
   if (argc > 1) host = argv[1];
 #endif
-  debug_log_connect(host, 8890);
-  gClientSocket = Network::Connect(host, 8890);
+  debug_log_connect(host.c_str(), 8890);
+  gClientSocket = Network::Connect(host.c_str(), 8890);
   debug_log_connect_result(gClientSocket);
 
 #if defined(__EMSCRIPTEN__)
