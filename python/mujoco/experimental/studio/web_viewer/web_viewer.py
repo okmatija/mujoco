@@ -20,11 +20,16 @@ The WebViewer streams the Studio UI and simulation state to a browser:
     through a WebSocket-to-TCP proxy. Input captured in the browser flows back
     over the same connection and is injected into the headless context, so all
     viewer-side handlers (e.g. ``ViewerApp``) work unmodified.
-  * Physics state and visualization state (camera, options, render flags) are
+  * Physics state and render state (camera, perturb, options, extra geoms) are
     streamed to the browser at ~60Hz over a WebSocket with latest-wins
     (snapshot) semantics — see ``state_server.StateServer``.
   * The browser runs the ``web_client`` WASM app, which renders the MuJoCo
     scene with Filament and overlays the remote ImGui draw data.
+
+  Everything is served through ONE public port (default 8080): the page and
+  model over HTTP, the UI stream at path /ui and the state stream at /state
+  (see ``web_server._run_router``). Exposing or tunneling that single port
+  exposes the whole viewer; the other ports are loopback-internal.
 
 See the documentation for studio_app.py for more details on the architecture
 separating the viewer and simulation.
@@ -101,11 +106,15 @@ class WebViewer(viewer_protocol.Viewer):
       perturb: Perturbation parameters. Internal object is created if None.
       render_flags: Render flags. Internal object is created if None.
       extra_geoms: List of extra geoms. Internal list is created if None.
-      host: Interface the HTTP/WebSocket servers bind to.
-      http_port: Port serving the browser page, WASM and /model.mjb.
-      ui_tcp_port: TCP port the headless NetImgui client connects to.
-      ui_ws_port: WebSocket port the browser NetImgui side connects to.
-      state_ws_port: WebSocket port streaming simulation state to the browser.
+      host: Public interface the router binds to; all other servers bind
+        loopback and are reached through the router by path.
+      http_port: The single public port: page, WASM, /model.mjb, and the
+        /ui and /state WebSocket paths.
+      ui_tcp_port: Internal TCP port the headless NetImgui client connects to.
+      ui_ws_port: Internal WebSocket port bridging NetImgui to the browser
+        (public path /ui).
+      state_ws_port: Internal WebSocket port streaming simulation state to
+        the browser (public path /state).
     """
     super().__init__(
         config,
@@ -177,8 +186,10 @@ class WebViewer(viewer_protocol.Viewer):
         state_size * np.float64().itemsize
     )
 
+    # Only the WebServer's router binds self._host (the public interface);
+    # the state server and the other internal servers bind loopback and are
+    # reached through the router by path (/state, /ui).
     self._state_server = state_server_module.StateServer(
-        host=self._host,
         state_ws_port=self._state_ws_port,
         max_payload_size=max_payload,
     )
@@ -189,6 +200,7 @@ class WebViewer(viewer_protocol.Viewer):
         http_port=self._http_port,
         tcp_port=self._ui_tcp_port,
         ws_port=self._ui_ws_port,
+        state_ws_port=self._state_ws_port,
         mjb_data=mjb_data,
     )
     self._web_server.start()

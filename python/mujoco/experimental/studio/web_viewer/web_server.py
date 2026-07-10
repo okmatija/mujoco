@@ -5,6 +5,12 @@ This module provides the WebServer class that:
 2. Serves the model MJB over HTTP (GET /model.mjb).
 3. Runs a WebSocket-to-TCP proxy bridging the NetImgui protocol between
    the headless UiServer (ui_server.cc) and the browser.
+4. Runs the single public entry point: a router that forwards connections
+   by request path (/ui, /state, everything else) to the internal servers,
+   which all bind to loopback. The whole viewer is therefore reachable
+   through ONE public port — one firewall rule, one port-forward, or one
+   HTTPS tunnel (e.g. `cloudflared tunnel --url http://localhost:8080`)
+   exposes it completely.
 """
 
 import asyncio
@@ -537,13 +543,110 @@ def _run_proxy(host, tcp_port, ws_port):
   _run_cancellable(main_loop)
 
 
+def _run_router(host, public_port, http_port, ui_ws_port, state_ws_port):
+  """Single public entry point for the web viewer.
+
+  Listens on the public port and forwards each connection, by request path,
+  to one of the internal loopback servers:
+
+    /ui     -> NetImgui UI proxy WebSocket
+    /state  -> state streaming WebSocket
+    (other) -> HTTP static file / model server
+
+  The routing is a raw TCP splice: the request head is buffered to pick the
+  backend, then bytes are piped verbatim in both directions. This makes the
+  whole viewer a single-port service, so one forwarded port or one HTTPS
+  tunnel exposes everything.
+  """
+
+  async def main_loop():
+    async def handle_client(reader, writer):
+      upstream_writer = None
+      try:
+        # Buffer the request head to pick a backend by path.
+        head = b""
+        while b"\r\n\r\n" not in head and len(head) < 65536:
+          chunk = await asyncio.wait_for(reader.read(4096), timeout=10.0)
+          if not chunk:
+            return
+          head += chunk
+
+        request_line = head.split(b"\r\n", 1)[0]
+        parts = request_line.split(b" ")
+        path = parts[1] if len(parts) >= 2 else b"/"
+        if path == b"/ui" or path.startswith(b"/ui?"):
+          target = ui_ws_port
+        elif path == b"/state" or path.startswith(b"/state?"):
+          target = state_ws_port
+        else:
+          target = http_port
+
+        upstream_reader, upstream_writer = await asyncio.open_connection(
+            "127.0.0.1", target
+        )
+        for w in (writer, upstream_writer):
+          sock = w.get_extra_info("socket")
+          if sock:
+            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        upstream_writer.write(head)
+        await upstream_writer.drain()
+
+        async def pipe(src, dst):
+          try:
+            while True:
+              data = await src.read(65536)
+              if not data:
+                break
+              dst.write(data)
+              await dst.drain()
+          finally:
+            try:
+              dst.close()
+            except Exception:  # pylint: disable=broad-exception-caught
+              pass
+
+        await asyncio.gather(
+            pipe(reader, upstream_writer),
+            pipe(upstream_reader, writer),
+            return_exceptions=True,
+        )
+      except (asyncio.TimeoutError, ConnectionError, OSError):
+        # Client vanished or a backend is (re)starting; the browser retries.
+        pass
+      finally:
+        for w in (writer, upstream_writer):
+          if w is not None:
+            try:
+              w.close()
+            except Exception:  # pylint: disable=broad-exception-caught
+              pass
+
+    server = await asyncio.start_server(handle_client, host, public_port)
+    logger.info(
+        f"[Router] Public entry on http://{host}:{public_port} "
+        f"(/ui -> :{ui_ws_port}, /state -> :{state_ws_port}, "
+        f"* -> :{http_port})"
+    )
+    try:
+      while True:
+        await asyncio.sleep(3600)
+    finally:
+      server.close()
+
+  _run_cancellable(main_loop)
+
+
 class WebServer:
-  """HTTP server and NetImgui UI proxy for the web viewer.
+  """Public router, HTTP server and NetImgui UI proxy for the web viewer.
 
   This class manages:
-  1. An HTTP server that serves the web viewer static files and the model MJB.
-  2. A WebSocket-to-TCP proxy that bridges the NetImgui protocol between
+  1. The router: the single public port, forwarding by path to 2-4.
+  2. An HTTP server that serves the web viewer static files and the model MJB.
+  3. A WebSocket-to-TCP proxy that bridges the NetImgui protocol between
      the headless UiServer (ui_server.cc) and the browser.
+  4. (Externally owned) the state WebSocket server, reachable via /state.
+
+  Only the router binds a public interface; 2-4 bind loopback.
 
   Run the simulation with the web viewer, then visit http://localhost:8080.
   """
@@ -554,6 +657,8 @@ class WebServer:
       http_port: int = 8080,
       tcp_port: int = 8888,
       ws_port: int = 8890,
+      state_ws_port: int = 8891,
+      internal_http_port: int = 8081,
       static_files_dir: Optional[str] = None,
       mjb_data: Optional[bytes] = None,
   ):
@@ -561,27 +666,31 @@ class WebServer:
     self.http_port = http_port
     self.tcp_port = tcp_port
     self.ws_port = ws_port
+    self.state_ws_port = state_ws_port
+    self.internal_http_port = internal_http_port
     self.static_files_dir = static_files_dir or _find_static_files_dir()
     self.mjb_data = mjb_data
     self._running = False
     self._http_thread = None
     self._proxy_thread = None
+    self._router_thread = None
 
   def start(self) -> None:
-    """Start the HTTP server and proxy in background processes."""
+    """Start the router, HTTP server and proxy in background processes."""
     self._running = True
     self._start_http_server()
     self._start_proxy_server()
+    self._start_router()
 
   def stop(self) -> None:
     """Stop the server."""
     self._running = False
-    for proc in (self._http_thread, self._proxy_thread):
+    for proc in (self._http_thread, self._proxy_thread, self._router_thread):
       if proc:
         _terminate_process(proc)
 
   def _start_http_server(self) -> None:
-    """Start the HTTP server that serves the web viewer files."""
+    """Start the internal HTTP server that serves the web viewer files."""
     if self.static_files_dir:
       logger.info(f"[Http] Serving web viewer from: {self.static_files_dir}")
     else:
@@ -599,9 +708,12 @@ class WebServer:
             mjb_data=self.mjb_data,
             ws_port=self.ws_port,
         )
-        server = _ThreadingHTTPServer((self.host, self.http_port), handler)
+        server = _ThreadingHTTPServer(
+            ("127.0.0.1", self.internal_http_port), handler
+        )
         logger.info(
-            f"[Http] HTTP server on http://{self.host}:{self.http_port}"
+            "[Http] Internal HTTP server on"
+            f" http://127.0.0.1:{self.internal_http_port}"
         )
         server.serve_forever()
       except (KeyboardInterrupt, SystemExit):
@@ -611,10 +723,25 @@ class WebServer:
     self._http_thread.start()
 
   def _start_proxy_server(self) -> None:
-    """Start the WebSocket-to-TCP proxy."""
+    """Start the WebSocket-to-TCP proxy (loopback only)."""
     self._proxy_thread = multiprocessing.Process(
         target=_run_proxy,
-        args=(self.host, self.tcp_port, self.ws_port),
+        args=("127.0.0.1", self.tcp_port, self.ws_port),
         daemon=True,
     )
     self._proxy_thread.start()
+
+  def _start_router(self) -> None:
+    """Start the public path router."""
+    self._router_thread = multiprocessing.Process(
+        target=_run_router,
+        args=(
+            self.host,
+            self.http_port,
+            self.internal_http_port,
+            self.ws_port,
+            self.state_ws_port,
+        ),
+        daemon=True,
+    )
+    self._router_thread.start()

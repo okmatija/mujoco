@@ -245,11 +245,14 @@ class StateServer:
   This class manages shared memory for zero-copy state transfer from the
   simulation thread, and spawns a child process that broadcasts state
   updates to connected browser clients over WebSocket.
+
+  Binds loopback by default: browsers reach it through the WebServer's
+  public router at path /state.
   """
 
   def __init__(
       self,
-      host: str = "0.0.0.0",
+      host: str = "127.0.0.1",
       state_ws_port: int = 8891,
       max_payload_size: int = 0,
   ):

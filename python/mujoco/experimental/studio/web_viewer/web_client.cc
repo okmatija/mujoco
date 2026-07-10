@@ -215,27 +215,30 @@ EM_BOOL OnStateWsClose(int eventType,
   return EM_TRUE;
 }
 
-// Hostname the page was served from. The WebSocket endpoints (UI proxy and
-// state server) live on the same host as the HTTP server, just on different
-// ports — never hardcode localhost, or the viewer only works when the
-// browser runs on the serving machine.
-std::string GetPageHostname() {
-  char* hostname =
-      emscripten_run_script_string("window.location.hostname || 'localhost'");
-  if (hostname != nullptr && hostname[0] != '\0') {
-    return hostname;
+// WebSocket base URL matching the page origin, e.g. "ws://host:8080" or
+// "wss://tunnel.example.com" behind an HTTPS tunnel. All viewer WebSockets
+// are served as paths (/ui, /state) on the same host and port as the page
+// itself, so exposing or tunneling that single port exposes the whole
+// viewer.
+std::string GetWsBaseUrl() {
+  char* base = emscripten_run_script_string(
+      "(window.location.protocol === 'https:' ? 'wss://' : 'ws://') + "
+      "window.location.host");
+  std::string url = base != nullptr ? base : "";
+  if (url == "ws://" || url == "wss://" || url.empty()) {
+    // No host in the page URL (e.g. file://) — assume a local server.
+    return "ws://localhost:8080";
   }
-  return "localhost";
+  return url;
 }
 
 void ConnectStateWebSocket() {
-  // Build URL relative to the page origin, using port 8891.
-  char url[256];
-  snprintf(url, sizeof(url), "ws://%s:8891", GetPageHostname().c_str());
+  // The state stream is a path on the page's own host and port.
+  const std::string url = GetWsBaseUrl() + "/state";
 
   EmscriptenWebSocketCreateAttributes attr;
   emscripten_websocket_init_create_attributes(&attr);
-  attr.url = url;
+  attr.url = url.c_str();
   attr.protocols = nullptr;
   attr.createOnMainThread = EM_TRUE;
 
@@ -252,7 +255,7 @@ void ConnectStateWebSocket() {
                                             OnStateWsError);
   emscripten_websocket_set_onclose_callback(gStateSocket, nullptr,
                                             OnStateWsClose);
-  LOG(Info, "State WebSocket connecting to %s", url);
+  LOG(Info, "State WebSocket connecting to %s", url.c_str());
 }
 #endif
 
@@ -1089,7 +1092,7 @@ void MainLoopImpl() {
       sLastUiWsRetryFrame = sMainFrameCount;
       LOG(Info, "UI WebSocket closed; reconnecting...");
       Network::Disconnect(gClientSocket);
-      gClientSocket = Network::Connect(GetPageHostname().c_str(), 8890);
+      gClientSocket = Network::Connect((GetWsBaseUrl() + "/ui").c_str(), 8890);
     }
   }
 #endif
@@ -1445,7 +1448,8 @@ int main(int argc, char** argv) {
   SDL_StartTextInput();
 
 #if defined(__EMSCRIPTEN__)
-  const std::string host = GetPageHostname();
+  // The UI stream is a path on the page's own host and port.
+  const std::string host = GetWsBaseUrl() + "/ui";
 #else
   std::string host = "127.0.0.1";
   if (argc > 1) host = argv[1];
