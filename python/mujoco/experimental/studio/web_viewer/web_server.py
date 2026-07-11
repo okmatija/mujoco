@@ -1,23 +1,24 @@
 """Single-port web server for the MuJoCo web viewer.
 
-One child process, one asyncio loop, one public port, built on the
-`websockets` library (the viewer's only networking dependency):
+This server runs in a child process with one asyncio loop on a single public port:
 
-  * Plain HTTP GET     -> static files (index.html, WASM, assets), /model.mjb.
-  * WebSocket /ui      -> bridged to the headless NetImgui client, which
-                          connects over loopback TCP (see ui_server.cc).
-  * WebSocket /state   -> latest-wins state payload broadcast at ~60Hz
-                          (payload format: see render_state.h).
+  * Plain HTTP GET     serves static files (index.html, WASM, assets), /model.mjb.
+  * WebSocket /ui      serves the bridge to the headless NetImgui client, which
+                       connects over loopback TCP (see ui_server.cc).
+  * WebSocket /state   serves the latest-wins state payload broadcast at ~60Hz
+                       (payload format: see render_state.h).
 
 Because everything is served through one port, a single firewall rule,
-port-forward, or HTTPS tunnel (e.g. ``cloudflared tunnel --url
-http://localhost:8080``) exposes the whole viewer. The browser derives its
+port-forward, or HTTPS tunnel exposes the whole viewer. The browser derives its
 WebSocket URLs from the page origin, so no client configuration is needed.
 
 Single-viewer semantics: one browser at a time owns the interactive session.
 When a new browser connects, the previous one is closed with WebSocket code
 4000 ("superseded"); the kicked page stops reconnecting and shows a
 "taken over" notice (see web_client.cc).
+
+Development: Set MUJOCO_WEB_VIEWER_DIST to point to a custom Emscripten build
+directory to serve a locally-built web_client without reinstalling the package.
 """
 
 import asyncio
@@ -99,8 +100,11 @@ def _find_static_files_dir() -> Optional[str]:
 
   The `dist` directory next to this file is populated by the Emscripten build
   of the `web_client` target (web_client.js/.wasm/.data, index.html and the
-  Filament assets). Set MUJOCO_WEB_VIEWER_DIST to serve from a different
-  directory (e.g. an Emscripten build tree).
+  Filament assets). This is the default for packaged installations.
+
+  Development option: Set MUJOCO_WEB_VIEWER_DIST to serve from a different
+  directory (e.g. a local Emscripten build tree). This allows rapid iteration
+  on web_client changes without rebuilding and reinstalling the package.
   """
   env_dir = os.environ.get("MUJOCO_WEB_VIEWER_DIST")
   if env_dir:
@@ -395,12 +399,11 @@ def _run_server(
 class WebServer:
   """The web viewer's single-port server.
 
-  Serves the browser page/WASM/model over HTTP, bridges the NetImgui UI
-  stream at /ui, and broadcasts the state payload at /state — all on one
-  public port, from one child process. State payloads are handed over
-  through shared memory with latest-wins semantics: update_state() may be
-  called at any rate from the viewer thread; browsers only ever see the
-  newest payload.
+  Serves the browser page, WASM, and model over HTTP; bridges the NetImgui UI
+  stream at /ui; and broadcasts the state payload at /state on a single public
+  port from a child process. State payloads are handed over through shared
+  memory with latest-wins semantics: update_state() may be called at any rate
+  from the viewer thread; browsers only ever see the newest payload.
 
   Run the simulation with the web viewer, then visit http://localhost:8080.
   """

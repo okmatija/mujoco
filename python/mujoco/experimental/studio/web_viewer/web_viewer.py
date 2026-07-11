@@ -13,9 +13,9 @@
 # limitations under the License.
 """Simulation-agnostic web viewer for MuJoCo models.
 
-The WebViewer streams the Studio UI and simulation state to a browser:
+The WebViewer streams UI and simulation state to a browser:
 
-  * The Studio ImGui UI is built into a headless ImGui context (``ui_server``
+  * The ImGui UI is built into a headless ImGui context (``ui_server``
     pybind module) and streamed to the browser with the NetImgui protocol
     through a WebSocket-to-TCP proxy. Input captured in the browser flows back
     over the same connection and is injected into the headless context, so all
@@ -44,8 +44,8 @@ from mujoco.experimental.studio import endpoints
 from mujoco.experimental.studio import messages
 from mujoco.experimental.studio import ux
 from mujoco.experimental.studio import viewer_protocol
-from mujoco.experimental.studio.web_viewer import ui_server as ui_server_module
-from mujoco.experimental.studio.web_viewer import web_server as web_server_module
+from mujoco.experimental.studio.web_viewer import ui_server
+from mujoco.experimental.studio.web_viewer import web_server
 import numpy as np
 
 from mujoco.experimental.dear_imgui import dear_imgui as imgui
@@ -126,7 +126,7 @@ class WebViewer(viewer_protocol.Viewer):
     self._ui_tcp_port = ui_tcp_port
 
     # Headless ImGui context streaming UI draw data via NetImgui.
-    self._ui_server = ui_server_module.UiServer(
+    self._ui_server = ui_server.UiServer(
         config.title or 'MuJoCo Web Viewer',
         ui_tcp_port,
         _find_assets_dir(),
@@ -134,18 +134,15 @@ class WebViewer(viewer_protocol.Viewer):
 
     # Point the Python Dear ImGui bindings at the headless context so that
     # viewer-side handlers (ViewerApp etc.) build their GUI into it. The
-    # ImPlot context must be shared the same way — every extension module has
-    # its own copy of the ImGui/ImPlot globals, and the plotting GUIs crash
-    # on a null ImPlot context otherwise.
+    # ImPlot context must be shared the same way.
     ctx = self._ui_server.get_context()
     imgui.SetCurrentContext(ctx)
     ux.set_imgui_context(ctx)
     ux.set_implot_context(self._ui_server.get_implot_context())
 
-    # The single-port server (HTTP + /ui + /state). It is restarted whenever
-    # the model changes, since the served MJB bytes and the state payload
-    # capacity depend on the model.
-    self._web_server: web_server_module.WebServer | None = None
+    # The single-port server (HTTP + /ui + /state). This is restarted whenever
+    # the model changes.
+    self._web_server: web_server.WebServer | None = None
     self._model_ident = 0
     self._start_servers()
 
@@ -171,11 +168,11 @@ class WebViewer(viewer_protocol.Viewer):
     self._model_ident = zlib.crc32(mjb_data)
 
     _, state_size = self._state_signature_and_size()
-    max_payload = ui_server_module.UiServer.max_state_payload_size(
+    max_payload = ui_server.UiServer.max_state_payload_size(
         state_size * np.float64().itemsize
     )
 
-    self._web_server = web_server_module.WebServer(
+    self._web_server = web_server.WebServer(
         host=self._host,
         http_port=self._http_port,
         tcp_port=self._ui_tcp_port,
@@ -198,7 +195,7 @@ class WebViewer(viewer_protocol.Viewer):
   # ---------------------------------------------------------------------------
 
   @messages.handler(priority=messages.Priority.INTERNAL)
-  def _on_model_web(self, event: messages.ModelEvent) -> bool:
+  def _on_model(self, event: messages.ModelEvent) -> bool:
     """Restarts the servers to serve the new model.
 
     The base Viewer's CRITICAL-priority handler has already replaced
@@ -238,7 +235,7 @@ class WebViewer(viewer_protocol.Viewer):
           self.vis_options,
           self.model,
           list(self.render_flags.flags),
-          self.extra_geoms[: ui_server_module.MAX_EXTRA_GEOMS],
+          self.extra_geoms[: ui_server.MAX_EXTRA_GEOMS],
       )
       self._web_server.update_state(payload)
 

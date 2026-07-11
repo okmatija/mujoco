@@ -35,10 +35,13 @@
 #include "google/logging.h"
 #include "render_state.h"
 
-#if defined(__EMSCRIPTEN__)
 #include <emscripten.h>
 #include <emscripten/fetch.h>
 #include <emscripten/websocket.h>
+
+#if !defined(__EMSCRIPTEN__)
+#error "web_client.cc is only supported for Emscripten builds"
+#endif
 
 // No-op wrapper for glGetError(), installed via -Wl,--wrap=glGetError.
 // Filament's GL backend calls glGetError() hundreds of times per frame
@@ -46,7 +49,7 @@
 // synchronous GPU pipeline flush across the JS-WASM bridge (~0.2ms each).
 // This stub eliminates that cost entirely.
 extern "C" GLenum __wrap_glGetError(void) { return GL_NO_ERROR; }
-#endif
+
 
 using mujoco::studio::kRenderStateSize;
 using mujoco::studio::ParseStatePayload;
@@ -81,7 +84,6 @@ bool gSuperseded = false;
 //=================================================================================================
 // State WebSocket — receives simulation state from the Python StateServer.
 //=================================================================================================
-#if defined(__EMSCRIPTEN__)
 EMSCRIPTEN_WEBSOCKET_T gStateSocket = 0;
 
 // Data transfer rate tracking stats.
@@ -257,7 +259,6 @@ void ConnectStateWebSocket() {
                                             OnStateWsClose);
   LOG(Info, "State WebSocket connecting to %s", url.c_str());
 }
-#endif
 
 using namespace NetImgui::Internal;
 
@@ -1049,14 +1050,10 @@ void MainLoop() {
     MainLoopImpl();
   } catch (const std::exception& e) {
     LOG(Error, "FATAL: uncaught exception in MainLoop: %s", e.what());
-#if defined(__EMSCRIPTEN__)
     emscripten_cancel_main_loop();
-#endif
   } catch (...) {
     LOG(Error, "FATAL: uncaught non-std exception in MainLoop");
-#if defined(__EMSCRIPTEN__)
     emscripten_cancel_main_loop();
-#endif
   }
 }
 
@@ -1068,7 +1065,6 @@ void MainLoopImpl() {
   static int sTexturesReceived = 0;
   sMainFrameCount++;
 
-#if defined(__EMSCRIPTEN__)
   // Reconnect the state WebSocket if it dropped — e.g. the Python side
   // restarted its servers after a model change. Receiving a payload with a
   // different model identity then triggers a page reload (OnStateWsMessage).
@@ -1095,7 +1091,6 @@ void MainLoopImpl() {
       gClientSocket = Network::Connect((GetWsBaseUrl() + "/ui").c_str(), 8890);
     }
   }
-#endif
 
   // =========================================================================
   // Phase 1: Network — process incoming data BEFORE the ImGui frame.
@@ -1240,11 +1235,9 @@ void MainLoopImpl() {
   // =========================================================================
   mujoco::platform::Window::Status status = g_app.window->NewFrame();
   if (status == mujoco::platform::Window::kQuitting) {
-#if defined(__EMSCRIPTEN__)
     // NewFrame() started an ImGui frame — end it before bailing out.
     ImGui::EndFrame();
     emscripten_cancel_main_loop();
-#endif
     return;
   }
 
@@ -1326,7 +1319,6 @@ void MainLoopImpl() {
   g_app.window->Present();
 }
 
-#if defined(__EMSCRIPTEN__)
 void SetupScene(const mjModel* m) {
   g_app.renderer->Init(m);
 
@@ -1373,8 +1365,6 @@ void OnFetchError(emscripten_fetch_t* fetch) {
   LOG(Error, "Failed to fetch model.mjb, status: %d", fetch->status);
   emscripten_fetch_close(fetch);
 }
-
-#endif
 
 // Loads an asset from the Emscripten virtual filesystem. The Filament assets
 // (materials, IBL) are bundled into web_client.data at link time via
@@ -1447,18 +1437,12 @@ int main(int argc, char** argv) {
   Network::Startup();
   SDL_StartTextInput();
 
-#if defined(__EMSCRIPTEN__)
   // The UI stream is a path on the page's own host and port.
   const std::string host = GetWsBaseUrl() + "/ui";
-#else
-  std::string host = "127.0.0.1";
-  if (argc > 1) host = argv[1];
-#endif
   debug_log_connect(host.c_str(), 8890);
   gClientSocket = Network::Connect(host.c_str(), 8890);
   debug_log_connect_result(gClientSocket);
 
-#if defined(__EMSCRIPTEN__)
   emscripten_fetch_attr_t attr;
   emscripten_fetch_attr_init(&attr);
   strcpy(attr.requestMethod, "GET");
@@ -1470,14 +1454,8 @@ int main(int argc, char** argv) {
   emscripten_fetch(&attr, "/model.mjb");
 
   emscripten_set_main_loop(MainLoop, 0, 1);
-#else
-  while (true) {
-    MainLoop();
-    SDL_Delay(16);
-  }
-#endif
 
-  // Cleanup (reached in non-WASM builds or if emscripten loop exits).
+  // Cleanup (reached if emscripten loop exits).
   if (gRemoteDrawData) {
     netImguiDelete(gRemoteDrawData);
     gRemoteDrawData = nullptr;

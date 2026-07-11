@@ -37,6 +37,11 @@
 // breaking older clients. The fixed-size render state block is laid out as:
 //   [mjvCamera][mjvPerturb][mjvOption][mjOption][mjVisual][mjStatistic]
 //   [render_flags]
+//
+// In addition to physics and render state, the payload may include an
+// optional `kTagExtraGeoms` block containing extra mjvGeom instances.
+// This allows the headless side to send user-injected geoms without changing
+// the fixed render state size.
 
 #ifndef MUJOCO_PYTHON_EXPERIMENTAL_STUDIO_WEB_VIEWER_RENDER_STATE_H_
 #define MUJOCO_PYTHON_EXPERIMENTAL_STUDIO_WEB_VIEWER_RENDER_STATE_H_
@@ -102,7 +107,9 @@ inline std::vector<char> SerializeRenderState(
 // State payload: the full StateServer WebSocket message.
 // -----------------------------------------------------------------------------
 
-// "MJWS" as little-endian bytes.
+// "MJWS" as little-endian bytes. This magic constant identifies the
+// StateServer WebSocket payload header and helps detect malformed or
+// misrouted messages.
 inline constexpr uint32_t kStatePayloadMagic = 0x53574A4Du;
 inline constexpr uint16_t kStatePayloadVersion = 1;
 
