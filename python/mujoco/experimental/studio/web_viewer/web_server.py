@@ -1,33 +1,48 @@
-"""HTTP and UI proxy servers for serving the web viewer to the browser.
+"""Single-port web server for the MuJoCo web viewer.
 
-This module provides the WebServer class that:
-1. Serves the web viewer static files (index.html, WASM) over HTTP.
-2. Serves the model MJB over HTTP (GET /model.mjb).
-3. Runs a WebSocket-to-TCP proxy bridging the NetImgui protocol between
-   the headless UiServer (ui_server.cc) and the browser.
-4. Runs the single public entry point: a router that forwards connections
-   by request path (/ui, /state, everything else) to the internal servers,
-   which all bind to loopback. The whole viewer is therefore reachable
-   through ONE public port — one firewall rule, one port-forward, or one
-   HTTPS tunnel (e.g. `cloudflared tunnel --url http://localhost:8080`)
-   exposes it completely.
+One child process, one asyncio loop, one public port, built on the
+`websockets` library (the viewer's only networking dependency —
+``pip install mujoco[web]``):
+
+  * Plain HTTP GET     -> static files (index.html, WASM, assets), /model.mjb.
+  * WebSocket /ui      -> bridged to the headless NetImgui client, which
+                          connects over loopback TCP (see ui_server.cc).
+  * WebSocket /state   -> latest-wins state payload broadcast at ~60Hz
+                          (payload format: see render_state.h).
+
+Because everything is served through one port, a single firewall rule,
+port-forward, or HTTPS tunnel (e.g. ``cloudflared tunnel --url
+http://localhost:8080``) exposes the whole viewer. The browser derives its
+WebSocket URLs from the page origin, so no client configuration is needed.
+
+Single-viewer semantics: one browser at a time owns the interactive session.
+When a new browser connects, the previous one is closed with WebSocket code
+4000 ("superseded"); the kicked page stops reconnecting and shows a
+"taken over" notice (see web_client.cc).
 """
 
 import asyncio
-import base64
+import ctypes
 import datetime
-import functools
-import hashlib
-import http.server
 import logging
 import multiprocessing
 import os
 import signal
 import socket
-import socketserver
 import struct
 import sys
 from typing import Optional
+
+try:
+  from websockets.asyncio.server import serve
+  from websockets.datastructures import Headers
+  from websockets.exceptions import ConnectionClosed
+  from websockets.http11 import Response
+except ImportError as e:
+  raise ImportError(
+      "The MuJoCo web viewer requires the 'websockets' package. Install it"
+      " with: pip install websockets (or pip install mujoco[web])"
+  ) from e
 
 
 class _WebServerFormatter(logging.Formatter):
@@ -52,6 +67,25 @@ if not logger.handlers:
   logger.propagate = False
 
 
+# WebSocket close code telling a browser that another browser took over the
+# single viewer slot. The client must stop reconnecting when it sees this
+# (otherwise two tabs kick each other in an endless loop).
+WS_CLOSE_SUPERSEDED = 4000
+
+# NetImgui's CmdVersion handshake packet is always 120 bytes.
+_CMD_VERSION_SIZE = 120
+
+_CONTENT_TYPES = {
+    ".html": "text/html; charset=utf-8",
+    ".js": "text/javascript",
+    ".wasm": "application/wasm",
+    ".data": "application/octet-stream",
+    ".json": "application/json",
+    ".png": "image/png",
+    ".ico": "image/x-icon",
+}
+
+
 def _terminate_process(proc, timeout: float = 2.0) -> None:
   """Terminates a server process, escalating to SIGKILL if it hangs.
 
@@ -65,6 +99,29 @@ def _terminate_process(proc, timeout: float = 2.0) -> None:
     logger.warning(f"[Http] Process {proc.pid} ignored SIGTERM; killing.")
     proc.kill()
     proc.join(timeout=timeout)
+
+
+def _find_static_files_dir() -> Optional[str]:
+  """Locate the web viewer static files (index.html, WASM).
+
+  The `dist` directory next to this file is populated by the Emscripten build
+  of the `web_client` target (web_client.js/.wasm/.data, index.html and the
+  Filament assets). Set MUJOCO_WEB_VIEWER_DIST to serve from a different
+  directory (e.g. an Emscripten build tree).
+  """
+  env_dir = os.environ.get("MUJOCO_WEB_VIEWER_DIST")
+  if env_dir:
+    if os.path.isdir(env_dir):
+      return env_dir
+    logger.warning(
+        f"[Http] MUJOCO_WEB_VIEWER_DIST is not a directory: {env_dir}"
+    )
+
+  dist_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dist")
+  if os.path.isdir(dist_dir):
+    return dist_dir
+
+  return None
 
 
 def _run_cancellable(main_loop_func):
@@ -91,300 +148,80 @@ def _run_cancellable(main_loop_func):
     logger.error(f"[{main_loop_func.__name__}] Unexpected error: {e}")
 
 
-def _find_static_files_dir() -> Optional[str]:
-  """Locate the web viewer static files (index.html, WASM).
+def _run_server(
+    host,
+    port,
+    tcp_port,
+    static_dir,
+    mjb_data,
+    shm_array,
+    shm_capacity,
+    generation,
+):
+  """The server process: HTTP + /ui + /state on one port, one event loop."""
 
-  The `dist` directory next to this file is populated by the Emscripten build
-  of the `web_client` target (web_client.js/.wasm/.data, index.html and the
-  Filament assets). Set MUJOCO_WEB_VIEWER_DIST to serve from a different
-  directory (e.g. an Emscripten build tree).
-  """
-  env_dir = os.environ.get("MUJOCO_WEB_VIEWER_DIST")
-  if env_dir:
-    if os.path.isdir(env_dir):
-      return env_dir
-    logger.warning(f"[Http] MUJOCO_WEB_VIEWER_DIST is not a directory: {env_dir}")
+  static_root = os.path.realpath(static_dir) if static_dir else None
 
-  dist_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dist")
-  if os.path.isdir(dist_dir):
-    return dist_dir
+  def _http_headers(content_type, content_length, cacheable):
+    headers = Headers()
+    headers["Content-Type"] = content_type
+    headers["Content-Length"] = str(content_length)
+    # The WASM is a pthread build: SharedArrayBuffer requires cross-origin
+    # isolation on every response.
+    headers["Cross-Origin-Opener-Policy"] = "same-origin"
+    headers["Cross-Origin-Embedder-Policy"] = "require-corp"
+    if not cacheable:
+      headers["Access-Control-Allow-Origin"] = "*"
+      headers["Cache-Control"] = "no-store"
+    return headers
 
-  return None
-
-
-class _ThreadingHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
-  daemon_threads = True
-  allow_reuse_address = True
-
-
-class _WebViewerHTTPHandler(http.server.SimpleHTTPRequestHandler):
-  """HTTP handler that serves the web viewer files and the model MJB."""
-
-  def __init__(self, *args, mjb_data=None, ws_port=8890, **kwargs):
-    self._mjb_data = mjb_data
-    self._ws_port = ws_port
-    super().__init__(*args, **kwargs)
-
-  def do_GET(self):  # pylint: disable=invalid-name
-    """Handle GET requests."""
-    if self.path == "/model.mjb" and self._mjb_data:
-      self.send_response(200)
-      self.send_header("Content-Type", "application/octet-stream")
-      self.send_header("Content-Length", str(len(self._mjb_data)))
-      self.send_header("Access-Control-Allow-Origin", "*")
+  def _serve_http(path):
+    """Builds the HTTP response for a non-WebSocket GET request."""
+    if path == "/model.mjb":
+      if not mjb_data:
+        return Response(404, "Not Found", Headers(), b"no model\n")
       # The model changes on hot-swap; never serve a cached copy.
-      self.send_header("Cache-Control", "no-store")
-      self.end_headers()
-      self.wfile.write(self._mjb_data)
-    else:
-      super().do_GET()
+      headers = _http_headers(
+          "application/octet-stream", len(mjb_data), cacheable=False
+      )
+      return Response(200, "OK", headers, mjb_data)
 
-  def end_headers(self):
-    # Add CORS headers for WASM loading.
-    self.send_header("Cross-Origin-Opener-Policy", "same-origin")
-    self.send_header("Cross-Origin-Embedder-Policy", "require-corp")
-    super().end_headers()
+    if static_root is None:
+      return Response(503, "Service Unavailable", Headers(), b"no dist dir\n")
 
-  def log_message(self, format, *args):  # pylint: disable=redefined-builtin
-    """Suppress default HTTP request logging."""
-    pass
+    rel = path.lstrip("/") or "index.html"
+    full = os.path.realpath(os.path.join(static_root, rel))
+    if full != static_root and not full.startswith(static_root + os.sep):
+      return Response(403, "Forbidden", Headers(), b"forbidden\n")
+    if not os.path.isfile(full):
+      return Response(404, "Not Found", Headers(), b"not found\n")
 
-
-WS_MAGIC = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
-
-
-async def _handle_ws_handshake(reader, writer):
-  """Performs the WebSocket handshake with the browser."""
-  header_data = b""
-  while b"\r\n\r\n" not in header_data:
-    chunk = await reader.read(1024)
-    if not chunk:
-      return False
-    header_data += chunk
-
-  headers = {}
-  lines = header_data.decode("utf-8").split("\r\n")
-  for line in lines[1:]:
-    if ": " in line:
-      k, v = line.split(": ", 1)
-      headers[k.lower()] = v
-
-  ws_key = headers.get("sec-websocket-key")
-  if not ws_key:
-    return False
-
-  accept_key = base64.b64encode(
-      hashlib.sha1((ws_key + WS_MAGIC).encode("utf-8")).digest()
-  ).decode("utf-8")
-
-  response = (
-      "HTTP/1.1 101 Switching Protocols\r\n"
-      "Upgrade: websocket\r\n"
-      "Connection: Upgrade\r\n"
-      f"Sec-WebSocket-Accept: {accept_key}\r\n"
-      "\r\n"
-  )
-  writer.write(response.encode("utf-8"))
-  await writer.drain()
-  return True
-
-
-async def _read_ws_binary_frame(reader):
-  """Read a single WebSocket binary frame and return the unmasked payload."""
-  header = await reader.readexactly(2)
-  b1, b2 = header
-  mask_bit = b2 >> 7
-  payload_len = b2 & 0x7F
-
-  if payload_len == 126:
-    len_bytes = await reader.readexactly(2)
-    payload_len = struct.unpack("!H", len_bytes)[0]
-  elif payload_len == 127:
-    len_bytes = await reader.readexactly(8)
-    payload_len = struct.unpack("!Q", len_bytes)[0]
-
-  mask_key = b""
-  if mask_bit:
-    mask_key = await reader.readexactly(4)
-
-  payload = await reader.readexactly(payload_len)
-
-  if mask_bit:
-    unmasked = bytearray(payload_len)
-    for i in range(payload_len):
-      unmasked[i] = payload[i] ^ mask_key[i % 4]
-    return bytes(unmasked)
-  return bytes(payload)
-
-
-def _write_ws_binary_frame(writer, data):
-  """Write a single WebSocket binary frame (unmasked, server-to-client)."""
-  header = bytearray([0x82])  # FIN + binary opcode
-  if len(data) <= 125:
-    header.append(len(data))
-  elif len(data) <= 65535:
-    header.append(126)
-    header += struct.pack("!H", len(data))
-  else:
-    header.append(127)
-    header += struct.pack("!Q", len(data))
-  writer.write(header + data)
-
-
-async def _ws_to_tcp(ws_reader, tcp_writer, ws_writer):
-  """Read WebSocket frames from browser and forward raw payload to TCP."""
-  msg_count = 0
-  try:
-    while True:
-      header = await ws_reader.readexactly(2)
-      if not header:
-        break
-      b1, b2 = header
-      opcode = b1 & 0x0F
-      mask_bit = b2 >> 7
-      payload_len = b2 & 0x7F
-
-      if payload_len == 126:
-        len_bytes = await ws_reader.readexactly(2)
-        payload_len = struct.unpack("!H", len_bytes)[0]
-      elif payload_len == 127:
-        len_bytes = await ws_reader.readexactly(8)
-        payload_len = struct.unpack("!Q", len_bytes)[0]
-
-      mask_key = b""
-      if mask_bit:
-        mask_key = await ws_reader.readexactly(4)
-
-      payload = await ws_reader.readexactly(payload_len)
-
-      if mask_bit:
-        unmasked = bytearray(payload_len)
-        for i in range(payload_len):
-          unmasked[i] = payload[i] ^ mask_key[i % 4]
-        payload = unmasked
-
-      msg_count += 1
-      if msg_count <= 5 or msg_count % 100 == 0:
-        logger.info(
-            f"[UiProxy] ws_to_tcp: opcode={opcode}, len={len(payload)} (msg"
-            f" #{msg_count})"
-        )
-
-      if opcode == 8:  # Close
-        break
-      elif opcode == 9:  # Ping
-        pong_frame = bytearray([0x8A])
-        if payload_len <= 125:
-          pong_frame.append(payload_len)
-        elif payload_len <= 65535:
-          pong_frame.append(126)
-          pong_frame += struct.pack("!H", payload_len)
-        else:
-          pong_frame.append(127)
-          pong_frame += struct.pack("!Q", payload_len)
-        ws_writer.write(pong_frame + payload)
-        await ws_writer.drain()
-      elif opcode == 0 or opcode == 2:  # Continuation or Binary
-        tcp_writer.write(payload)
-        await tcp_writer.drain()
-      elif opcode == 10:  # Pong
-        pass
-
-  except asyncio.IncompleteReadError:
-    logger.info("[UiProxy] ws_to_tcp: browser disconnected (incomplete read)")
-  except ConnectionResetError:
-    logger.info("[UiProxy] ws_to_tcp: browser connection reset")
-  except Exception as e:  # pylint: disable=broad-exception-caught
-    logger.error(f"[UiProxy] ws_to_tcp error: {e}")
-
-
-async def _tcp_to_ws(tcp_reader, ws_writer, stop_event):
-  """Read raw bytes from TCP server and wrap in WebSocket frames to browser."""
-  msg_count = 0
-  try:
-    while not stop_event.is_set():
-      # Use a short timeout so we react quickly to stop_event while also
-      # forwarding TCP data with minimal latency. The previous 100ms timeout
-      # was adding up to 100ms per TCP segment, causing 0.5-1s UI lag.
-      try:
-        data = await asyncio.wait_for(tcp_reader.read(65536), timeout=0.005)
-      except asyncio.TimeoutError:
-        continue
-      if not data:
-        logger.info("[UiProxy] tcp_to_ws: TCP connection closed by server")
-        break
-
-      len_data = len(data)
-      header = bytearray([0x82])
-
-      if len_data <= 125:
-        header.append(len_data)
-      elif len_data <= 65535:
-        header.append(126)
-        header += struct.pack("!H", len_data)
-      else:
-        header.append(127)
-        header += struct.pack("!Q", len_data)
-
-      msg_count += 1
-      if msg_count <= 5 or msg_count % 100 == 0:
-        logger.info(
-            f"[UiProxy] tcp_to_ws: len={len(data)} (msg #{msg_count})"
-        )
-      ws_writer.write(header + data)
-      await ws_writer.drain()
-
-  except ConnectionResetError:
-    logger.info("[UiProxy] tcp_to_ws: WS connection reset")
-  except Exception as e:  # pylint: disable=broad-exception-caught
-    logger.error(f"[UiProxy] tcp_to_ws error: {e}")
-
-  # Send a WebSocket close frame (opcode 0x08) so the browser fires onclose
-  # immediately rather than waiting for the TCP FIN to propagate.
-  try:
-    # Close frame: opcode=0x88, payload=2 bytes status code 1000 (normal)
-    close_frame = bytearray([0x88, 0x02, 0x03, 0xE8])  # 1000 = normal closure
-    ws_writer.write(close_frame)
-    await ws_writer.drain()
-    logger.info("[UiProxy] tcp_to_ws: Sent WebSocket close frame to browser")
-  except Exception:  # pylint: disable=broad-exception-caught
-    pass
-
-
-def _run_proxy(host, tcp_port, ws_port):
-  """Runs the proxy event loop.
-
-  Architecture: single-viewer proxy. Only one browser can be connected at a
-  time. When the browser disconnects (or a new browser connects), the proxy
-  tears down both the WebSocket and TCP sides, forcing the C++ app to
-  reconnect and re-send the full handshake, textures, and draw commands.
-
-  When a second browser connects while one is already active, the first
-  browser is kicked (its WebSocket is closed).
-  """
-  # CmdVersion is always 120 bytes. The header is 8 bytes (size + type).
-  CMD_VERSION_SIZE = 120
+    with open(full, "rb") as f:
+      body = f.read()
+    content_type = _CONTENT_TYPES.get(
+        os.path.splitext(full)[1], "application/octet-stream"
+    )
+    return Response(
+        200, "OK", _http_headers(content_type, len(body), cacheable=True), body
+    )
 
   async def main_loop():
-    ws_connections = asyncio.Queue()
-
+    # The NetImgui client connection (from the headless ui_server, loopback
+    # TCP). The client retries every second, so after a teardown a fresh
+    # connection shows up quickly.
     tcp_reader = None
     tcp_writer = None
+    tcp_connected = asyncio.Event()
 
-    # Track the active WS writer so new connections can kick the old one.
-    active_ws_writer = None
-    # Event signalled when a new browser arrives while a bridge is active.
-    kick_event = asyncio.Event()
+    # Active browser connections (single-viewer slot).
+    active_ui_ws = None
+    active_state_ws = None
 
     async def handle_tcp_client(reader, writer):
       nonlocal tcp_reader, tcp_writer
       if tcp_writer is not None:
-        logger.info("[UiProxy] Replacing previous TCP connection")
+        logger.info("[UiBridge] Replacing previous NetImgui TCP connection")
         tcp_writer.close()
-        try:
-          await tcp_writer.wait_closed()
-        except Exception:
-          pass
       tcp_reader = reader
       tcp_writer = writer
       # Disable Nagle's algorithm so small packets (CmdInput ~80 bytes) are
@@ -392,261 +229,185 @@ def _run_proxy(host, tcp_port, ws_port):
       sock = writer.get_extra_info("socket")
       if sock:
         sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-      logger.info("[UiProxy] TCP connection accepted")
+      tcp_connected.set()
+      logger.info("[UiBridge] NetImgui TCP connection accepted")
 
-    async def handle_ws_connection(ws_reader, ws_writer):
-      nonlocal active_ws_writer
-      logger.info("[UiProxy] WebSocket connection attempt")
-      if await _handle_ws_handshake(ws_reader, ws_writer):
-        logger.info("[UiProxy] WebSocket connection accepted")
-        # Disable Nagle on the WS socket too.
-        sock = ws_writer.get_extra_info("socket")
-        if sock:
-          sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+    def supersede(ws):
+      """Kicks a browser connection in the background (close code 4000)."""
 
-        # Kick the previous browser if one is active.
-        if active_ws_writer is not None:
-          logger.info("[UiProxy] Kicking previous browser connection")
-          active_ws_writer.close()
-          kick_event.set()
-
-        await ws_connections.put((ws_reader, ws_writer))
-      else:
-        logger.info("[UiProxy] WebSocket handshake failed")
-        ws_writer.close()
-
-    tcp_server = await asyncio.start_server(
-        handle_tcp_client,
-        host,
-        tcp_port,
-    )
-    ws_server = await asyncio.start_server(
-        handle_ws_connection,
-        host,
-        ws_port,
-    )
-
-    logger.info(
-        f"[UiProxy] Proxy listening on TCP:{tcp_port} and WS:{ws_port}"
-    )
-
-    # Not `async with`: on Python >= 3.12 Server.__aexit__ awaits
-    # wait_closed(), which blocks until every accepted connection is closed —
-    # the C++ app's bridge socket never is, so cancellation (SIGTERM from
-    # WebServer.stop) would hang the process forever. Close the accepted
-    # sockets and the listeners explicitly instead.
-    try:
-      while True:
-        # Wait for TCP connection from C++ app (if not already connected)
-        while tcp_reader is None:
-          logger.info("[UiProxy] Waiting for TCP connection...")
-          await asyncio.sleep(0.1)
-
-        # Wait for browser WebSocket connection
-        ws_reader, ws_writer = await ws_connections.get()
-
-        # Drain any stale queued WS connections (only use the latest)
-        while not ws_connections.empty():
-          old_r, old_w = ws_connections.get_nowait()
-          logger.info("[UiProxy] Discarding stale WS connection")
-          old_w.close()
-
-        active_ws_writer = ws_writer
-        kick_event.clear()
-        logger.info("[UiProxy] Both connected. Starting bridge.")
-
-        # --- Handshake phase ---
-        # Read the browser's CmdVersion from the first WS binary frame.
+      async def _kick():
         try:
-          browser_version = await _read_ws_binary_frame(ws_reader)
-          logger.info(
-              f"[UiProxy] Received browser CmdVersion: {len(browser_version)}"
-              " bytes"
-          )
-        except Exception as e:
-          logger.error(f"[UiProxy] Failed to read browser CmdVersion: {e}")
-          ws_writer.close()
-          active_ws_writer = None
-          continue
-
-        # Always forward the full handshake to the C++ app.
-        logger.info("[UiProxy] Forwarding CmdVersion handshake")
-        tcp_writer.write(browser_version)
-        await tcp_writer.drain()
-
-        # Read the server's CmdVersion reply from TCP.
-        server_version = await tcp_reader.readexactly(CMD_VERSION_SIZE)
-        logger.info(
-            f"[UiProxy] Received server CmdVersion: {len(server_version)}"
-            " bytes"
-        )
-
-        # Forward it to the browser as a WS frame.
-        _write_ws_binary_frame(ws_writer, server_version)
-        await ws_writer.drain()
-
-        logger.info("[UiProxy] Handshake complete. Starting data bridge.")
-
-        # --- Data bridge phase ---
-        stop_event = asyncio.Event()
-
-        ws_task = asyncio.create_task(
-            _ws_to_tcp(ws_reader, tcp_writer, ws_writer)
-        )
-        tcp_task = asyncio.create_task(
-            _tcp_to_ws(tcp_reader, ws_writer, stop_event)
-        )
-
-        try:
-          done, pending = await asyncio.wait(
-              [ws_task, tcp_task],
-              return_when=asyncio.FIRST_COMPLETED,
-          )
-          stop_event.set()
-          for task in pending:
-            task.cancel()
-            try:
-              await task
-            except asyncio.CancelledError:
-              pass
-        except Exception as e:
-          logger.error(f"[UiProxy] Bridge error: {e}")
-
-        # Close the WS side.
-        logger.info("[UiProxy] Bridge closed. Closing WS connection.")
-        ws_writer.close()
-        try:
-          await ws_writer.wait_closed()
-        except Exception:
+          await ws.close(WS_CLOSE_SUPERSEDED, "superseded")
+        except Exception:  # pylint: disable=broad-exception-caught
           pass
-        active_ws_writer = None
 
-        # Always tear down TCP so the C++ app reconnects and re-sends
-        # all textures and draw commands to the next browser.
-        logger.info("[UiProxy] Tearing down TCP to force full reconnect.")
-        if tcp_writer is not None:
-          tcp_writer.close()
-          try:
-            await tcp_writer.wait_closed()
-          except Exception:
-            pass
-        tcp_reader = None
-        tcp_writer = None
-    finally:
+      asyncio.create_task(_kick())
+
+    # --- /ui: bridge the browser to the NetImgui client ----------------------
+
+    async def ui_handler(ws):
+      nonlocal active_ui_ws, tcp_reader, tcp_writer
+      if active_ui_ws is not None:
+        logger.info("[UiBridge] New browser; superseding previous one")
+        supersede(active_ui_ws)
+      active_ui_ws = ws
+
+      # Each browser needs a fresh NetImgui session (full handshake, textures
+      # and draw state). Drop any connection used by a previous bridge and
+      # wait for the client's automatic reconnect.
       if tcp_writer is not None:
         tcp_writer.close()
-      if active_ws_writer is not None:
-        active_ws_writer.close()
-      tcp_server.close()
-      ws_server.close()
+        tcp_reader = None
+        tcp_writer = None
+        tcp_connected.clear()
+      logger.info("[UiBridge] Waiting for NetImgui TCP connection...")
+      await tcp_connected.wait()
+      my_reader, my_writer = tcp_reader, tcp_writer
 
-  _run_cancellable(main_loop)
-
-
-def _run_router(host, public_port, http_port, ui_ws_port, state_ws_port):
-  """Single public entry point for the web viewer.
-
-  Listens on the public port and forwards each connection, by request path,
-  to one of the internal loopback servers:
-
-    /ui     -> NetImgui UI proxy WebSocket
-    /state  -> state streaming WebSocket
-    (other) -> HTTP static file / model server
-
-  The routing is a raw TCP splice: the request head is buffered to pick the
-  backend, then bytes are piped verbatim in both directions. This makes the
-  whole viewer a single-port service, so one forwarded port or one HTTPS
-  tunnel exposes everything.
-  """
-
-  async def main_loop():
-    async def handle_client(reader, writer):
-      upstream_writer = None
       try:
-        # Buffer the request head to pick a backend by path.
-        head = b""
-        while b"\r\n\r\n" not in head and len(head) < 65536:
-          chunk = await asyncio.wait_for(reader.read(4096), timeout=10.0)
-          if not chunk:
-            return
-          head += chunk
+        # Handshake: browser CmdVersion -> client; client CmdVersion -> browser.
+        browser_version = await ws.recv()
+        my_writer.write(browser_version)
+        await my_writer.drain()
+        server_version = await my_reader.readexactly(_CMD_VERSION_SIZE)
+        await ws.send(server_version)
+        logger.info("[UiBridge] Handshake complete. Bridging.")
 
-        request_line = head.split(b"\r\n", 1)[0]
-        parts = request_line.split(b" ")
-        path = parts[1] if len(parts) >= 2 else b"/"
-        if path == b"/ui" or path.startswith(b"/ui?"):
-          target = ui_ws_port
-        elif path == b"/state" or path.startswith(b"/state?"):
-          target = state_ws_port
-        else:
-          target = http_port
+        async def ws_to_tcp():
+          async for message in ws:
+            if isinstance(message, bytes):
+              my_writer.write(message)
+              await my_writer.drain()
 
-        upstream_reader, upstream_writer = await asyncio.open_connection(
-            "127.0.0.1", target
+        async def tcp_to_ws():
+          while True:
+            data = await my_reader.read(65536)
+            if not data:
+              break
+            await ws.send(data)
+
+        done, pending = await asyncio.wait(
+            [
+                asyncio.create_task(ws_to_tcp()),
+                asyncio.create_task(tcp_to_ws()),
+            ],
+            return_when=asyncio.FIRST_COMPLETED,
         )
-        for w in (writer, upstream_writer):
-          sock = w.get_extra_info("socket")
-          if sock:
-            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-        upstream_writer.write(head)
-        await upstream_writer.drain()
-
-        async def pipe(src, dst):
-          try:
-            while True:
-              data = await src.read(65536)
-              if not data:
-                break
-              dst.write(data)
-              await dst.drain()
-          finally:
-            try:
-              dst.close()
-            except Exception:  # pylint: disable=broad-exception-caught
-              pass
-
-        await asyncio.gather(
-            pipe(reader, upstream_writer),
-            pipe(upstream_reader, writer),
-            return_exceptions=True,
-        )
-      except (asyncio.TimeoutError, ConnectionError, OSError):
-        # Client vanished or a backend is (re)starting; the browser retries.
+        for task in pending:
+          task.cancel()
+        for task in done:
+          task.exception()  # Retrieve to avoid "exception never retrieved".
+      except (ConnectionClosed, ConnectionError, asyncio.IncompleteReadError):
         pass
       finally:
-        for w in (writer, upstream_writer):
-          if w is not None:
-            try:
-              w.close()
-            except Exception:  # pylint: disable=broad-exception-caught
-              pass
+        logger.info("[UiBridge] Bridge closed.")
+        # Tear down this bridge's TCP connection so the NetImgui client
+        # reconnects and re-sends everything to the next browser.
+        my_writer.close()
+        if tcp_writer is my_writer:
+          tcp_reader = None
+          tcp_writer = None
+          tcp_connected.clear()
+        if active_ui_ws is ws:
+          active_ui_ws = None
 
-    server = await asyncio.start_server(handle_client, host, public_port)
-    logger.info(
-        f"[Router] Public entry on http://{host}:{public_port} "
-        f"(/ui -> :{ui_ws_port}, /state -> :{state_ws_port}, "
-        f"* -> :{http_port})"
-    )
-    try:
+    # --- /state: latest-wins payload broadcast --------------------------------
+
+    async def state_handler(ws):
+      nonlocal active_state_ws
+      if active_state_ws is not None:
+        logger.info("[StateWS] New browser; superseding previous one")
+        supersede(active_state_ws)
+      active_state_ws = ws
+      logger.info("[StateWS] Browser connected")
+
+      last_gen = 0
+      try:
+        while True:
+          await asyncio.sleep(1.0 / 60.0)
+          cur_gen = generation.value
+          if cur_gen == last_gen:
+            continue
+          last_gen = cur_gen
+          (used,) = struct.unpack("<I", bytes(shm_array[:4]))
+          if used == 0 or used > shm_capacity:
+            continue
+          await ws.send(bytes(shm_array[4 : 4 + used]))
+      except (ConnectionClosed, ConnectionError):
+        logger.info("[StateWS] Browser disconnected")
+      finally:
+        if active_state_ws is ws:
+          active_state_ws = None
+
+    # --- Dispatch --------------------------------------------------------------
+
+    def process_request(connection, request):
+      del connection
+      path = request.path.split("?")[0]
+      if path in ("/ui", "/state"):
+        return None  # Proceed with the WebSocket handshake.
+      return _serve_http(path)
+
+    async def ws_handler(ws):
+      path = ws.request.path.split("?")[0]
+      if path == "/ui":
+        await ui_handler(ws)
+      elif path == "/state":
+        await state_handler(ws)
+      else:
+        await ws.close(1008, "unknown endpoint")
+
+    # Exit if the viewer process died without cleaning up (e.g. SIGKILL);
+    # an orphaned server would otherwise keep serving a stale model and
+    # fight any replacement server for browsers.
+    async def watch_parent():
       while True:
-        await asyncio.sleep(3600)
+        await asyncio.sleep(2.0)
+        if os.getppid() == 1:
+          logger.warning("[Http] Viewer process died; shutting down.")
+          os._exit(0)  # pylint: disable=protected-access
+
+    tcp_server = await asyncio.start_server(
+        handle_tcp_client, "127.0.0.1", tcp_port
+    )
+    # NetImgui does its own delta compression and the state payload is small;
+    # permessage-deflate would only add latency at 60Hz.
+    ws_server = await serve(
+        ws_handler,
+        host,
+        port,
+        process_request=process_request,
+        compression=None,
+        close_timeout=1.0,
+        max_size=2**24,
+    )
+    logger.info(
+        f"[Http] Serving on http://{host}:{port} "
+        f"(/, /model.mjb, /ui, /state; NetImgui TCP on 127.0.0.1:{tcp_port})"
+    )
+
+    # Not `async with`: on Python >= 3.12 waiting for close would block on
+    # open connections, so cancellation (SIGTERM from WebServer.stop) could
+    # hang the process. Close the listeners explicitly instead; open sockets
+    # die with the process.
+    try:
+      await watch_parent()
     finally:
-      server.close()
+      ws_server.close()
+      tcp_server.close()
 
   _run_cancellable(main_loop)
 
 
 class WebServer:
-  """Public router, HTTP server and NetImgui UI proxy for the web viewer.
+  """The web viewer's single-port server.
 
-  This class manages:
-  1. The router: the single public port, forwarding by path to 2-4.
-  2. An HTTP server that serves the web viewer static files and the model MJB.
-  3. A WebSocket-to-TCP proxy that bridges the NetImgui protocol between
-     the headless UiServer (ui_server.cc) and the browser.
-  4. (Externally owned) the state WebSocket server, reachable via /state.
-
-  Only the router binds a public interface; 2-4 bind loopback.
+  Serves the browser page/WASM/model over HTTP, bridges the NetImgui UI
+  stream at /ui, and broadcasts the state payload at /state — all on one
+  public port, from one child process. State payloads are handed over
+  through shared memory with latest-wins semantics: update_state() may be
+  called at any rate from the viewer thread; browsers only ever see the
+  newest payload.
 
   Run the simulation with the web viewer, then visit http://localhost:8080.
   """
@@ -656,92 +417,69 @@ class WebServer:
       host: str = "0.0.0.0",
       http_port: int = 8080,
       tcp_port: int = 8888,
-      ws_port: int = 8890,
-      state_ws_port: int = 8891,
-      internal_http_port: int = 8081,
       static_files_dir: Optional[str] = None,
       mjb_data: Optional[bytes] = None,
+      max_payload_size: int = 0,
   ):
     self.host = host
     self.http_port = http_port
     self.tcp_port = tcp_port
-    self.ws_port = ws_port
-    self.state_ws_port = state_ws_port
-    self.internal_http_port = internal_http_port
     self.static_files_dir = static_files_dir or _find_static_files_dir()
     self.mjb_data = mjb_data
-    self._running = False
-    self._http_thread = None
-    self._proxy_thread = None
-    self._router_thread = None
+    self._process = None
+
+    # Shared memory for zero-copy payload transfer to the server process:
+    # [u32 length][payload bytes], so payloads can vary in size up to
+    # max_payload_size (see UiServer.max_state_payload_size).
+    self._shm_capacity = max_payload_size
+    self._shm_array = (
+        multiprocessing.RawArray(ctypes.c_char, 4 + self._shm_capacity)
+        if self._shm_capacity > 0
+        else None
+    )
+    self._generation = multiprocessing.Value("Q", 0)  # uint64 counter
+
+  def update_state(self, payload: bytes) -> None:
+    """Publishes the latest state payload. Called from the viewer thread."""
+    if self._shm_array is None:
+      return
+    if len(payload) > self._shm_capacity:
+      logger.error(
+          f"[StateWS] Payload of {len(payload)} bytes exceeds capacity"
+          f" {self._shm_capacity}; dropping."
+      )
+      return
+    ctypes.memmove(
+        self._shm_array,
+        struct.pack("<I", len(payload)) + payload,
+        4 + len(payload),
+    )
+    self._generation.value += 1
 
   def start(self) -> None:
-    """Start the router, HTTP server and proxy in background processes."""
-    self._running = True
-    self._start_http_server()
-    self._start_proxy_server()
-    self._start_router()
-
-  def stop(self) -> None:
-    """Stop the server."""
-    self._running = False
-    for proc in (self._http_thread, self._proxy_thread, self._router_thread):
-      if proc:
-        _terminate_process(proc)
-
-  def _start_http_server(self) -> None:
-    """Start the internal HTTP server that serves the web viewer files."""
-    if self.static_files_dir:
-      logger.info(f"[Http] Serving web viewer from: {self.static_files_dir}")
-    else:
+    """Starts the server in a background process."""
+    if not self.static_files_dir:
       logger.warning("[Http] WARNING: Could not find web viewer static files.")
-      logger.warning("[Http]   The WASM files were not found in runfiles.")
       return
-
-    def run_server():
-      signal.signal(signal.SIGINT, signal.SIG_IGN)
-      signal.signal(signal.SIGTERM, lambda signum, frame: sys.exit(0))
-      try:
-        handler = functools.partial(
-            _WebViewerHTTPHandler,
-            directory=self.static_files_dir,
-            mjb_data=self.mjb_data,
-            ws_port=self.ws_port,
-        )
-        server = _ThreadingHTTPServer(
-            ("127.0.0.1", self.internal_http_port), handler
-        )
-        logger.info(
-            "[Http] Internal HTTP server on"
-            f" http://127.0.0.1:{self.internal_http_port}"
-        )
-        server.serve_forever()
-      except (KeyboardInterrupt, SystemExit):
-        pass
-
-    self._http_thread = multiprocessing.Process(target=run_server, daemon=True)
-    self._http_thread.start()
-
-  def _start_proxy_server(self) -> None:
-    """Start the WebSocket-to-TCP proxy (loopback only)."""
-    self._proxy_thread = multiprocessing.Process(
-        target=_run_proxy,
-        args=("127.0.0.1", self.tcp_port, self.ws_port),
-        daemon=True,
-    )
-    self._proxy_thread.start()
-
-  def _start_router(self) -> None:
-    """Start the public path router."""
-    self._router_thread = multiprocessing.Process(
-        target=_run_router,
+    logger.info(f"[Http] Serving web viewer from: {self.static_files_dir}")
+    self._process = multiprocessing.Process(
+        target=_run_server,
         args=(
             self.host,
             self.http_port,
-            self.internal_http_port,
-            self.ws_port,
-            self.state_ws_port,
+            self.tcp_port,
+            self.static_files_dir,
+            self.mjb_data,
+            self._shm_array,
+            self._shm_capacity,
+            self._generation,
         ),
         daemon=True,
     )
-    self._router_thread.start()
+    self._process.start()
+
+  def stop(self) -> None:
+    """Stops the server, escalating to SIGKILL if it hangs."""
+    if self._process:
+      _terminate_process(self._process)
+      self._process = None

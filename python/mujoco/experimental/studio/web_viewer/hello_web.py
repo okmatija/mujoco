@@ -15,7 +15,7 @@
 
 Streams a stepped MuJoCo simulation and a demo ImGui UI to the browser without
 going through the Studio viewer/sim message-passing machinery. Useful to debug
-the transport layers (NetImgui, proxy, state WebSocket) in isolation.
+the transport layers (NetImgui bridge, state streaming) in isolation.
 
 Usage:
   python -m mujoco.experimental.studio.web_viewer.hello_web [model.xml]
@@ -27,7 +27,6 @@ import sys
 import time
 
 import mujoco
-from mujoco.experimental.studio.web_viewer import state_server as state_server_module
 from mujoco.experimental.studio.web_viewer import ui_server as ui_server_module
 from mujoco.experimental.studio.web_viewer import web_server as web_server_module
 from mujoco.experimental.studio.web_viewer import web_viewer as web_viewer_module
@@ -70,23 +69,18 @@ def main(argv: list[str]) -> None:
   )
   imgui.SetCurrentContext(ui_server.get_context())
 
-  # State streaming server (latest-wins snapshots over WebSocket).
+  # Single-port server: page, WASM, /model.mjb over HTTP; /ui bridges the
+  # NetImgui stream; /state broadcasts the state payload.
   sig = int(mujoco.mjtState.mjSTATE_INTEGRATION)
   state_size = mujoco.mj_stateSize(model, sig)
   max_payload = ui_server_module.UiServer.max_state_payload_size(
       state_size * np.float64().itemsize
   )
-  state_server = state_server_module.StateServer(
-      state_ws_port=8891, max_payload_size=max_payload
-  )
-  state_server.start()
-
-  # HTTP server (page, WASM, /model.mjb) + NetImgui WS-to-TCP proxy.
   web_server = web_server_module.WebServer(
       http_port=8080,
       tcp_port=8888,
-      ws_port=8890,
       mjb_data=web_viewer_module._serialize_model(model),
+      max_payload_size=max_payload,
   )
   web_server.start()
 
@@ -122,7 +116,7 @@ def main(argv: list[str]) -> None:
           0, sig, state.tobytes(), camera, perturb, vis_options, model,
           render_flags, []
       )
-      state_server.update_state(payload)
+      web_server.update_state(payload)
 
       # End the frame; NetImgui streams the UI draw data to the browser.
       ui_server.end_frame()
@@ -131,7 +125,6 @@ def main(argv: list[str]) -> None:
     pass
   finally:
     web_server.stop()
-    state_server.stop()
 
 
 if __name__ == '__main__':

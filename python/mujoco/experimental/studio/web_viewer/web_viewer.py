@@ -22,7 +22,7 @@ The WebViewer streams the Studio UI and simulation state to a browser:
     viewer-side handlers (e.g. ``ViewerApp``) work unmodified.
   * Physics state and render state (camera, perturb, options, extra geoms) are
     streamed to the browser at ~60Hz over a WebSocket with latest-wins
-    (snapshot) semantics — see ``state_server.StateServer``.
+    (snapshot) semantics — see ``web_server.WebServer``.
   * The browser runs the ``web_client`` WASM app, which renders the MuJoCo
     scene with Filament and overlays the remote ImGui draw data.
 
@@ -44,7 +44,6 @@ from mujoco.experimental.studio import endpoints
 from mujoco.experimental.studio import messages
 from mujoco.experimental.studio import ux
 from mujoco.experimental.studio import viewer_protocol
-from mujoco.experimental.studio.web_viewer import state_server as state_server_module
 from mujoco.experimental.studio.web_viewer import ui_server as ui_server_module
 from mujoco.experimental.studio.web_viewer import web_server as web_server_module
 import numpy as np
@@ -90,8 +89,6 @@ class WebViewer(viewer_protocol.Viewer):
       host: str = '0.0.0.0',
       http_port: int = 8080,
       ui_tcp_port: int = 8888,
-      ui_ws_port: int = 8890,
-      state_ws_port: int = 8891,
   ) -> None:
     """Initializes the WebViewer.
 
@@ -106,15 +103,10 @@ class WebViewer(viewer_protocol.Viewer):
       perturb: Perturbation parameters. Internal object is created if None.
       render_flags: Render flags. Internal object is created if None.
       extra_geoms: List of extra geoms. Internal list is created if None.
-      host: Public interface the router binds to; all other servers bind
-        loopback and are reached through the router by path.
+      host: Public interface the server binds to.
       http_port: The single public port: page, WASM, /model.mjb, and the
         /ui and /state WebSocket paths.
-      ui_tcp_port: Internal TCP port the headless NetImgui client connects to.
-      ui_ws_port: Internal WebSocket port bridging NetImgui to the browser
-        (public path /ui).
-      state_ws_port: Internal WebSocket port streaming simulation state to
-        the browser (public path /state).
+      ui_tcp_port: Loopback TCP port the headless NetImgui client connects to.
     """
     super().__init__(
         config,
@@ -132,8 +124,6 @@ class WebViewer(viewer_protocol.Viewer):
     self._host = host
     self._http_port = http_port
     self._ui_tcp_port = ui_tcp_port
-    self._ui_ws_port = ui_ws_port
-    self._state_ws_port = state_ws_port
 
     # Headless ImGui context streaming UI draw data via NetImgui.
     self._ui_server = ui_server_module.UiServer(
@@ -152,11 +142,10 @@ class WebViewer(viewer_protocol.Viewer):
     ux.set_imgui_context(ctx)
     ux.set_implot_context(self._ui_server.get_implot_context())
 
-    # HTTP + NetImgui proxy + state streaming servers. They are (re)started
-    # whenever the model changes, since the served MJB bytes and the state
-    # buffer size depend on the model.
+    # The single-port server (HTTP + /ui + /state). It is restarted whenever
+    # the model changes, since the served MJB bytes and the state payload
+    # capacity depend on the model.
     self._web_server: web_server_module.WebServer | None = None
-    self._state_server: state_server_module.StateServer | None = None
     self._model_ident = 0
     self._start_servers()
 
@@ -186,22 +175,12 @@ class WebViewer(viewer_protocol.Viewer):
         state_size * np.float64().itemsize
     )
 
-    # Only the WebServer's router binds self._host (the public interface);
-    # the state server and the other internal servers bind loopback and are
-    # reached through the router by path (/state, /ui).
-    self._state_server = state_server_module.StateServer(
-        state_ws_port=self._state_ws_port,
-        max_payload_size=max_payload,
-    )
-    self._state_server.start()
-
     self._web_server = web_server_module.WebServer(
         host=self._host,
         http_port=self._http_port,
         tcp_port=self._ui_tcp_port,
-        ws_port=self._ui_ws_port,
-        state_ws_port=self._state_ws_port,
         mjb_data=mjb_data,
+        max_payload_size=max_payload,
     )
     self._web_server.start()
     print(
@@ -213,9 +192,6 @@ class WebViewer(viewer_protocol.Viewer):
     if self._web_server is not None:
       self._web_server.stop()
       self._web_server = None
-    if self._state_server is not None:
-      self._state_server.stop()
-      self._state_server = None
 
   # ---------------------------------------------------------------------------
   # Message handlers.
@@ -249,7 +225,7 @@ class WebViewer(viewer_protocol.Viewer):
 
   def sync(self) -> None:
     """Streams state to the browser and ends the headless ImGui frame."""
-    if self._state_server is not None:
+    if self._web_server is not None:
       sig, state_size = self._state_signature_and_size()
       state = np.empty(state_size, np.float64)
       mujoco.mj_getState(self.model, self.data, state, sig)
@@ -264,7 +240,7 @@ class WebViewer(viewer_protocol.Viewer):
           list(self.render_flags.flags),
           self.extra_geoms[: ui_server_module.MAX_EXTRA_GEOMS],
       )
-      self._state_server.update_state(payload)
+      self._web_server.update_state(payload)
 
     # Finish the ImGui frame; NetImgui sends the draw data to the browser.
     self._ui_server.end_frame()

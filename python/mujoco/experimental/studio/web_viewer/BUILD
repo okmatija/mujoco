@@ -183,14 +183,8 @@ pytype_library(
     srcs = ["ui_server_proxy.py"],
 )
 
-# Python state server for streaming simulation state via WebSocket.
-pytype_library(
-    name = "state_server",
-    srcs = ["state_server.py"],
-)
-
-# Web-based viewer for MuJoCo. Orchestrates the UiServer, WebServer, and StateServer to provide a
-# browser-based MuJoCo viewer.
+# The web viewer's single-port server: page/WASM/model over HTTP, /ui
+# bridging the NetImgui stream, /state broadcasting the state payload.
 pytype_library(
     name = "web_server",
     srcs = ["web_server.py"],
@@ -201,7 +195,6 @@ pytype_library(
     ],
     visibility = ["//visibility:public"],
     deps = [
-        ":state_server",
         ":ui_server",
         ":ui_server_proxy",
         ":ux",
@@ -209,6 +202,7 @@ pytype_library(
         "//third_party/mujoco",
         "//third_party/py/mujoco",
         "//third_party/py/numpy",
+        "//third_party/py/websockets",
     ],
 )
 

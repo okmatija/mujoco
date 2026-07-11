@@ -66,6 +66,9 @@ mujoco = [
 ]
 
 [project.optional-dependencies]
+web = [
+    "websockets>=13",
+]
 sysid = [
     "absl-py",
     "colorama",
