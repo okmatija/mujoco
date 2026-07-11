@@ -1,8 +1,7 @@
 """Single-port web server for the MuJoCo web viewer.
 
 One child process, one asyncio loop, one public port, built on the
-`websockets` library (the viewer's only networking dependency —
-``pip install mujoco[web]``):
+`websockets` library (the viewer's only networking dependency):
 
   * Plain HTTP GET     -> static files (index.html, WASM, assets), /model.mjb.
   * WebSocket /ui      -> bridged to the headless NetImgui client, which
@@ -33,16 +32,10 @@ import struct
 import sys
 from typing import Optional
 
-try:
-  from websockets.asyncio.server import serve
-  from websockets.datastructures import Headers
-  from websockets.exceptions import ConnectionClosed
-  from websockets.http11 import Response
-except ImportError as e:
-  raise ImportError(
-      "The MuJoCo web viewer requires the 'websockets' package. Install it"
-      " with: pip install websockets (or pip install mujoco[web])"
-  ) from e
+from websockets.asyncio.server import serve
+from websockets.datastructures import Headers
+from websockets.exceptions import ConnectionClosed
+from websockets.http11 import Response
 
 
 class _WebServerFormatter(logging.Formatter):

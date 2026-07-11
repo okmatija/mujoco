@@ -30,6 +30,7 @@ dependencies = [
     "glfw",
     "numpy",
     "pyopengl",
+    "websockets>=13",
 ]
 dynamic = ["readme", "scripts"]
 
@@ -66,9 +67,6 @@ mujoco = [
 ]
 
 [project.optional-dependencies]
-web = [
-    "websockets>=13",
-]
 sysid = [
     "absl-py",
     "colorama",
