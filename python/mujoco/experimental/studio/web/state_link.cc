@@ -33,6 +33,7 @@ EM_BOOL StateLink::OnWsMessage(int event_type,
 EM_BOOL StateLink::OnWsOpen(int event_type,
                             const EmscriptenWebSocketOpenEvent* event,
                             void* user_data) {
+  static_cast<StateLink*>(user_data)->open_ = true;
   LOG(Info, "State WebSocket connected");
   return EM_TRUE;
 }
@@ -50,6 +51,7 @@ EM_BOOL StateLink::OnWsClose(int event_type,
   auto* link = static_cast<StateLink*>(user_data);
   LOG(Info, "State WebSocket closed (code=%d)", event->code);
   link->socket_ = 0;
+  link->open_ = false;
   // Close code 4000: another browser tab took over the viewer slot.
   if (event->code == 4000) {
     link->superseded_ = true;
@@ -80,6 +82,7 @@ void StateLink::Connect(const std::string& url) {
 }
 
 void StateLink::HandleMessage(const uint8_t* data, uint32_t num_bytes) {
+  last_message_time_ = emscripten_get_now() / 1000.0;
   if (reload_pending_ || (ready_ && !ready_())) {
     return;
   }

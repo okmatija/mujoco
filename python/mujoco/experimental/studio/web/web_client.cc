@@ -77,8 +77,14 @@ struct Telemetry {
   uint64_t gui_bytes_per_sec = 0;
   uint64_t sim_bytes_per_sec = 0;
   bool expanded = false;
+  bool disconnected_notice_logged = false;
 };
 Telemetry g_telemetry;
+
+// How long the state stream (~60Hz while the Python side is alive) may go
+// silent before the "server not reachable" notice appears. A model-change
+// restart resumes traffic in about a second and should not flash the notice.
+constexpr double kServerSilenceNoticeSec = 3.0;
 
 // WebSocket base URL matching the page origin, e.g. "ws://host:8080" or
 // "wss://tunnel.example.com" behind an HTTPS tunnel. All viewer WebSockets
@@ -201,6 +207,38 @@ void BuildBrowserGui() {
     g_telemetry.last_rate_time = now;
   }
 
+  // "Server not reachable" notice, keyed on state-stream staleness rather
+  // than socket state: a killed, suspended (Ctrl+Z), or unreachable server
+  // all go silent, but only a killed one closes its sockets. Clears itself
+  // when traffic resumes. Suppressed before the first payload (initial
+  // load), when superseded (its own notice), and during model-swap reloads.
+  const double last_msg = g_state_link.LastMessageTime();
+  const bool link_stale =
+      last_msg > 0 &&
+      emscripten_get_now() / 1000.0 - last_msg > kServerSilenceNoticeSec &&
+      !g_state_link.Superseded() && !g_state_link.ReloadPending();
+  if (!link_stale) {
+    g_telemetry.disconnected_notice_logged = false;
+  } else {
+    if (!g_telemetry.disconnected_notice_logged) {
+      LOG(Info, "Showing server-not-reachable notice");
+      g_telemetry.disconnected_notice_logged = true;
+    }
+    const ImGuiIO& io = ImGui::GetIO();
+    ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, 48.0f),
+                            ImGuiCond_Always, ImVec2(0.5f, 0.0f));
+    ImGui::Begin("##disconnected", nullptr,
+                 ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+                     ImGuiWindowFlags_NoMove |
+                     ImGuiWindowFlags_AlwaysAutoResize);
+    ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f),
+                       "Viewer server is not reachable.");
+    ImGui::TextUnformatted(
+        "The Python script may have stopped. This page reconnects\n"
+        "automatically if the viewer comes back.");
+    ImGui::End();
+  }
+
   // Default to the top center of the canvas; draggable afterwards.
   ImGui::SetNextWindowPos(ImVec2(ImGui::GetIO().DisplaySize.x * 0.5f, 8.0f),
                           ImGuiCond_FirstUseEver, ImVec2(0.5f, 0.0f));
@@ -288,7 +326,7 @@ void MainLoopImpl() {
   // restarted its servers after a model change. Receiving a payload with a
   // different model identity then triggers a page reload (StateLink).
   static int sLastStateWsRetryFrame = 0;
-  if (!g_state_link.Connected() && !g_state_link.ReloadPending() &&
+  if (!g_state_link.HasSocket() && !g_state_link.ReloadPending() &&
       !g_state_link.Superseded() && g_app.model_holder &&
       g_app.model_holder->ok() &&
       sMainFrameCount - sLastStateWsRetryFrame > 60) {

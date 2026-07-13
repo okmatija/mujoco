@@ -36,6 +36,7 @@ separating the viewer and simulation.
 """
 
 import os
+import socket
 from typing import Any
 import zlib
 
@@ -63,6 +64,44 @@ def _find_assets_dir() -> str:
   return ''
 
 
+def _lan_ip() -> str | None:
+  """Returns this machine's outbound-interface IP, or None.
+
+  Connecting a UDP socket sends no packets; it only asks the kernel which
+  local address would route to the destination. This is the address other
+  machines on the same network can reach the viewer at.
+  """
+  try:
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+      s.connect(('8.8.8.8', 80))
+      return s.getsockname()[0]
+  except OSError:
+    return None
+
+
+def _print_url_banner(host: str, port: int) -> None:
+  """Prints a prominent boxed banner with the URLs browsers can use."""
+  rows = [('local', f'http://localhost:{port}')]
+  if host == '0.0.0.0':
+    lan = _lan_ip()
+    if lan and not lan.startswith('127.'):
+      # Shareable with other machines on the same network.
+      rows.append(('network', f'http://{lan}:{port}'))
+
+  label_width = max(len(label) for label, _ in rows)
+  lines = ['MuJoCo Web Viewer running at:', '']
+  lines += [f'  {label.ljust(label_width)}  {url}' for label, url in rows]
+  lines += ['', 'Ctrl+C to quit']
+
+  width = max(len(line) for line in lines)
+  banner = [
+      '╭' + '─' * (width + 2) + '╮',
+      *(f'│ {line.ljust(width)} │' for line in lines),
+      '╰' + '─' * (width + 2) + '╯',
+  ]
+  print('\n'.join(banner), flush=True)
+
+
 def _serialize_model(model: mujoco.MjModel) -> bytes:
   """Serializes a compiled model to MJB bytes (served as /model.mjb)."""
   buffer = np.empty(mujoco.mj_sizeModel(model), np.uint8)
@@ -87,8 +126,8 @@ class WebViewer(viewer_protocol.Viewer):
       render_flags: ux.RenderFlags | None = None,
       extra_geoms: list[mujoco.MjvGeom] | None = None,
       host: str = '0.0.0.0',
-      http_port: int = 8080,
-      ui_tcp_port: int = 8888,
+      http_port: int | None = None,
+      ui_tcp_port: int = 0,
   ) -> None:
     """Initializes the WebViewer.
 
@@ -105,8 +144,12 @@ class WebViewer(viewer_protocol.Viewer):
       extra_geoms: List of extra geoms. Internal list is created if None.
       host: Public interface the server binds to.
       http_port: The single public port: page, WASM, /model.mjb, and the
-        /ui and /state WebSocket paths.
-      ui_tcp_port: Loopback TCP port the headless NetImgui client connects to.
+        /ui and /state WebSocket paths. None falls back to config.http_port;
+        0 picks the first free port starting at 8080, so several viewers can
+        run side by side.
+      ui_tcp_port: Loopback TCP port the headless NetImgui client connects
+        to. 0 (the default) uses an OS-assigned ephemeral port — both
+        endpoints live in this process tree, so no fixed number is needed.
     """
     super().__init__(
         config,
@@ -122,13 +165,20 @@ class WebViewer(viewer_protocol.Viewer):
     )
 
     self._host = host
-    self._http_port = http_port
-    self._ui_tcp_port = ui_tcp_port
+    # Bind both listening sockets up front, in this process: bind conflicts
+    # surface here as one clear error (instead of inside the server child),
+    # the public port stays stable across server restarts, and the loopback
+    # port is OS-assigned so viewer instances can never collide on it.
+    requested_port = config.http_port if http_port is None else http_port
+    self._http_sock = web_server.bind_public_socket(host, requested_port)
+    self._http_port = self._http_sock.getsockname()[1]
+    self._tcp_sock = web_server.bind_loopback_socket(ui_tcp_port)
+    self._ui_tcp_port = self._tcp_sock.getsockname()[1]
 
     # Headless ImGui context streaming UI draw data via NetImgui.
     self._ui_server = ui_server.UiServer(
         config.title or 'MuJoCo Web Viewer',
-        ui_tcp_port,
+        self._ui_tcp_port,
         _find_assets_dir(),
     )
 
@@ -145,6 +195,7 @@ class WebViewer(viewer_protocol.Viewer):
     self._web_server: web_server.WebServer | None = None
     self._model_ident = 0
     self._start_servers()
+    _print_url_banner(self._host, self._http_port)
 
     # Dispatch lifecycle event so handlers can cache the viewer reference.
     self.dispatch(viewer_protocol.ViewerInitEvent(viewer=self))
@@ -173,17 +224,12 @@ class WebViewer(viewer_protocol.Viewer):
     )
 
     self._web_server = web_server.WebServer(
-        host=self._host,
-        http_port=self._http_port,
-        tcp_port=self._ui_tcp_port,
+        http_sock=self._http_sock,
+        tcp_sock=self._tcp_sock,
         mjb_data=mjb_data,
         max_payload_size=max_payload,
     )
     self._web_server.start()
-    print(
-        'MuJoCo web viewer running at '
-        f'http://localhost:{self._http_port} (Ctrl+C to quit)'
-    )
 
   def _stop_servers(self) -> None:
     if self._web_server is not None:
@@ -206,7 +252,7 @@ class WebViewer(viewer_protocol.Viewer):
     """
     super()._on_model(event)
     self._start_servers()
-    print('Model changed: the browser page reloads automatically.')
+    print('Model changed: the browser page reloads automatically.', flush=True)
     return False  # Do not consume; let other handlers see the event.
 
   # ---------------------------------------------------------------------------
@@ -245,6 +291,8 @@ class WebViewer(viewer_protocol.Viewer):
 
   def close(self) -> None:
     self._stop_servers()
+    self._http_sock.close()
+    self._tcp_sock.close()
     super().close()
 
   def get_drop_file(self) -> str:

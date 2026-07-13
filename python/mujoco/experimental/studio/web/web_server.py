@@ -53,7 +53,11 @@ class _WebServerFormatter(logging.Formatter):
 
 
 logger = logging.getLogger("WebServer")
-logger.setLevel(logging.INFO)
+# Quiet by default: the viewer prints its URL itself. Set MUJOCO_WEB_VERBOSE
+# (e.g. via viewer.py --verbose) for connection/bridge chatter.
+logger.setLevel(
+    logging.INFO if os.environ.get("MUJOCO_WEB_VERBOSE") else logging.WARNING
+)
 if not logger.handlers:
   handler = logging.StreamHandler(sys.stdout)
   handler.setFormatter(_WebServerFormatter())
@@ -65,6 +69,61 @@ if not logger.handlers:
 # single viewer slot. The client must stop reconnecting when it sees this
 # (otherwise two tabs kick each other in an endless loop).
 WS_CLOSE_SUPERSEDED = 4000
+
+# Default public port, and how many consecutive ports to try when it is
+# taken (e.g. by another running viewer).
+DEFAULT_HTTP_PORT = 8080
+_PORT_SCAN_COUNT = 20
+
+
+def bind_public_socket(host: str, port: int = 0) -> socket.socket:
+  """Binds (but does not listen on) the public HTTP listening socket.
+
+  The socket is bound in the viewer process and inherited by each server
+  child, so the port stays stable across server restarts (model changes) and
+  bind conflicts surface here, synchronously, instead of inside the child.
+
+  Args:
+    host: Interface to bind.
+    port: A specific port, or 0 to take the first free port starting at
+      DEFAULT_HTTP_PORT (so several viewers can run side by side).
+
+  Raises:
+    RuntimeError: If the requested port (or every scanned port) is taken.
+  """
+  candidates = (
+      [port] if port else range(DEFAULT_HTTP_PORT,
+                                DEFAULT_HTTP_PORT + _PORT_SCAN_COUNT)
+  )
+  for candidate in candidates:
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+      sock.bind((host, candidate))
+      return sock
+    except OSError:
+      sock.close()
+  if port:
+    raise RuntimeError(
+        f"Port {port} is already in use — is another web viewer running? "
+        "Pass a different --port, or 0 to pick one automatically."
+    )
+  raise RuntimeError(
+      f"Ports {DEFAULT_HTTP_PORT}-{DEFAULT_HTTP_PORT + _PORT_SCAN_COUNT - 1} "
+      "are all in use — are that many web viewers running?"
+  )
+
+
+def bind_loopback_socket(port: int = 0) -> socket.socket:
+  """Binds the loopback socket the headless NetImgui client connects to.
+
+  Defaults to an OS-assigned ephemeral port: both endpoints live in this
+  process tree, so no fixed number is needed and collisions between viewer
+  instances are impossible.
+  """
+  sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+  sock.bind(("127.0.0.1", port))
+  return sock
 
 # NetImgui's CmdVersion handshake packet is always 120 bytes.
 _CMD_VERSION_SIZE = 120
@@ -146,9 +205,10 @@ def _run_cancellable(main_loop_func):
 
 
 def _run_server(
-    host,
-    port,
-    tcp_port,
+    http_sock,
+    tcp_sock,
+    lifeline_r,
+    lifeline_w,
     static_dir,
     mjb_data,
     shm_array,
@@ -156,6 +216,11 @@ def _run_server(
     generation,
 ):
   """The server process: HTTP + /ui + /state on one port, one event loop."""
+
+  # Close the inherited write end of the lifeline pipe: the read end must see
+  # EOF the moment the parent (the only writer) goes away — for ANY reason,
+  # including SIGKILL, which no signal handler or getppid poll can cover.
+  os.close(lifeline_w)
 
   static_root = os.path.realpath(static_dir) if static_dir else None
 
@@ -354,32 +419,30 @@ def _run_server(
       else:
         await ws.close(1008, "unknown endpoint")
 
-    # Exit if the viewer process died without cleaning up (e.g. SIGKILL);
-    # an orphaned server would otherwise keep serving a stale model and
-    # fight any replacement server for browsers.
-    async def watch_parent():
-      while True:
-        await asyncio.sleep(2.0)
-        if os.getppid() == 1:
-          logger.warning("[Http] Viewer process died; shutting down.")
-          os._exit(0)  # pylint: disable=protected-access
+    # Block until the lifeline pipe hits EOF, which happens exactly when the
+    # viewer process is gone (clean stop() close, crash, or SIGKILL). An
+    # orphaned server would otherwise keep serving a stale model and fight
+    # any replacement server for browsers.
+    async def watch_lifeline():
+      loop = asyncio.get_running_loop()
+      await loop.run_in_executor(None, os.read, lifeline_r, 1)
+      logger.info("[Http] Viewer process exited; shutting down.")
 
-    tcp_server = await asyncio.start_server(
-        handle_tcp_client, "127.0.0.1", tcp_port
-    )
+    tcp_server = await asyncio.start_server(handle_tcp_client, sock=tcp_sock)
     # NetImgui does its own delta compression and the state payload is small;
     # permessage-deflate would only add latency at 60Hz.
     ws_server = await serve(
         ws_handler,
-        host,
-        port,
+        sock=http_sock,
         process_request=process_request,
         compression=None,
         close_timeout=1.0,
         max_size=2**24,
     )
+    http_host, http_port = http_sock.getsockname()[:2]
+    tcp_port = tcp_sock.getsockname()[1]
     logger.info(
-        f"[Http] Serving on http://{host}:{port} "
+        f"[Http] Serving on http://{http_host}:{http_port} "
         f"(/, /model.mjb, /ui, /state; NetImgui TCP on 127.0.0.1:{tcp_port})"
     )
 
@@ -388,7 +451,7 @@ def _run_server(
     # hang the process. Close the listeners explicitly instead; open sockets
     # die with the process.
     try:
-      await watch_parent()
+      await watch_lifeline()
     finally:
       ws_server.close()
       tcp_server.close()
@@ -410,19 +473,24 @@ class WebServer:
 
   def __init__(
       self,
-      host: str = "0.0.0.0",
-      http_port: int = 8080,
-      tcp_port: int = 8888,
+      http_sock: socket.socket,
+      tcp_sock: socket.socket,
       static_files_dir: Optional[str] = None,
       mjb_data: Optional[bytes] = None,
       max_payload_size: int = 0,
   ):
-    self.host = host
-    self.http_port = http_port
-    self.tcp_port = tcp_port
+    """Initializes the server around pre-bound listening sockets.
+
+    The sockets are bound by the viewer (see bind_public_socket /
+    bind_loopback_socket) and shared with the server child, so ports stay
+    stable across restarts and bind failures can't occur here.
+    """
+    self.http_sock = http_sock
+    self.tcp_sock = tcp_sock
     self.static_files_dir = static_files_dir or _find_static_files_dir()
     self.mjb_data = mjb_data
     self._process = None
+    self._lifeline_w = None
 
     # Shared memory for zero-copy payload transfer to the server process:
     # [u32 length][payload bytes], so payloads can vary in size up to
@@ -458,12 +526,19 @@ class WebServer:
       logger.warning("[Http] WARNING: Could not find web viewer static files.")
       return
     logger.info(f"[Http] Serving web viewer from: {self.static_files_dir}")
-    self._process = multiprocessing.Process(
+    # Lifeline pipe: the child holds the read end and exits on EOF, which
+    # happens when this process closes the write end (stop()) or dies for
+    # any reason at all — no orphaned servers.
+    lifeline_r, self._lifeline_w = os.pipe()
+    # Sockets and pipe fds must be inherited, so fork explicitly (the default
+    # start method is fork on Linux today, but is changing upstream).
+    self._process = multiprocessing.get_context("fork").Process(
         target=_run_server,
         args=(
-            self.host,
-            self.http_port,
-            self.tcp_port,
+            self.http_sock,
+            self.tcp_sock,
+            lifeline_r,
+            self._lifeline_w,
             self.static_files_dir,
             self.mjb_data,
             self._shm_array,
@@ -473,9 +548,13 @@ class WebServer:
         daemon=True,
     )
     self._process.start()
+    os.close(lifeline_r)
 
   def stop(self) -> None:
     """Stops the server, escalating to SIGKILL if it hangs."""
+    if self._lifeline_w is not None:
+      os.close(self._lifeline_w)  # EOF on the child's lifeline: clean exit.
+      self._lifeline_w = None
     if self._process:
       _terminate_process(self._process)
       self._process = None

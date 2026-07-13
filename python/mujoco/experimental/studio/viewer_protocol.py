@@ -57,6 +57,9 @@ class ViewerConfig:
   height: int = 800
   gfx: str = ''
   viewer_mode: ViewerMode = ViewerMode.NATIVE
+  # Web viewer only: public port. 0 picks the first free port starting at
+  # 8080, so several viewers can run side by side.
+  http_port: int = 0
 
 
 # -----------------------------------------------------------------------------

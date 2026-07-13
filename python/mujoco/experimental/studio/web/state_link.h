@@ -42,7 +42,14 @@ class StateLink {
       : ready_(std::move(ready)), on_payload_(std::move(on_payload)) {}
 
   void Connect(const std::string& url);
-  bool Connected() const { return socket_ != 0; }
+
+  // True while a connect attempt exists (possibly still in flight); used to
+  // pace reconnects. emscripten_websocket_new returns a handle immediately,
+  // so this is NOT the same as Connected().
+  bool HasSocket() const { return socket_ != 0; }
+
+  // True only while the WebSocket is actually open.
+  bool Connected() const { return open_; }
 
   // True once a payload with a new model identity has scheduled a page
   // reload; all traffic is dropped from then on.
@@ -61,6 +68,13 @@ class StateLink {
     bytes_accum_ = 0;
     return bytes;
   }
+
+  // Wall-clock seconds (emscripten_get_now-based) of the last received
+  // message, or 0 before the first one. Payloads stream at ~60Hz while the
+  // Python side is alive, so staleness here means the server is gone —
+  // even if the socket still looks open (a suspended process keeps its
+  // sockets established).
+  double LastMessageTime() const { return last_message_time_; }
 
   // Parses one WebSocket message and applies the identity/reload policy;
   // public for tests.
@@ -84,6 +98,7 @@ class StateLink {
   OnPayloadFn on_payload_;
 
   EMSCRIPTEN_WEBSOCKET_T socket_ = 0;
+  bool open_ = false;
 
   // Identity of the model this page loaded (adopted from the first payload).
   // When the payload's identity changes, the Python side has swapped models:
@@ -95,6 +110,7 @@ class StateLink {
   bool superseded_ = false;
 
   uint64_t bytes_accum_ = 0;
+  double last_message_time_ = 0;
 };
 
 }  // namespace mujoco::studio
