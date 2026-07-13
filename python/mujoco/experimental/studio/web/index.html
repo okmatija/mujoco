@@ -38,14 +38,9 @@
           return prefix + path;
         }
       };
-      // Only set the CSS size of the canvas; SDL's Emscripten backend detects
-      // external CSS resizes and manages the backing store itself (CSS size
-      // times devicePixelRatio). Writing canvas.width/height here would fight
-      // SDL and desynchronize ImGui layout, rendering, and mouse coordinates.
-      // Always use whole CSS pixels: the 100vw/100vh stylesheet size can be
-      // fractional under display scaling, and SDL polls the CSS size every
-      // frame — an unstably-rounded size makes the streamed UI relayout each
-      // frame (visible as toolbar/text flicker).
+      // Set only the CSS size; SDL owns canvas.width/height. Use whole
+      // pixels: a fractional size (100vw/100vh under display scaling) makes
+      // the streamed UI relayout — and visibly flicker — every frame.
       function fitCanvas() {
         Module.canvas.style.width = Math.floor(window.innerWidth) + "px";
         Module.canvas.style.height = Math.floor(window.innerHeight) + "px";

@@ -39,7 +39,7 @@ mujoco_pybind11_module(sim sim.cc)
 target_link_libraries(sim PRIVATE ${STUDIO_COMMON_LIBS})
 
 # Web viewer (headless NetImgui UI server streaming to the browser).
-add_subdirectory(web_viewer)
+add_subdirectory(web)
 
 set(MUJOCO_STUDIO_TARGETS
     parser

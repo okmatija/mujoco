@@ -44,8 +44,8 @@ from mujoco.experimental.studio import endpoints
 from mujoco.experimental.studio import messages
 from mujoco.experimental.studio import ux
 from mujoco.experimental.studio import viewer_protocol
-from mujoco.experimental.studio.web_viewer import ui_server
-from mujoco.experimental.studio.web_viewer import web_server
+from mujoco.experimental.studio.web import ui_server
+from mujoco.experimental.studio.web import web_server
 import numpy as np
 
 from mujoco.experimental.dear_imgui import dear_imgui as imgui
@@ -194,16 +194,17 @@ class WebViewer(viewer_protocol.Viewer):
   # Message handlers.
   # ---------------------------------------------------------------------------
 
-  @messages.handler(priority=messages.Priority.INTERNAL)
+  @messages.handler(priority=messages.Priority.CRITICAL)
   def _on_model(self, event: messages.ModelEvent) -> bool:
-    """Restarts the servers to serve the new model.
+    """Loads the new model, then restarts the servers to serve it.
 
-    The base Viewer's CRITICAL-priority handler has already replaced
-    self.model/self.data by the time this runs. The browser reconnects to the
-    new state server, notices the changed model identity in the payload, and
-    reloads itself to fetch the new model.
+    The handler registry discovers handlers by name, so this override replaces
+    the base Viewer's _on_model and must call it explicitly to load the model
+    before the servers serialize it. The browser reconnects to the new state
+    server, notices the changed model identity in the payload, and reloads
+    itself to fetch the new model.
     """
-    del event
+    super()._on_model(event)
     self._start_servers()
     print('Model changed: the browser page reloads automatically.')
     return False  # Do not consume; let other handlers see the event.

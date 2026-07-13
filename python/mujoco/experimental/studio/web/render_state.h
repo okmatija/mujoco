@@ -14,37 +14,30 @@
 
 // Serialization of the render state sent to the web viewer browser app.
 //
-// The browser renders the scene with the same call the native viewer makes
-// every frame:
+// The browser renders with the same call the native viewer makes each frame
+// (width/height are the browser's own canvas size):
 //
-//   Render(model, data, perturb, camera, vis_options, width, height)
+//   Render(model, data, perturb, camera, vis_options, width, height,
+//          extra_geoms)
 //
-// In the native viewer those arguments are passed in-process by pointer. In
-// the web viewer they must cross a process boundary, so each crosses in its
-// cheapest form:
+// Each remaining argument crosses the process boundary in its cheapest form:
 //
-//   * model    — fetched once over HTTP as /model.mjb; runtime-mutable parts
-//                (opt/vis/stat) are re-sent in this block.
-//   * data     — streamed as the physics state vector (mjSTATE_INTEGRATION);
-//                the browser runs mj_setState + mj_forward to recompute all
-//                derived quantities locally.
-//   * the rest — this fixed-size block: everything else Render() reads.
+//   * model       — fetched once over HTTP as /model.mjb; its runtime-mutable
+//                   parts (opt/vis/stat) re-sent in the render state block.
+//   * data        — streamed as the physics state vector (mjSTATE_INTEGRATION);
+//                   the browser recomputes the rest via mj_setState+mj_forward.
+//   * extra_geoms — optional variable-size kTagExtraGeoms block.
+//   * the rest    — the fixed-size render state block:
+//                   [mjvCamera][mjvPerturb][mjvOption][mjOption][mjVisual]
+//                   [mjStatistic][render_flags]
 //
-// The StateServer WebSocket payload is a sequence of tagged blocks (see
-// SerializeStatePayload below):
+// The payload (see SerializeStatePayload below) is a sequence of tagged
+// blocks,
 //   [StatePayloadHeader][u32 tag][u32 size][payload]...
-// Readers skip blocks with unknown tags, so new blocks can be added without
-// breaking older clients. The fixed-size render state block is laid out as:
-//   [mjvCamera][mjvPerturb][mjvOption][mjOption][mjVisual][mjStatistic]
-//   [render_flags]
-//
-// In addition to physics and render state, the payload may include an
-// optional `kTagExtraGeoms` block containing extra mjvGeom instances.
-// This allows the headless side to send user-injected geoms without changing
-// the fixed render state size.
+// and readers skip unknown tags, so new blocks don't break older clients.
 
-#ifndef MUJOCO_PYTHON_EXPERIMENTAL_STUDIO_WEB_VIEWER_RENDER_STATE_H_
-#define MUJOCO_PYTHON_EXPERIMENTAL_STUDIO_WEB_VIEWER_RENDER_STATE_H_
+#ifndef MUJOCO_PYTHON_EXPERIMENTAL_STUDIO_WEB_RENDER_STATE_H_
+#define MUJOCO_PYTHON_EXPERIMENTAL_STUDIO_WEB_RENDER_STATE_H_
 
 #include <cstddef>
 #include <cstdint>
@@ -262,4 +255,4 @@ inline bool ParseStatePayload(const void* data, size_t size,
 
 }  // namespace mujoco::studio
 
-#endif  // MUJOCO_PYTHON_EXPERIMENTAL_STUDIO_WEB_VIEWER_RENDER_STATE_H_
+#endif  // MUJOCO_PYTHON_EXPERIMENTAL_STUDIO_WEB_RENDER_STATE_H_

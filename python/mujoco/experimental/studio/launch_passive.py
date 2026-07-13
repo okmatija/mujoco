@@ -102,7 +102,7 @@ def run_viewer_target(
         config, viewer_endpoint, handlers=handlers
     )
   elif config.viewer_mode == viewer_protocol.ViewerMode.WEB:
-    from mujoco.experimental.studio.web_viewer import web_viewer  # pylint: disable=g-import-not-at-top
+    from mujoco.experimental.studio import web_viewer  # pylint: disable=g-import-not-at-top
 
     viewer = web_viewer.WebViewer(config, viewer_endpoint, handlers=handlers)
   else:
