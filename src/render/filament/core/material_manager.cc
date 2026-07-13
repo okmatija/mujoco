@@ -91,28 +91,12 @@ void MaterialManager::RemoveUnusedMaterials() {
     return;
   }
   for (auto it = instances_.begin(); it != instances_.end();) {
-    if (!used_keys_.contains(it->first) && !bind_counts_.contains(it->first)) {
+    if (!used_keys_.contains(it->first)) {
       object_mgr_->GetEngine()->destroy(it->second);
       it = instances_.erase(it);
     } else {
       ++it;
     }
-  }
-}
-
-void MaterialManager::AddBinding(MaterialKey key) {
-  if (key != 0) {
-    ++bind_counts_[key];
-  }
-}
-
-void MaterialManager::ReleaseBinding(MaterialKey key) {
-  if (key == 0) {
-    return;
-  }
-  auto it = bind_counts_.find(key);
-  if (it != bind_counts_.end() && --it->second <= 0) {
-    bind_counts_.erase(it);
   }
 }
 
@@ -252,7 +236,11 @@ MaterialManager::MaterialKey MaterialManager::PrepareMaterialInstance(
   return key;
 }
 
-filament::MaterialInstance* MaterialManager::GetInstance(MaterialKey key) {
+const filament::MaterialInstance* MaterialManager::GetInstance(MaterialKey key) {
+  if (key == 0) {
+    return GetEngine()->getDefaultMaterial()->getDefaultInstance();
+  }
+
   auto it = instances_.find(key);
   if (it == instances_.end()) {
     return nullptr;

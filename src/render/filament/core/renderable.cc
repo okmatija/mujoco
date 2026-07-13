@@ -62,7 +62,6 @@ Renderable::Renderable(filament::Engine* engine,
 }
 
 Renderable::~Renderable() noexcept {
-  material_mgr_->ReleaseBinding(bound_key_);
   filament::Engine* engine = GetEngine();
   utils::EntityManager& em = utils::EntityManager::get();
   for (Part& part : parts_) {
@@ -240,6 +239,9 @@ const mjrfMaterial& Renderable::GetMaterial() const { return material_; }
 
 void Renderable::Prepare(std::span<const mjrfRenderRequest*> requests,
                          ReflectionManager* reflection_mgr) {
+  // Ensure the renderable has no material instances set from the previous
+  // frame. This will allow us to recycle material instances if needed.
+  SetMaterialInstance(0);
   // We assume BindMaterialInstance will be called with the same requests in
   // the same order. As such, we'll just store the draw state in a deque rather
   // than trying to perform any kind of matching with the requests.
@@ -249,6 +251,9 @@ void Renderable::Prepare(std::span<const mjrfRenderRequest*> requests,
   for (const mjrfRenderRequest* request : requests) {
     DrawState draw_state;
     mjrfMaterial material = material_;
+
+    // Selected materials are handled in a separate pass, so clear the value
+    // here to take advantage of shared materials.
     material.selected = false;
 
     draw_state.wireframe = (request->draw_mode == mjDRAW_MODE_WIREFRAME);
@@ -322,10 +327,6 @@ void Renderable::Prepare(std::span<const mjrfRenderRequest*> requests,
           this, request->viewport.width, request->viewport.height);
     }
 
-    if (material.selected) {
-      material.emissive += 0.3f;  // vis->global.glow
-    }
-
     const Mesh* mesh = !parts_.empty() ? parts_[0].mesh : nullptr;
     draw_state.material_key = material_mgr_->PrepareMaterialInstance(
         material, static_cast<mjrDrawMode>(request->draw_mode), geom_type_,
@@ -388,16 +389,14 @@ void Renderable::BindMaterialInstance(const mjrfRenderRequest& request) {
 MaterialManager::MaterialKey Renderable::SetMaterialInstance(
     MaterialManager::MaterialKey key) {
   MaterialManager::MaterialKey prev = curr_state_.material_key;
-  if (key != bound_key_) {
-    filament::MaterialInstance* instance = material_mgr_->GetInstance(key);
+  if (key != curr_state_.material_key) {
+    const filament::MaterialInstance* instance =
+        material_mgr_->GetInstance(key);
     filament::RenderableManager& rm = GetEngine()->getRenderableManager();
     for (Part& part : parts_) {
       filament::RenderableManager::Instance ri = rm.getInstance(part.entity);
       rm.setMaterialInstanceAt(ri, 0, instance);
     }
-    material_mgr_->ReleaseBinding(bound_key_);
-    material_mgr_->AddBinding(key);
-    bound_key_ = key;
   }
   return prev;
 }

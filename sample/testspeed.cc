@@ -303,21 +303,21 @@ int main(int argc, char** argv) {
       "  --nthread=N            1         number of threads running parallel rollouts\n"
       "  --noisestd=X           0.01      scale of pseudo-random noise injected into actuators\n"
       "  --noiserate=X          0.1       rate of convergence to ctrl keyframe/midpoint\n"
-      "  --npoolthread=N        0         number of threads in engine-internal threadpool\n"
+      "  --nenginethread=N      0         number of threads in engine-internal threadpool\n"
       "  --solver=S             Newton    PGS, CG, Newton\n"
       "  --cone=C               Pyramidal Pyramidal, Elliptic\n"
       "  --jacobian=J           Auto      Dense, Sparse, Auto\n"
       "  --integrator=I         Euler     Euler, RK4, Implicit, ImplicitFast\n"
       "  --iterations=N         100       solver iterations limit\n"
       "  --tolerance=X          1e-8      solver tolerance\n"
-      "  --sleep_tolerance=X    1e-4      sleep tolerance\n"
+      "  --sleep_tolerance=X    1e-3      sleep tolerance\n"
       "  --noslip_iterations=N  0         noslip solver iterations limit\n"
       "  --help (or no arguments)         print this help message\n"
       "\n"
       "Note: If the model has a keyframe named \"test\", it will be loaded prior to simulation\n";
 
   // default values
-  int nstep = 10000, nthread = 0, npoolthread = 0;
+  int nstep = 10000, nthread = 0, nenginethread = 0;
   // inject small noise by default, to avoid fixed contact state
   double noisestd = 0.01;
   double noiserate = 0.1;
@@ -367,9 +367,9 @@ int main(int argc, char** argv) {
       if (std::sscanf(val, "%lf", &noiserate) != 1) {
         return finish("Invalid --noiserate argument");
       }
-    } else if ((val = getarg("npoolthread"))) {
-      if (std::sscanf(val, "%d", &npoolthread) != 1) {
-        return finish("Invalid --npoolthread argument");
+    } else if ((val = getarg("nenginethread"))) {
+      if (std::sscanf(val, "%d", &nenginethread) != 1) {
+        return finish("Invalid --nenginethread argument");
       }
     } else if ((val = getarg("solver"))) {
       int parsed = ParseEnum(val, {"PGS", "CG", "Newton"});
@@ -441,7 +441,7 @@ int main(int argc, char** argv) {
 
   // clamp nthread to [1, maxthread]
   nthread = mjMAX(1, mjMIN(maxthread, nthread));
-  npoolthread = mjMAX(1, mjMIN(maxthread, npoolthread));
+  nenginethread = mjMAX(1, mjMIN(maxthread, nenginethread));
 
   // get filename, determine file type
   std::string filename(model);
@@ -483,8 +483,8 @@ int main(int argc, char** argv) {
     }
 
     // make and bind threadpool
-    if (npoolthread > 1) {
-      mju_threadpool(runner.d[id], npoolthread);
+    if (nenginethread > 1) {
+      mju_threadpool(runner.d[id], nenginethread);
     }
   }
 
@@ -506,8 +506,8 @@ int main(int argc, char** argv) {
   }
 
   // print thread pool size
-  if (npoolthread > 1) {
-    std::printf(", using %d threads", npoolthread);
+  if (nenginethread > 1) {
+    std::printf(", using %d threads", nenginethread);
   }
   std::printf("...\n");
 

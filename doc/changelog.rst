@@ -17,6 +17,10 @@ General
 - The :el:`attach` element now supports self-attachment (attaching elements of the current model to itself) by omitting
   the :at:`model` attribute. It also supports attaching a frame via the new :at:`frame` attribute, which is mutually
   exclusive with :at:`body`.
+- Fixed loading of ``.mjz`` archives in :ref:`simulate<saSimulate>`: the archive was unmounted before model compilation,
+  so assets contained in it failed to load. Failures in the ``mjz`` decoder now emit a warning with the underlying
+  error instead of the generic "could not decode content" message.
+- Added support for resource writing via :ref:`mju_writeResource` and the ``write`` callback in :ref:`mjpResourceProvider`.
 
 .. admonition:: Breaking API changes
    :class: attention
@@ -29,6 +33,14 @@ General
      exclusively in the compressed sparse row (CSR) format ``mjData.M``.
    - :ref:`mju_round` now breaks ties away from zero rather than towards :math:`+\infty`. This only affects
      negative half-integers, e.g. ``mju_round(-2.5)`` now returns -3 rather than -2.
+   - Changed the default value of :ref:`sleep_tolerance<option-sleep_tolerance>` from 1e-4 to 1e-3 (1mm/sec in SI
+     units).
+
+Bug fixes
+^^^^^^^^^
+- Fixed a bug where ``body_margin`` excluded ``gap``, causing the mid-phase collision filter to incorrectly prune
+  in-gap contacts on multi-geom bodies.
+- Fixed a bug in the mesh compiler where normals were scaled as vectors rather than covectors.
 
 Version 3.10.0 (June 22, 2026)
 ------------------------------

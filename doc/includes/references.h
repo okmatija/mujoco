@@ -690,7 +690,7 @@ typedef struct mjModel_ {
   mjtNum*   body_inertia;         // diagonal inertia in ipos/iquat frame     (nbody x 3)
   mjtNum*   body_invweight0;      // mean inv inert in qpos0 (trn, rot)       (nbody x 2)
   mjtNum*   body_gravcomp;        // antigravity force, units of body weight  (nbody x 1)
-  mjtNum*   body_margin;          // MAX over all geom margins                (nbody x 1)
+  mjtNum*   body_margin;          // MAX over all geom margins+gaps           (nbody x 1)
   mjtNum*   body_user;            // user data                                (nbody x nuser_body)
   int*      body_plugin;          // plugin instance id; -1: not in use       (nbody x 1)
   int*      body_contype;         // OR over all geom contypes                (nbody x 1)
@@ -1218,6 +1218,7 @@ typedef struct mjpResourceProvider {
   mjfMountResource mount;           // mounting callback (optional)
   mjfUnmountResource unmount;       // unmounting callback (optional)
   mjfResourceModified modified;     // resource modified callback (optional)
+  mjfWriteResource write;           // writing callback (optional)
   void* data;                       // opaque data pointer (resource invariant)
 } mjpResourceProvider;
 typedef struct mjpDecoder {
@@ -3684,6 +3685,8 @@ mjResource* mju_openResource(const char* dir, const char* name,
                              const mjVFS* vfs, char* error, size_t nerror);
 void mju_closeResource(mjResource* resource);
 int mju_readResource(mjResource* resource, const void** buffer);
+mjtSize mju_writeResource(const char* name, const void* buffer, mjtSize nbytes,
+                          const mjVFS* vfs, char* error, size_t nerror);
 void mju_getResourceDir(mjResource* resource, const char** dir, int* ndir);
 int mju_isModifiedResource(const mjResource* resource, const char* timestamp);
 mjSpec* mju_decodeResource(mjResource* resource, const char* content_type,
