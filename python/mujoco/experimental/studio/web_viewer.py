@@ -41,6 +41,7 @@ from typing import Any
 import zlib
 
 import mujoco
+from mujoco.experimental.implot import implot
 from mujoco.experimental.studio import endpoints
 from mujoco.experimental.studio import messages
 from mujoco.experimental.studio import ux
@@ -189,6 +190,10 @@ class WebViewer(viewer_protocol.Viewer):
     imgui.SetCurrentContext(ctx)
     ux.set_imgui_context(ctx)
     ux.set_implot_context(self._ui_server.get_implot_context())
+    # The python implot bindings hold their own context globals too; share
+    # both pointers or user plotting code (e.g. the implot sample) crashes.
+    implot.set_imgui_context(ctx)
+    implot.set_implot_context(self._ui_server.get_implot_context())
 
     # The single-port server (HTTP + /ui + /state). This is restarted whenever
     # the model changes.

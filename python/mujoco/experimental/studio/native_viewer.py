@@ -21,6 +21,7 @@ to use these classes.
 from typing import Any
 
 import mujoco
+from mujoco.experimental.implot import implot
 from mujoco.experimental.studio import endpoints
 from mujoco.experimental.studio import native_viewer_cc as _viewer
 from mujoco.experimental.studio import ux
@@ -88,6 +89,10 @@ class NativeViewer(viewer_protocol.Viewer):
     # Extension modules each hold their own copy of the ImPlot globals; share
     # the context pointer or the plotting GUIs crash on a null context.
     ux.set_implot_context(self._viewer.GetImPlotContext())
+    # The python implot bindings hold their own context globals too; share
+    # both pointers or user plotting code (e.g. the implot sample) crashes.
+    implot.set_imgui_context(ctx)
+    implot.set_implot_context(self._viewer.GetImPlotContext())
 
     # Dispatch lifecycle event so handlers can cache the viewer reference.
     self.dispatch(viewer_protocol.ViewerInitEvent(viewer=self))
