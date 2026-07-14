@@ -150,14 +150,44 @@ SocketInfo* Connect(const char* server_host, uint32_t server_port) {
   return socket_info;
 }
 
+// Abandoned sockets are not freed immediately: with -pthread, websocket
+// events are queued across threads, so an already-queued close/error event
+// can still dereference the SocketInfo after emscripten_websocket_delete().
+// When the freed block was recycled for the next socket, such a late event
+// stamped a stale mClosed flag onto a healthy connection, which the
+// reconnect logic then tore down — a self-sustaining reconnect loop. Keep
+// abandoned sockets in a small ring and free them several disconnects
+// later, when any queued events are long gone.
+static SocketInfo* s_socket_graveyard[8] = {};
+static int s_socket_graveyard_idx = 0;
+
 void Disconnect(SocketInfo* client_socket) {
-  if (client_socket) {
-    client_socket->mClosed = true;
-    emscripten_websocket_close(client_socket->mSocket, 1000,
-                               "Normal Disconnection");
-    emscripten_websocket_delete(client_socket->mSocket);
-    netImguiDelete(client_socket);
+  if (!client_socket) return;
+  client_socket->mClosed = true;
+  // Detach this socket from future events; queued events may already hold
+  // the pointer (the graveyard above covers those).
+  emscripten_websocket_set_onopen_callback(client_socket->mSocket, nullptr,
+                                           OnWebSocketOpen);
+  emscripten_websocket_set_onmessage_callback(client_socket->mSocket, nullptr,
+                                              OnWebSocketMessage);
+  emscripten_websocket_set_onclose_callback(client_socket->mSocket, nullptr,
+                                            OnWebSocketClose);
+  emscripten_websocket_set_onerror_callback(client_socket->mSocket, nullptr,
+                                            OnWebSocketError);
+  emscripten_websocket_close(client_socket->mSocket, 1000,
+                             "Normal Disconnection");
+  emscripten_websocket_delete(client_socket->mSocket);
+  {
+    // Release the receive buffer now; only the flags must stay valid.
+    std::lock_guard<std::mutex> lock(client_socket->mBufferMutex);
+    client_socket->mBuffer.clear();
+    client_socket->mBuffer.shrink_to_fit();
   }
+  if (s_socket_graveyard[s_socket_graveyard_idx]) {
+    netImguiDelete(s_socket_graveyard[s_socket_graveyard_idx]);
+  }
+  s_socket_graveyard[s_socket_graveyard_idx] = client_socket;
+  s_socket_graveyard_idx = (s_socket_graveyard_idx + 1) % 8;
 }
 
 bool DataReceivePending(SocketInfo* client_socket) {
