@@ -323,7 +323,13 @@ def _run_server(
         tcp_writer = None
         tcp_connected.clear()
       logger.info("[UiBridge] Waiting for NetImgui TCP connection...")
-      await tcp_connected.wait()
+      # Loop: a newer browser bridge can reset the connection (and clear the
+      # event) between the event firing and this task waking up.
+      while tcp_writer is None:
+        await tcp_connected.wait()
+      if active_ui_ws is not ws:
+        # Superseded while waiting; the newer bridge owns the connection.
+        return
       my_reader, my_writer = tcp_reader, tcp_writer
 
       try:
