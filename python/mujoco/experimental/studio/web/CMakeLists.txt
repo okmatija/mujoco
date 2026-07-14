@@ -98,7 +98,7 @@ if(EMSCRIPTEN)
   add_dependencies(web_client mujoco_filament_assets)
 
   # Stage the browser artifacts into the source-tree dist/ folder, which
-  # web_server.py serves by default (see _find_live_files_dir).
+  # web_server.py serves by default (see _find_static_files_dir).
   set(WEB_CLIENT_DIST_DIR ${CMAKE_CURRENT_SOURCE_DIR}/dist)
   add_custom_command(
     TARGET web_client

@@ -338,11 +338,10 @@ class UiServer {
 
     py::gil_scoped_release no_gil;
     ImGui::SetCurrentContext(context_);
-    NetImgui::SendDataTexture(static_cast<ImTextureID>(tex_id),
-                              const_cast<void*>(upload_data),
-                              static_cast<uint16_t>(width),
-                              static_cast<uint16_t>(height),
-                              NetImgui::eTexFormat::kTexFmtRGBA8);
+    NetImgui::SendDataTexture(
+        static_cast<ImTextureID>(tex_id), const_cast<void*>(upload_data),
+        static_cast<uint16_t>(width), static_cast<uint16_t>(height),
+        NetImgui::eTexFormat::kTexFmtRGBA8);
     return tex_id;
   }
 
@@ -373,8 +372,7 @@ PYBIND11_MODULE(ui_server, m, pybind11::mod_gil_not_used()) {
 
   py::class_<UiServer>(m, "UiServer")
       .def(py::init<const std::string&, int, const std::string&>(),
-           py::arg("title"), py::arg("port") = 8888,
-           py::arg("assets_dir") = "")
+           py::arg("title"), py::arg("port") = 8888, py::arg("assets_dir") = "")
       .def("is_connected", &UiServer::IsConnected)
       .def("new_frame", &UiServer::NewFrame)
       .def("end_frame", &UiServer::EndFrame)

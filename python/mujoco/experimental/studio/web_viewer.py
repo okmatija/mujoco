@@ -15,24 +15,21 @@
 
 The WebViewer streams UI and simulation state to a browser:
 
-  * The ImGui UI is built into a headless ImGui context (``ui_server``
-    pybind module) and streamed to the browser with the NetImgui protocol
-    through a WebSocket-to-TCP proxy. Input captured in the browser flows back
-    over the same connection and is injected into the headless context, so all
-    viewer-side handlers (e.g. ``ViewerApp``) work unmodified.
-  * Physics state and render state (camera, perturb, options, extra geoms) are
-    streamed to the browser at ~60Hz over a WebSocket with latest-wins
-    (snapshot) semantics — see ``web_server.WebServer``.
+  * The ImGui UI is built into a headless ImGui context and streamed to the
+    browser with the NetImgui protocol through a WebSocket-to-TCP proxy.
+    Input captured in the browser flows back over the same connection and is
+    injected into the headless context, so all viewer-side handlers work
+    unmodified.
+  * Physics state and render function state are streamed to the browser over
+    a WebSocket with latest-wins semantics. Note that Message types are only
+    streamed between the Python simulation and viewer; the data streamed to
+    the browser is fixed and independent of the user's custom message types.
   * The browser runs the ``web_client`` WASM app, which renders the MuJoCo
     scene with Filament and overlays the remote ImGui draw data.
-
-  Everything is served through ONE public port (default 8080): the page and
-  model over HTTP, the UI stream at path /ui and the state stream at /state
-  (see ``web_server._run_router``). Exposing or tunneling that single port
-  exposes the whole viewer; the other ports are loopback-internal.
-
-See the documentation for studio_app.py for more details on the architecture
-separating the viewer and simulation.
+  * Everything is served through one public port (default 8080): the page and
+    model over HTTP, the UI stream at path /ui and the state stream at /state.
+    Exposing or tunneling that single port exposes the whole viewer; the other
+    ports are loopback-internal.
 """
 
 import os
@@ -190,7 +187,7 @@ class WebViewer(viewer_protocol.Viewer):
     imgui.SetCurrentContext(ctx)
     ux.set_imgui_context(ctx)
     ux.set_implot_context(self._ui_server.get_implot_context())
-    # The python implot bindings hold their own context globals too; share
+    # The Python implot bindings hold their own context globals too; share
     # both pointers or user plotting code (e.g. the implot sample) crashes.
     implot.set_imgui_context(ctx)
     implot.set_implot_context(self._ui_server.get_implot_context())
@@ -215,7 +212,7 @@ class WebViewer(viewer_protocol.Viewer):
     return sig, mujoco.mj_stateSize(self.model, sig)
 
   def _start_servers(self) -> None:
-    """Starts (or restarts) the HTTP, proxy and state servers."""
+    """Starts (or restarts) the web server, serving the current model."""
     self._stop_servers()
 
     mjb_data = _serialize_model(self.model)
@@ -267,8 +264,8 @@ class WebViewer(viewer_protocol.Viewer):
   def is_running(self) -> bool:
     """Starts a new headless frame; blocks until a browser is connected."""
     if super().is_running():
-      # Pumps browser input (received via NetImgui) into the ImGui context and
-      # paces the loop to the browser's desired frame rate.
+      # Injects browser input (received via NetImgui) into the ImGui context
+      # and paces the loop to the browser's desired frame rate.
       self._ui_server.new_frame()
     return super().is_running()
 

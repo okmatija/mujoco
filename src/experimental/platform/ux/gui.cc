@@ -376,8 +376,8 @@ ImVec4 ConfigureDockingLayout(bool show_toolbar, bool show_status_bar) {
   const ImVec2 dockspace_pos{
       viewport->Pos.x, viewport->Pos.y + menu_bar_height + kToolsBarHeight};
   const ImVec2 dockspace_size{
-      viewport->Size.x, viewport->Size.y - menu_bar_height - kToolsBarHeight -
-                            kStatusBarHeight};
+      viewport->Size.x,
+      viewport->Size.y - menu_bar_height - kToolsBarHeight - kStatusBarHeight};
 
   ImGuiID root = ImGui::GetID("Root");
   const bool first_time = (ImGui::DockBuilderGetNode(root) == nullptr);

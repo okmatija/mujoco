@@ -160,8 +160,8 @@ inline std::vector<char> SerializeStatePayload(
     const mjvOption& vis_options, const mjOption& opt, const mjVisual& vis,
     const mjStatistic& stat, const std::vector<uint8_t>& render_flags,
     const mjvGeom* extra_geoms, size_t extra_geom_count) {
-  extra_geom_count = extra_geom_count > kMaxExtraGeoms ? kMaxExtraGeoms
-                                                       : extra_geom_count;
+  extra_geom_count =
+      extra_geom_count > kMaxExtraGeoms ? kMaxExtraGeoms : extra_geom_count;
   std::vector<char> buffer;
   buffer.reserve(MaxStatePayloadSize(physics_bytes));
 
