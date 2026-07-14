@@ -20,6 +20,7 @@
 
 #include "NetImgui_CmdPackets.h"
 #include "google/logging.h"
+#include "google/network_status.h"
 
 namespace NetImgui {
 namespace Internal {
@@ -255,24 +256,24 @@ SocketInfo* ListenStart(uint32_t /*listen_port*/) {
 
 SocketInfo* ListenConnect(SocketInfo* /*listen_socket*/) { return nullptr; }
 
-const char* GetStatusString(SocketInfo* client_socket) {
-  if (!client_socket) return "Disconnected (Null)";
-  if (client_socket->mError) return "Error";
-  if (client_socket->mClosed) return "Closed";
+ReadyState GetReadyState(SocketInfo* client_socket) {
+  if (!client_socket) return ReadyState::kDisconnected;
+  if (client_socket->mError) return ReadyState::kError;
+  if (client_socket->mClosed) return ReadyState::kClosed;
 
   uint16_t ready_state = 0;
   emscripten_websocket_get_ready_state(client_socket->mSocket, &ready_state);
   switch (ready_state) {
     case 0:
-      return "Connecting";
+      return ReadyState::kConnecting;
     case 1:
-      return "Open";
+      return ReadyState::kOpen;
     case 2:
-      return "Closing";
+      return ReadyState::kClosing;
     case 3:
-      return "Closed (ReadyState)";
+      return ReadyState::kClosed;
   }
-  return "Unknown";
+  return ReadyState::kError;
 }
 
 }  // namespace Network

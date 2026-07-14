@@ -48,9 +48,9 @@
 // This stub eliminates that cost entirely.
 extern "C" GLenum __wrap_glGetError(void) { return GL_NO_ERROR; }
 
-using mujoco::studio::UiLink;
 using mujoco::studio::StateLink;
 using mujoco::studio::StatePayloadView;
+using mujoco::studio::UiLink;
 
 struct AppState {
   std::unique_ptr<mujoco::platform::Window> window;
@@ -342,8 +342,9 @@ void MainLoopImpl() {
   if (g_ui_link.HasSocket() && !g_state_link.ReloadPending() &&
       !g_state_link.Superseded() &&
       sMainFrameCount - sLastUiWsRetryFrame > 60) {
-    const char* uiStatus = g_ui_link.StatusString();
-    if (strncmp(uiStatus, "Closed", 6) == 0 || strcmp(uiStatus, "Error") == 0) {
+    const UiLink::ReadyState uiState = g_ui_link.ConnectionState();
+    if (uiState == UiLink::ReadyState::kClosed ||
+        uiState == UiLink::ReadyState::kError) {
       sLastUiWsRetryFrame = sMainFrameCount;
       LOG(Info, "UI WebSocket closed; reconnecting...");
       g_ui_link.Connect(GetWsBaseUrl() + "/ui");
@@ -354,7 +355,7 @@ void MainLoopImpl() {
   // frames must be ready before we start the local ImGui frame and render.
   if (g_app.window) {
     g_ui_link.SetMaxClip(static_cast<float>(g_app.window->GetWidth()),
-                           static_cast<float>(g_app.window->GetHeight()));
+                         static_cast<float>(g_app.window->GetHeight()));
   }
   g_ui_link.ReceiveAndProcessCommands(sMainFrameCount);
 
@@ -556,8 +557,8 @@ int main(int argc, char** argv) {
   config.gfx_mode = mujoco::platform::GraphicsMode::FilamentWebGl;
   config.load_fonts = false;
 
-  g_app.window = std::make_unique<mujoco::platform::Window>(
-      "MuJoCo Web Viewer", 1400, 720, config);
+  g_app.window = std::make_unique<mujoco::platform::Window>("MuJoCo Web Viewer",
+                                                            1400, 720, config);
   ImPlot::CreateContext();  // Needed if the server app uses ImPlot.
 
   g_app.renderer = new mujoco::platform::Renderer(

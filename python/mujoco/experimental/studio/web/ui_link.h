@@ -35,15 +35,7 @@
 #include "NetImgui_Api.h"
 #include "NetImgui_CmdPackets.h"
 #include "NetImgui_Network.h"
-
-namespace NetImgui {
-namespace Internal {
-namespace Network {
-// Google-specific helper implemented in NetImgui_NetworkWASM.cpp.
-const char* GetStatusString(SocketInfo* pClientSocket);
-}  // namespace Network
-}  // namespace Internal
-}  // namespace NetImgui
+#include "google/network_status.h"
 
 namespace mujoco::studio {
 
@@ -63,12 +55,13 @@ struct NetImguiImDrawData : ImDrawData {
 class UiLink {
  public:
   using SocketInfo = NetImgui::Internal::Network::SocketInfo;
+  using ReadyState = NetImgui::Internal::Network::ReadyState;
   using ClientTextureID = NetImgui::Internal::ClientTextureID;
   // Uploads a full RGBA texture and returns the GPU handle; nullptr pixels
   // destroy the texture backing `current`.
-  using UploadTextureFn = std::function<uintptr_t(
-      uintptr_t current, const std::byte* rgba, uint32_t width,
-      uint32_t height)>;
+  using UploadTextureFn =
+      std::function<uintptr_t(uintptr_t current, const std::byte* rgba,
+                              uint32_t width, uint32_t height)>;
   // True once the GPU context can accept texture uploads.
   using GpuReadyFn = std::function<bool()>;
 
@@ -79,7 +72,12 @@ class UiLink {
   // (Re)connects to the UI WebSocket. Disconnects any existing socket first.
   void Connect(const std::string& url);
   bool HasSocket() const { return socket_ != nullptr; }
-  const char* StatusString();
+  // Current socket state; browser WebSockets connect and close
+  // asynchronously, so this can differ from HasSocket() (see
+  // google/network_status.h).
+  ReadyState ConnectionState() const;
+  // Human-readable ConnectionState(), for the status overlay.
+  const char* StatusString() const;
 
   // Remote clip rects are clamped to this (logical pixels); set each frame
   // before ReceiveAndProcessCommands().
@@ -133,7 +131,7 @@ class UiLink {
   SocketInfo* socket_ = nullptr;
   bool handshake_sent_ = false;
   bool was_connected_ = false;
-  const char* last_status_ = nullptr;
+  ReadyState last_state_ = ReadyState::kDisconnected;
   NetImgui::Internal::PendingCom pending_rcv_;
   NetImgui::Internal::CmdPendingRead cmd_pending_read_;
   // When true, the next CmdInput asks the client to send one uncompressed

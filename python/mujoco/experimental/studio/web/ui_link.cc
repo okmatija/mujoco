@@ -75,27 +75,33 @@ void UiLink::Connect(const std::string& url) {
       static_cast<void*>(socket_));
 }
 
-const char* UiLink::StatusString() {
-  return Network::GetStatusString(socket_);
+UiLink::ReadyState UiLink::ConnectionState() const {
+  return Network::GetReadyState(socket_);
+}
+
+const char* UiLink::StatusString() const {
+  return Network::ReadyStateName(ConnectionState());
 }
 
 void UiLink::ReceiveAndProcessCommands(int frame) {
   if (!socket_) return;
 
-  const char* status = Network::GetStatusString(socket_);
-  if (last_status_ != status) {
+  const ReadyState state = ConnectionState();
+  if (last_state_ != state) {
     LOG(Info, "WebSocket status changed: '%s' -> '%s' (frame %d)",
-        last_status_ ? last_status_ : "null", status, frame);
-    last_status_ = status;
+        Network::ReadyStateName(last_state_), Network::ReadyStateName(state),
+        frame);
+    last_state_ = state;
   }
   VLOG(1,
        "Frame %d: status='%s', handshake=%s, cmds=%d, draws=%d, textures=%d, "
        "hasDrawData=%s",
-       frame, status, handshake_sent_ ? "sent" : "not_sent",
-       total_cmds_received_, draw_frames_received_, textures_received_,
+       frame, Network::ReadyStateName(state),
+       handshake_sent_ ? "sent" : "not_sent", total_cmds_received_,
+       draw_frames_received_, textures_received_,
        remote_draw_data_ != nullptr ? "yes" : "no");
 
-  if (strcmp(status, "Open") == 0) {
+  if (state == ReadyState::kOpen) {
     if (!handshake_sent_) {
       CmdVersion cmdVersion;
       StringCopy(cmdVersion.mClientName, "MuJoCo Web Viewer");
@@ -127,19 +133,20 @@ void UiLink::ReceiveAndProcessCommands(int frame) {
     }
   } else {
     if (handshake_sent_) {
-      LOG(Info, "Resetting handshake (status='%s')", status);
+      LOG(Info, "Resetting handshake (status='%s')",
+          Network::ReadyStateName(state));
     }
     handshake_sent_ = false;
   }
 
   // Network receive — drain all available data in one frame.
-  bool isConnected = (strcmp(status, "Open") == 0);
+  const bool isConnected = (state == ReadyState::kOpen);
 
   // If the connection has closed, discard any buffered data immediately
   // rather than churning through stale commands for several seconds.
   if (was_connected_ && !isConnected) {
     LOG(Info, "Connection lost (status='%s'). Discarding buffered data.",
-        status);
+        Network::ReadyStateName(state));
     // Reset any in-progress receive.
     if (pending_rcv_.bAutoFree) netImguiDeleteSafe(pending_rcv_.pCommand);
     pending_rcv_ = PendingCom();
@@ -335,8 +342,7 @@ void UiLink::ProcessCmdTexture(CmdTexture* pCmdTexture) {
 void UiLink::CaptureAndSendInput() {
   if (!socket_) return;
 
-  const char* status = Network::GetStatusString(socket_);
-  if (strcmp(status, "Open") != 0) return;
+  if (ConnectionState() != ReadyState::kOpen) return;
 
   // Capture input from Dear ImGui.
   const ImGuiIO& io = ImGui::GetIO();
@@ -641,14 +647,14 @@ void UiLink::ProcessCmdDrawFrame(CmdDrawFrame* pCmdDrawFrame) {
           pCmdList->IdxBuffer[idxOff + ei] += static_cast<ImDrawIdx>(vtxOff);
         }
 
-        float cx = std::max(0.f, std::min(max_clip_[0],
-                                          pDrawSrc[drawIdx].mClipRect[0]));
-        float cy = std::max(0.f, std::min(max_clip_[1],
-                                          pDrawSrc[drawIdx].mClipRect[1]));
-        float cz = std::max(cx, std::min(max_clip_[0],
-                                         pDrawSrc[drawIdx].mClipRect[2]));
-        float cw = std::max(cy, std::min(max_clip_[1],
-                                         pDrawSrc[drawIdx].mClipRect[3]));
+        float cx = std::max(
+            0.f, std::min(max_clip_[0], pDrawSrc[drawIdx].mClipRect[0]));
+        float cy = std::max(
+            0.f, std::min(max_clip_[1], pDrawSrc[drawIdx].mClipRect[1]));
+        float cz = std::max(
+            cx, std::min(max_clip_[0], pDrawSrc[drawIdx].mClipRect[2]));
+        float cw = std::max(
+            cy, std::min(max_clip_[1], pDrawSrc[drawIdx].mClipRect[3]));
 
         pCommandDst[drawIdx].ClipRect.x = cx;
         pCommandDst[drawIdx].ClipRect.y = cy;
