@@ -206,8 +206,6 @@ class UiServer {
 
   ~UiServer() { Client_Shutdown(context_); }
 
-  bool IsConnected() const { return NetImgui::IsConnected(); }
-
   bool NewFrame() {
     py::gil_scoped_release no_gil;
     ImGui::SetCurrentContext(context_);
@@ -373,7 +371,6 @@ PYBIND11_MODULE(ui_server, m, pybind11::mod_gil_not_used()) {
   py::class_<UiServer>(m, "UiServer")
       .def(py::init<const std::string&, int, const std::string&>(),
            py::arg("title"), py::arg("port") = 8888, py::arg("assets_dir") = "")
-      .def("is_connected", &UiServer::IsConnected)
       .def("new_frame", &UiServer::NewFrame)
       .def("end_frame", &UiServer::EndFrame)
       .def("get_context", &UiServer::GetContext)
