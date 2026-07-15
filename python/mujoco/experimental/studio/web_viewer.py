@@ -62,29 +62,48 @@ def _find_assets_dir() -> str:
   return ''
 
 
-def _lan_ip() -> str | None:
-  """Returns this machine's outbound-interface IP, or None.
+def _lan_ips() -> tuple[str | None, str | None]:
+  """Returns this machine's outbound-interface (IPv6, IPv4) addresses.
 
   Connecting a UDP socket sends no packets; it only asks the kernel which
-  local address would route to the destination. This is the address other
-  machines on the same network can reach the viewer at.
+  local address would route to the destination. These are the addresses
+  other machines on the same network can reach the viewer at. A None entry
+  means that family has no shareable address (link-local and loopback do
+  not count).
   """
-  try:
-    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
-      s.connect(('8.8.8.8', 80))
-      return s.getsockname()[0]
-  except OSError:
-    return None
+
+  def probe(family, dest):
+    try:
+      with socket.socket(family, socket.SOCK_DGRAM) as s:
+        s.connect(dest)
+        return s.getsockname()[0]
+    except OSError:
+      return None
+
+  ipv6 = probe(socket.AF_INET6, ('2001:4860:4860::8888', 80))
+  if ipv6 and ipv6.startswith(('fe80', '::1')):
+    ipv6 = None
+  ipv4 = probe(socket.AF_INET, ('8.8.8.8', 80))
+  if ipv4 and ipv4.startswith('127.'):
+    ipv4 = None
+  return ipv6, ipv4
 
 
 def _print_url_banner(host: str, port: int) -> None:
   """Prints a prominent boxed banner with the URLs browsers can use."""
   rows = [('local', f'http://localhost:{port}')]
-  if host == '0.0.0.0':
-    lan = _lan_ip()
-    if lan and not lan.startswith('127.'):
-      # Shareable with other machines on the same network.
-      rows.append(('network', f'http://{lan}:{port}'))
+  if host in ('::', '0.0.0.0'):
+    # Shareable with other machines on the same network. Both families are
+    # always listed: a visitor may only be reachable over one of them, and
+    # an explicit "(unavailable)" beats a silently missing row. IPv6
+    # literals must be bracketed in URLs.
+    ipv6, ipv4 = _lan_ips()
+    rows.append(
+        ('network (IPv6)', f'http://[{ipv6}]:{port}' if ipv6 else
+         '(unavailable)'))
+    rows.append(
+        ('network (IPv4)', f'http://{ipv4}:{port}' if ipv4 else
+         '(unavailable)'))
 
   label_width = max(len(label) for label, _ in rows)
   lines = ['MuJoCo Web Viewer running at:', '']
@@ -123,7 +142,7 @@ class WebViewer(viewer_protocol.Viewer):
       perturb: mujoco.MjvPerturb | None = None,
       render_flags: ux.RenderFlags | None = None,
       extra_geoms: list[mujoco.MjvGeom] | None = None,
-      host: str = '0.0.0.0',
+      host: str = '::',
       http_port: int | None = None,
       ui_tcp_port: int = 0,
   ) -> None:
@@ -140,7 +159,8 @@ class WebViewer(viewer_protocol.Viewer):
       perturb: Perturbation parameters. Internal object is created if None.
       render_flags: Render flags. Internal object is created if None.
       extra_geoms: List of extra geoms. Internal list is created if None.
-      host: Public interface the server binds to.
+      host: Public interface the server binds to. The default "::" accepts
+        both IPv6 and IPv4 connections (IPv4-only where IPv6 is unavailable).
       http_port: The single public port: page, WASM, /model.mjb, and the
         /ui and /state WebSocket paths. None falls back to config.http_port;
         0 picks the first free port starting at 8080, so several viewers can

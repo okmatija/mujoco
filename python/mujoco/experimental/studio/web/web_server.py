@@ -84,20 +84,32 @@ def bind_public_socket(host: str, port: int = 0) -> socket.socket:
   bind conflicts surface here, synchronously, instead of inside the child.
 
   Args:
-    host: Interface to bind.
+    host: Interface to bind. "::" (the default) binds a dual-stack socket
+      that accepts both IPv6 and IPv4 connections, falling back to IPv4-only
+      when the machine has no IPv6 support.
     port: A specific port, or 0 to take the first free port starting at
       DEFAULT_HTTP_PORT (so several viewers can run side by side).
 
   Raises:
     RuntimeError: If the requested port (or every scanned port) is taken.
   """
+  if host == "::":
+    try:
+      socket.socket(socket.AF_INET6, socket.SOCK_STREAM).close()
+    except OSError:
+      host = "0.0.0.0"
+  family = socket.AF_INET6 if ":" in host else socket.AF_INET
+
   candidates = (
       [port] if port else range(DEFAULT_HTTP_PORT,
                                 DEFAULT_HTTP_PORT + _PORT_SCAN_COUNT)
   )
   for candidate in candidates:
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock = socket.socket(family, socket.SOCK_STREAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    if family == socket.AF_INET6:
+      # Dual-stack: also accept IPv4 connections (as IPv4-mapped addresses).
+      sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
     try:
       sock.bind((host, candidate))
       return sock
