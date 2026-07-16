@@ -304,8 +304,10 @@ void Communications_Incoming(ClientInfo& client) {
 
       // Cleanup after read completion
       if (client.mPendingRcv.IsError()) {
-        LOG(Error,
-            "Communications_Incoming: RECEIVE ERROR, triggering disconnect");
+        // Routine on any disconnect (server restart, browser handover), so
+        // logged as Info rather than Error.
+        VLOG(1,
+             "Communications_Incoming: receive error, triggering disconnect");
         client.mbDisconnectPending = true;
       }
       if (client.mPendingRcv.bAutoFree) {
@@ -501,14 +503,14 @@ void Communications_Loop(void* pClientVoid) {
   pClient->mbDisconnectPending = false;
   pClient->mbClientThreadActive = true;
 
-  LOG(Info, "Communications_Loop: entering loop");
+  VLOG(1, "Communications_Loop: entering loop");
   while (!pClient->mbDisconnectPending) {
     Communications_Outgoing(*pClient);
     Communications_Incoming(*pClient);
     VLOG(2, "Communications_Loop spin, disconnectPending=%s",
          pClient->mbDisconnectPending ? "Y" : "N");
   }
-  LOG(Info, "Communications_Loop: exiting loop");
+  VLOG(1, "Communications_Loop: exiting loop");
 
   Network::SocketInfo* pSocket = pClient->mpSocketComs.exchange(nullptr);
   if (pSocket) {

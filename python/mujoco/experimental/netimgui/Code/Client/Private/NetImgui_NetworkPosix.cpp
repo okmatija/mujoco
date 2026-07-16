@@ -207,7 +207,7 @@ SocketInfo* ListenConnect(SocketInfo* pListenSocket) {
     int ServerSocket =
         accept(pListenSocket->mSocket, (sockaddr*)&ClientAddress, &Size);
     if (ServerSocket != -1) {
-      LOG(Info, "TCP connection accepted (fd=%d)", ServerSocket);
+      VLOG(1, "TCP connection accepted (fd=%d)", ServerSocket);
       // Create SocketInfo wrapper, which sets the new socket to non-blocking
       return netImguiNew<SocketInfo>(ServerSocket);
     }
@@ -260,9 +260,10 @@ bool DataReceivePending(SocketInfo* pClientSocket) {
 
   // result > 0: the socket has events.
   if (pfd.revents & POLLERR) {
-    // Real socket error — report as data-pending so the caller's recv()
-    // surfaces the error through its own error-handling path.
-    LOG(Error, "DataReceivePending: POLLERR revents=%d", pfd.revents);
+    // Report as data-pending so the caller's recv() surfaces the error
+    // through its own error-handling path. Info, not Error: this is routine
+    // when the peer tears the connection down (e.g. viewer shutdown).
+    VLOG(1, "DataReceivePending: POLLERR revents=%d", pfd.revents);
     return true;
   }
 
@@ -270,7 +271,7 @@ bool DataReceivePending(SocketInfo* pClientSocket) {
     // Peer hung up. The persistent TCP proxy keeps connections alive across
     // browser refreshes, so a transient POLLHUP does not mean the session is
     // over — ignore it.
-    LOG(Info, "DataReceivePending: POLLHUP revents=%d", pfd.revents);
+    VLOG(1, "DataReceivePending: POLLHUP revents=%d", pfd.revents);
   }
 
   // Only signal data-pending when the kernel has bytes ready to read.
@@ -310,7 +311,7 @@ void DataReceive(SocketInfo* pClientSocket,
   } else if (resultRcv == 0) {
     // Connection closed gracefully by peer
     PendingComRcv.bError = true;
-    LOG(Info, "DataReceive: Connection closed gracefully");
+    VLOG(1, "DataReceive: Connection closed gracefully");
   } else {  // resultRcv < 0
     // Error occurred
     if (errno == EWOULDBLOCK || errno == EAGAIN) {
