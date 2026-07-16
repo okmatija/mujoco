@@ -252,7 +252,7 @@ StateLink g_state_link(
     });
 
 void BuildBrowserGui() {
-  if (const int close_code = g_state_link.TerminalCloseCode()) {
+  if (const int close_code = g_state_link.ServerCloseCode()) {
     const ImGuiIO& io = ImGui::GetIO();
     ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, 48.0f),
                             ImGuiCond_Always, ImVec2(0.5f, 0.0f));
@@ -266,8 +266,19 @@ void BuildBrowserGui() {
     } else if (close_code == 4003) {
       reason = "Disconnected after inactivity.";
     }
-    ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.2f, 1.0f), "%s", reason);
-    ImGui::TextUnformatted("Reload this page to try again.");
+    const auto centered_line = [](const char* text, const ImVec4* color) {
+      ImGui::SetCursorPosX(std::max(
+          0.0f,
+          (ImGui::GetWindowWidth() - ImGui::CalcTextSize(text).x) * 0.5f));
+      if (color != nullptr) {
+        ImGui::TextColored(*color, "%s", text);
+      } else {
+        ImGui::TextUnformatted(text);
+      }
+    };
+    const ImVec4 amber(1.0f, 0.8f, 0.2f, 1.0f);
+    centered_line(reason, &amber);
+    centered_line("Retrying; reconnects automatically.", nullptr);
     ImGui::End();
   }
 
@@ -288,7 +299,7 @@ void BuildBrowserGui() {
   const bool link_stale =
       last_msg > 0 &&
       emscripten_get_now() / 1000.0 - last_msg > kServerSilenceNoticeSec &&
-      g_state_link.TerminalCloseCode() == 0 && !g_state_link.ReloadPending();
+      g_state_link.ServerCloseCode() == 0 && !g_state_link.ReloadPending();
   if (!link_stale) {
     g_telemetry.disconnected_notice_logged = false;
   } else {
@@ -513,10 +524,13 @@ void MainLoopImpl() {
   // restarted its servers after a model change. Receiving a payload with a
   // different model identity then triggers a page reload (StateLink).
   static int sLastStateWsRetryFrame = 0;
+  // Deliberate server closes (session full, inactivity) are transient;
+  // retry them too, just at a gentler pace.
+  const int state_retry_interval =
+      g_state_link.ServerCloseCode() != 0 ? 300 : 60;
   if (!g_state_link.HasSocket() && !g_state_link.ReloadPending() &&
-      g_state_link.TerminalCloseCode() == 0 && g_app.model_holder &&
-      g_app.model_holder->ok() &&
-      sMainFrameCount - sLastStateWsRetryFrame > 60) {
+      g_app.model_holder && g_app.model_holder->ok() &&
+      sMainFrameCount - sLastStateWsRetryFrame > state_retry_interval) {
     sLastStateWsRetryFrame = sMainFrameCount;
     LOG(Info, "State WebSocket down; reconnecting...");
     g_state_link.Connect(WsUrl("/state"));
@@ -530,7 +544,7 @@ void MainLoopImpl() {
   static int sLastUiWsRetryFrame = 0;
   if (g_ui_link.HasSocket() && !g_app.spectator &&
       !g_state_link.ReloadPending() &&
-      g_state_link.TerminalCloseCode() == 0 &&
+      g_state_link.ServerCloseCode() == 0 &&
       sMainFrameCount - sLastUiWsRetryFrame > 60) {
     const UiLink::ReadyState uiState = g_ui_link.ConnectionState();
     if (uiState == UiLink::ReadyState::kOpen) {

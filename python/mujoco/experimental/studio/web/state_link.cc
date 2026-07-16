@@ -24,6 +24,7 @@ EM_BOOL StateLink::OnWsMessage(int event_type,
                                const EmscriptenWebSocketMessageEvent* event,
                                void* user_data) {
   auto* link = static_cast<StateLink*>(user_data);
+  link->server_close_code_ = 0;  // Accepted; hide the disconnect notice.
   if (event->isText) {
     // Text frames carry session metadata; emscripten null-terminates them.
     if (link->on_session_message_) {
@@ -38,7 +39,11 @@ EM_BOOL StateLink::OnWsMessage(int event_type,
 EM_BOOL StateLink::OnWsOpen(int event_type,
                             const EmscriptenWebSocketOpenEvent* event,
                             void* user_data) {
-  static_cast<StateLink*>(user_data)->open_ = true;
+  auto* link = static_cast<StateLink*>(user_data);
+  link->open_ = true;
+  // server_close_code_ is NOT cleared here: a rejected connection also
+  // fires open before the server's closing code arrives. It clears on the
+  // first received message, which proves the server accepted us.
   LOG(Info, "State WebSocket connected");
   return EM_TRUE;
 }
@@ -58,10 +63,11 @@ EM_BOOL StateLink::OnWsClose(int event_type,
   link->socket_ = 0;
   link->open_ = false;
   // Codes 4000-4999 are deliberate server-side closes (e.g. 4002 =
-  // session full): stop reconnecting and let the GUI show a notice.
+  // session full). These conditions pass, so the GUI shows a notice while
+  // the reconnect loop retries at a slower pace.
   if (event->code >= 4000 && event->code <= 4999) {
-    link->terminal_close_code_ = event->code;
-    LOG(Info, "Server ended this connection (code=%d); not reconnecting.",
+    link->server_close_code_ = event->code;
+    LOG(Info, "Server ended this connection (code=%d); retrying slowly.",
         event->code);
   }
   return EM_TRUE;
