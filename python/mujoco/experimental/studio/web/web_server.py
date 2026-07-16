@@ -150,10 +150,14 @@ _DRIVER_SILENT_RELEASE_SEC = 90.0
 # hidden or gone), freeing a viewer slot. Live tabs heartbeat every ~30s.
 _SPECTATOR_SILENT_KICK_SEC = 300.0
 
-# How many browsers may watch in addition to the driver. Runtime-editable
-# control by the driver is planned; there is deliberately no config or CLI
+# How many browsers may watch in addition to the driver; the driver can
+# change it at runtime (up to MAX_SPECTATOR_HARD_CAP). The limit is about
+# session behaviour — keeping the crowd and the control-request queue at a
+# manageable size — not about resources: a state payload is a few KB at
+# 60Hz, serialized once and sent per viewer, so even a full session costs
+# only a few Mbit/s of upload. There is deliberately no config or CLI
 # option (spectating exposes nothing that driving does not).
-DEFAULT_MAX_SPECTATORS = 2
+DEFAULT_MAX_SPECTATORS = 8
 
 # Default public port, and how many consecutive ports to try when it is
 # taken (e.g. by another running viewer).

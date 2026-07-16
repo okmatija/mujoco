@@ -73,7 +73,7 @@ struct AppState {
   int session_viewers = 0;
   int queue_pos = 0;  // 1-based position in the control queue; 0 = not queued.
   int queue_len = 0;
-  int max_spectators = 2;  // Runtime limit, from the roster.
+  int max_spectators = 8;  // Runtime limit, from the roster.
   // Two-step confirmation state for the force-take button.
   bool force_confirm = false;
 
