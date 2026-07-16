@@ -32,8 +32,11 @@ The WebViewer streams UI and simulation state to a browser:
     ports are loopback-internal.
 """
 
+import multiprocessing
 import os
+import queue
 import socket
+import tempfile
 from typing import Any
 import zlib
 
@@ -72,7 +75,9 @@ def _lan_ips() -> tuple[str | None, str | None]:
   not count).
   """
 
-  def probe(family, dest):
+  def probe(
+      family: socket.AddressFamily, dest: tuple[str, int]
+  ) -> str | None:
     try:
       with socket.socket(family, socket.SOCK_DGRAM) as s:
         s.connect(dest)
@@ -117,6 +122,35 @@ def _print_url_banner(host: str, port: int) -> None:
       '╰' + '─' * (width + 2) + '╯',
   ]
   print('\n'.join(banner), flush=True)
+
+
+_MODEL_EXTENSIONS = ('.xml', '.urdf', '.mjb', '.mjz', '.zip')
+
+
+def _pick_drop_root(paths: list[str]) -> str | None:
+  """Picks the model file to load from a dropped set of files.
+
+  Rules, in order: the only loadable file wins; otherwise, among the
+  loadable files at the shallowest directory depth, prefer one named after
+  its folder (the mjz convention, e.g. cards/cards.xml), then scene.xml
+  (the mujoco_menagerie convention), then the alphabetically first.
+  """
+  candidates = [p for p in paths if p.lower().endswith(_MODEL_EXTENSIONS)]
+  if not candidates:
+    return None
+  if len(candidates) == 1:
+    return candidates[0]
+  depth = min(p.count('/') for p in candidates)
+  shallow = sorted(p for p in candidates if p.count('/') == depth)
+  for path in shallow:
+    parts = path.split('/')
+    stem = os.path.splitext(parts[-1])[0]
+    if len(parts) > 1 and stem == parts[-2]:
+      return path
+  for path in shallow:
+    if os.path.basename(path) == 'scene.xml':
+      return path
+  return shallow[0]
 
 
 def _serialize_model(model: mujoco.MjModel) -> bytes:
@@ -216,6 +250,10 @@ class WebViewer(viewer_protocol.Viewer):
     # the model changes.
     self._web_server: web_server.WebServer | None = None
     self._model_ident = 0
+    # Files dropped onto the browser page arrive here from the server child
+    # as a dict of relative path -> bytes; owned by the viewer so it
+    # survives server restarts.
+    self._drop_queue = multiprocessing.get_context('fork').Queue()
     self._start_servers()
     _print_url_banner(self._host, self._http_port)
 
@@ -250,6 +288,7 @@ class WebViewer(viewer_protocol.Viewer):
         tcp_sock=self._tcp_sock,
         mjb_data=mjb_data,
         max_payload_size=max_payload,
+        drop_queue=self._drop_queue,
     )
     self._web_server.start()
 
@@ -329,8 +368,43 @@ class WebViewer(viewer_protocol.Viewer):
     super().close()
 
   def get_drop_file(self) -> str:
-    """File drop is not supported in the web viewer."""
-    return ''
+    """Returns the path of a model file dropped onto the browser page, or ''.
+
+    The browser uploads the dropped files' bytes over the /drop WebSocket
+    (so drops work even when the browser runs on another machine). They are
+    written to a temporary directory here, preserving names and relative
+    paths — a dropped folder's asset references resolve, and the mjz/zip
+    decoder can locate an archive's root XML by the archive's own name —
+    and the regular drop-loading flow (ViewerApp -> parser.parse) applies.
+    """
+    try:
+      files = self._drop_queue.get_nowait()
+    except queue.Empty:
+      return ''
+    # TODO(matijak): This could work without disk access: mjVFS can hold the
+    # dropped files in memory (mj_addBufferVFS) and mj_parse resolves
+    # includes/assets from it (ModelHolder::InitFromBuffer already covers
+    # the single-buffer XML/MJB/ZIP cases). Needs a buffer-based parser
+    # entry point and a viewer drop interface that isn't a file path.
+    drop_dir = tempfile.mkdtemp(prefix='mujoco_drop_')
+    written = []
+    for name, payload in files.items():
+      rel = name.replace('\\', '/').lstrip('/')
+      parts = [p for p in rel.split('/') if p not in ('', '.', '..')]
+      if not parts:
+        continue
+      rel = '/'.join(parts)
+      path = os.path.join(drop_dir, *parts)
+      os.makedirs(os.path.dirname(path), exist_ok=True)
+      with open(path, 'wb') as f:
+        f.write(payload)
+      written.append(rel)
+    root = _pick_drop_root(written)
+    if root is None:
+      print('Dropped file(s) contain no loadable model '
+            f'({", ".join(_MODEL_EXTENSIONS)}).', flush=True)
+      return ''
+    return os.path.join(drop_dir, *root.split('/'))
 
   def upload_image(
       self, tex_id: int, img: str | bytes, width: int, height: int, bpp: int

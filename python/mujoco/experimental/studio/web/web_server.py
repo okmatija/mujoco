@@ -26,23 +26,27 @@ import ctypes
 import datetime
 import logging
 import multiprocessing
+import multiprocessing.queues
+import multiprocessing.sharedctypes
 import os
 import signal
 import socket
 import struct
 import sys
 import threading
-from typing import Optional
+from typing import Awaitable, Callable, Optional
 
 from websockets.asyncio.server import serve
+from websockets.asyncio.server import ServerConnection
 from websockets.datastructures import Headers
 from websockets.exceptions import ConnectionClosed
+from websockets.http11 import Request
 from websockets.http11 import Response
 
 
 class _WebServerFormatter(logging.Formatter):
 
-  def format(self, record):
+  def format(self, record: logging.LogRecord) -> str:
     level_char = record.levelname[0]
     dt = datetime.datetime.fromtimestamp(record.created)
     date_str = dt.strftime("%m%d")
@@ -56,22 +60,28 @@ class _WebServerFormatter(logging.Formatter):
 logger = logging.getLogger("WebServer")
 
 
-class _PreconnectNoiseFilter(logging.Filter):
-  """Drops handshake-failure logs from connections that sent no request.
+class _HandshakeNoiseFilter(logging.Filter):
+  """Drops handshake-failure logs from connections that simply went away.
 
-  Browsers speculatively open spare connections and close them unused. The
-  websockets library logs every such closure as an opening-handshake
-  failure — an ERROR-level record with a full traceback. Raising the log
-  level would hide real handshake errors too, hence a filter matching
-  exactly this signature. (Filters do not inherit down the logger tree, so
-  it must be attached to "websockets.server" itself.)
+  Two routine cases produce them: browsers speculatively open spare
+  connections and close them unused, and a page reload races the
+  model-change server restart, tearing connections down mid-handshake. The
+  websockets library logs each as an opening-handshake failure — an
+  ERROR-level record with a full traceback. Raising the log level would
+  hide real handshake errors too, hence a filter matching exactly these
+  signatures. (Filters do not inherit down the logger tree, so it must be
+  attached to "websockets.server" itself.)
   """
 
   def filter(self, record: logging.LogRecord) -> bool:
     if record.getMessage() != "opening handshake failed":
       return True
     exc = record.exc_info[1] if record.exc_info else None
-    return not (exc and "did not receive a valid HTTP request" in str(exc))
+    if exc is None:
+      return True
+    if isinstance(exc, (ConnectionClosed, EOFError, OSError)):
+      return False  # The connection died; nothing wrong with the request.
+    return "did not receive a valid HTTP request" not in str(exc)
 
 
 def _configure_logging() -> None:
@@ -92,7 +102,7 @@ def _configure_logging() -> None:
   # listening", "connection rejected (200 OK)" for every HTTP request); keep
   # it to warnings and errors.
   logging.getLogger("websockets").setLevel(logging.WARNING)
-  logging.getLogger("websockets.server").addFilter(_PreconnectNoiseFilter())
+  logging.getLogger("websockets.server").addFilter(_HandshakeNoiseFilter())
 
 
 _configure_logging()
@@ -184,7 +194,9 @@ _CONTENT_TYPES = {
 }
 
 
-def _terminate_process(proc, timeout: float = 2.0) -> None:
+def _terminate_process(
+    proc: multiprocessing.process.BaseProcess, timeout: float = 2.0
+) -> None:
   """Terminates a server process, escalating to SIGKILL if it hangs.
 
   A wedged child that outlives stop() keeps its sockets alive, which
@@ -229,14 +241,14 @@ def _find_static_files_dir() -> Optional[str]:
   return None
 
 
-def _run_cancellable(main_loop_func):
+def _run_cancellable(main_loop_func: Callable[[], Awaitable[None]]) -> None:
   """Runs an asyncio loop with SIGINT/SIGTERM structured task cancellation."""
 
-  async def _wrapped():
+  async def _wrapped() -> None:
     loop = asyncio.get_running_loop()
     main_task = asyncio.current_task()
 
-    def _cancel():
+    def _cancel() -> None:
       if main_task:
         main_task.cancel()
 
@@ -260,16 +272,17 @@ def _run_cancellable(main_loop_func):
 
 
 def _run_server(
-    http_sock,
-    tcp_sock,
-    lifeline_r,
-    lifeline_w,
-    static_dir,
-    mjb_data,
-    shm_array,
-    shm_capacity,
-    generation,
-):
+    http_sock: socket.socket,
+    tcp_sock: socket.socket,
+    lifeline_r: int,
+    lifeline_w: int,
+    static_dir: Optional[str],
+    mjb_data: Optional[bytes],
+    shm_array: Optional[ctypes.Array],
+    shm_capacity: int,
+    generation: multiprocessing.sharedctypes.Synchronized,
+    drop_queue: Optional[multiprocessing.queues.Queue],
+) -> None:
   """The server process: HTTP + /ui + /state on one port, one event loop."""
 
   # Close the inherited write end of the lifeline pipe: the read end must see
@@ -279,7 +292,9 @@ def _run_server(
 
   static_root = os.path.realpath(static_dir) if static_dir else None
 
-  def _http_headers(content_type, content_length, cacheable):
+  def _http_headers(
+      content_type: str, content_length: int, cacheable: bool
+  ) -> Headers:
     headers = Headers()
     headers["Content-Type"] = content_type
     headers["Content-Length"] = str(content_length)
@@ -292,7 +307,7 @@ def _run_server(
       headers["Cache-Control"] = "no-store"
     return headers
 
-  def _serve_http(path):
+  def _serve_http(path: str) -> Response:
     """Builds the HTTP response for a non-WebSocket GET request."""
     if path == "/model.mjb":
       if not mjb_data:
@@ -322,7 +337,7 @@ def _run_server(
         200, "OK", _http_headers(content_type, len(body), cacheable=True), body
     )
 
-  async def main_loop():
+  async def main_loop() -> None:
     # The NetImgui client connection (from the headless ui_server, loopback
     # TCP). The client retries every second, so after a teardown a fresh
     # connection shows up quickly.
@@ -334,7 +349,9 @@ def _run_server(
     active_ui_ws = None
     active_state_ws = None
 
-    async def handle_tcp_client(reader, writer):
+    async def handle_tcp_client(
+        reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+    ) -> None:
       nonlocal tcp_reader, tcp_writer
       if tcp_writer is not None:
         logger.debug("[UiBridge] Replacing previous NetImgui TCP connection")
@@ -349,10 +366,10 @@ def _run_server(
       tcp_connected.set()
       logger.debug("[UiBridge] NetImgui TCP connection accepted")
 
-    def supersede(ws):
+    def supersede(ws: ServerConnection) -> None:
       """Kicks a browser connection in the background (close code 4000)."""
 
-      async def _kick():
+      async def _kick() -> None:
         try:
           await ws.close(WS_CLOSE_SUPERSEDED, "superseded")
         except Exception:  # pylint: disable=broad-exception-caught
@@ -362,7 +379,7 @@ def _run_server(
 
     # --- /ui: bridge the browser to the NetImgui client ----------------------
 
-    async def ui_handler(ws):
+    async def ui_handler(ws: ServerConnection) -> None:
       nonlocal active_ui_ws, tcp_reader, tcp_writer
       if active_ui_ws is not None:
         logger.debug("[UiBridge] New browser; superseding previous one")
@@ -396,13 +413,13 @@ def _run_server(
         await ws.send(server_version)
         logger.debug("[UiBridge] Handshake complete. Bridging.")
 
-        async def ws_to_tcp():
+        async def ws_to_tcp() -> None:
           async for message in ws:
             if isinstance(message, bytes):
               my_writer.write(message)
               await my_writer.drain()
 
-        async def tcp_to_ws():
+        async def tcp_to_ws() -> None:
           while True:
             data = await my_reader.read(65536)
             if not data:
@@ -436,7 +453,7 @@ def _run_server(
 
     # --- /state: latest-wins payload broadcast --------------------------------
 
-    async def state_handler(ws):
+    async def state_handler(ws: ServerConnection) -> None:
       nonlocal active_state_ws
       if active_state_ws is not None:
         logger.debug("[StateWS] New browser; superseding previous one")
@@ -464,19 +481,58 @@ def _run_server(
 
     # --- Dispatch --------------------------------------------------------------
 
-    def process_request(connection, request):
+    def process_request(
+        connection: ServerConnection, request: Request
+    ) -> Optional[Response]:
       del connection
       path = request.path.split("?")[0]
-      if path in ("/ui", "/state"):
+      if path in ("/ui", "/state", "/drop"):
         return None  # Proceed with the WebSocket handshake.
       return _serve_http(path)
 
-    async def ws_handler(ws):
+    # --- /drop: receive a file dropped onto the browser page ---------------
+
+    async def drop_handler(ws: ServerConnection) -> None:
+      """Receives dropped files and forwards them to the viewer process.
+
+      The browser opens this socket on demand and sends one binary frame per
+      file ([u32 path length][relative path utf-8][file bytes], see
+      index.html), then an empty frame as an end marker; this server closes
+      once it has everything. The files cross to the viewer process via
+      drop_queue as a dict of relative path -> bytes;
+      WebViewer.get_drop_file() writes them to a temporary directory for the
+      regular drop-loading flow.
+      """
+      files: dict[str, bytes] = {}
+      try:
+        async for message in ws:
+          if not isinstance(message, bytes):
+            continue
+          if not message:
+            break  # End-of-drop marker.
+          if len(message) < 4:
+            continue
+          (name_len,) = struct.unpack_from("<I", message)
+          if 4 + name_len > len(message):
+            continue
+          name = message[4 : 4 + name_len].decode("utf-8", "replace")
+          files[name] = message[4 + name_len :]
+      except (ConnectionClosed, ConnectionError):
+        pass
+      if files and drop_queue is not None:
+        total = sum(len(data) for data in files.values())
+        logger.info(f"[Drop] Received {len(files)} file(s), {total} bytes")
+        drop_queue.put(files)
+      await ws.close()
+
+    async def ws_handler(ws: ServerConnection) -> None:
       path = ws.request.path.split("?")[0]
       if path == "/ui":
         await ui_handler(ws)
       elif path == "/state":
         await state_handler(ws)
+      elif path == "/drop":
+        await drop_handler(ws)
       else:
         await ws.close(1008, "unknown endpoint")
 
@@ -484,7 +540,7 @@ def _run_server(
     # viewer process is gone (clean stop() close, crash, or SIGKILL). An
     # orphaned server would otherwise keep serving a stale model and fight
     # any replacement server for browsers.
-    async def watch_lifeline():
+    async def watch_lifeline() -> None:
       # A dedicated daemon thread rather than run_in_executor: executor
       # threads are non-daemonic and are joined at interpreter exit, so a
       # blocked os.read would keep this process alive for as long as the
@@ -493,7 +549,7 @@ def _run_server(
       loop = asyncio.get_running_loop()
       eof = asyncio.Event()
 
-      def wait_for_eof():
+      def wait_for_eof() -> None:
         try:
           os.read(lifeline_r, 1)
           loop.call_soon_threadsafe(eof.set)
@@ -513,7 +569,8 @@ def _run_server(
         process_request=process_request,
         compression=None,
         close_timeout=1.0,
-        max_size=2**24,
+        # Big enough for model files uploaded via /drop.
+        max_size=2**26,
     )
     http_host, http_port = http_sock.getsockname()[:2]
     tcp_port = tcp_sock.getsockname()[1]
@@ -554,7 +611,8 @@ class WebServer:
       static_files_dir: Optional[str] = None,
       mjb_data: Optional[bytes] = None,
       max_payload_size: int = 0,
-  ):
+      drop_queue: Optional[multiprocessing.queues.Queue] = None,
+  ) -> None:
     """Initializes the server around pre-bound listening sockets.
 
     The sockets are bound by the viewer (see bind_public_socket /
@@ -565,6 +623,9 @@ class WebServer:
     self.tcp_sock = tcp_sock
     self.static_files_dir = static_files_dir or _find_static_files_dir()
     self.mjb_data = mjb_data
+    # Owned by the viewer (it outlives server restarts); dropped-file bytes
+    # travel from the server child back to the viewer process through it.
+    self.drop_queue = drop_queue
     self._process = None
     self._lifeline_w = None
 
@@ -620,6 +681,7 @@ class WebServer:
             self._shm_array,
             self._shm_capacity,
             self._generation,
+            self.drop_queue,
         ),
         daemon=True,
     )

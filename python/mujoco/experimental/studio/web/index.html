@@ -47,6 +47,62 @@
       }
       fitCanvas();
       window.addEventListener("resize", fitCanvas);
+
+      // Drag & drop: upload dropped model files to the viewer over the
+      // /drop WebSocket. Each file is one binary frame ([u32 path length]
+      // [relative path utf-8][file bytes], little-endian), an empty frame
+      // marks the end of the drop, and the server closes once it has
+      // everything (parsed by web_server.py's drop_handler). Folders are
+      // walked recursively so models with separate asset files work; the
+      // viewer picks the root model file (see web_viewer._pick_drop_root).
+      window.addEventListener("dragover", (e) => e.preventDefault());
+      window.addEventListener("drop", async (e) => {
+        e.preventDefault();
+        // Capture entries synchronously: DataTransferItems are invalidated
+        // as soon as this handler awaits.
+        const items = e.dataTransfer ? [...e.dataTransfer.items] : [];
+        const entries = items
+          .map((i) => i.webkitGetAsEntry && i.webkitGetAsEntry())
+          .filter(Boolean);
+        const files = []; // {path, file}
+        async function walk(entry, prefix) {
+          if (entry.isFile) {
+            const file = await new Promise((ok, err) => entry.file(ok, err));
+            files.push({ path: prefix + entry.name, file });
+          } else if (entry.isDirectory) {
+            const reader = entry.createReader();
+            for (;;) {
+              // readEntries returns batches (<=100); loop until empty.
+              const batch = await new Promise((ok, err) =>
+                reader.readEntries(ok, err)
+              );
+              if (!batch.length) break;
+              for (const child of batch) {
+                await walk(child, prefix + entry.name + "/");
+              }
+            }
+          }
+        }
+        for (const entry of entries) await walk(entry, "");
+        if (!files.length) return;
+        const frames = [];
+        for (const { path, file } of files) {
+          const bytes = new Uint8Array(await file.arrayBuffer());
+          const name = new TextEncoder().encode(path);
+          const frame = new Uint8Array(4 + name.length + bytes.length);
+          new DataView(frame.buffer).setUint32(0, name.length, true);
+          frame.set(name, 4);
+          frame.set(bytes, 4 + name.length);
+          frames.push(frame);
+        }
+        const proto = location.protocol === "https:" ? "wss://" : "ws://";
+        const ws = new WebSocket(proto + location.host + "/drop");
+        ws.binaryType = "arraybuffer";
+        ws.onopen = () => {
+          for (const frame of frames) ws.send(frame);
+          ws.send(new Uint8Array(0)); // End marker; the server closes.
+        };
+      });
     </script>
     <script async src="web_client.js"></script>
   </body>
