@@ -131,6 +131,13 @@ class SessionMessage(enum.StrEnum):
 # (keep in sync: web_client.cc).
 GRANT_MESSAGE = "grant"
 
+# Driver-only message carrying the new spectator limit, e.g.
+# "max_spectators=4" (keep in sync: web_client.cc).
+MAX_SPECTATORS_PREFIX = "max_spectators="
+
+# Upper bound on the runtime-editable spectator limit.
+MAX_SPECTATOR_HARD_CAP = 32
+
 
 # A granted control claim must arrive within this window, else the grant
 # moves on down the queue.
@@ -399,6 +406,7 @@ def _run_server(
     # the head of the queue is granted a short exclusive claim window.
     control_queue: list[str] = []
     pending_grant_sid: Optional[str] = None
+    max_spectators = DEFAULT_MAX_SPECTATORS
     # Liveness by absence of traffic: a hidden tab's rendering loop stops,
     # so it cannot report anything — silence is the signal.
     last_heartbeat: dict[str, float] = {}
@@ -417,7 +425,7 @@ def _run_server(
         try:
           await client.send(
               f"viewers={count};role={role};queue_pos={pos};"
-              f"queue_len={len(control_queue)}"
+              f"queue_len={len(control_queue)};max_spectators={max_spectators}"
           )
         except (ConnectionClosed, ConnectionError):
           pass
@@ -460,7 +468,7 @@ def _run_server(
 
     async def handle_session_message(sid: str, text: str) -> None:
       """A control or heartbeat message from one browser (/state text)."""
-      nonlocal pending_grant_sid
+      nonlocal pending_grant_sid, max_spectators
       last_heartbeat[sid] = loop_time()
       if text == SessionMessage.REQUEST_CONTROL:
         if sid != driver_sid and sid not in control_queue:
@@ -485,6 +493,16 @@ def _run_server(
             await grant_next()
       elif text == SessionMessage.HEARTBEAT:
         pass  # last_heartbeat is updated for every message.
+      elif text.startswith(MAX_SPECTATORS_PREFIX):
+        if sid != driver_sid:
+          return  # Only the driver sets the limit.
+        try:
+          value = int(text[len(MAX_SPECTATORS_PREFIX):])
+        except ValueError:
+          return
+        max_spectators = max(0, min(MAX_SPECTATOR_HARD_CAP, value))
+        logger.info(f"[Session] Spectator limit set to {max_spectators}")
+        await broadcast_roster()
 
     async def enforce_activity() -> None:
       """Releases a silent driver when someone waits; kicks silent tabs."""
@@ -621,7 +639,7 @@ def _run_server(
     # --- /state: latest-wins payload broadcast --------------------------------
 
     async def state_handler(ws: ServerConnection) -> None:
-      if len(state_clients) > DEFAULT_MAX_SPECTATORS:  # driver + spectators
+      if len(state_clients) > max_spectators:  # driver + spectators
         logger.info("[StateWS] Session full; rejecting browser")
         await ws.close(WS_CLOSE_SESSION_FULL, "session full")
         return

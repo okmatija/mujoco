@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <cfloat>
+#include <cmath>
 #include <cinttypes>
 #include <cstddef>
 #include <cstring>
@@ -72,6 +73,7 @@ struct AppState {
   int session_viewers = 0;
   int queue_pos = 0;  // 1-based position in the control queue; 0 = not queued.
   int queue_len = 0;
+  int max_spectators = 2;  // Runtime limit, from the roster.
   // Two-step confirmation state for the force-take button.
   bool force_confirm = false;
 
@@ -93,6 +95,7 @@ constexpr char kMsgLeaveQueue[] = "leave_queue";
 constexpr char kMsgForceControl[] = "force_control";
 constexpr char kMsgHeartbeat[] = "heartbeat";
 constexpr char kMsgGrant[] = "grant";
+constexpr char kMsgMaxSpectatorsPrefix[] = "max_spectators=";
 
 // Byte-rate telemetry shown in the Link window.
 struct Telemetry {
@@ -225,8 +228,12 @@ StateLink g_state_link(
     [](const char* text) {
       int viewers = 0, queue_pos = 0, queue_len = 0;
       char role[16] = {0};
-      if (sscanf(text, "viewers=%d;role=%15[^;];queue_pos=%d;queue_len=%d",
-                 &viewers, role, &queue_pos, &queue_len) == 4) {
+      int max_spectators = 0;
+      if (sscanf(text,
+                 "viewers=%d;role=%15[^;];queue_pos=%d;queue_len=%d;"
+                 "max_spectators=%d",
+                 &viewers, role, &queue_pos, &queue_len,
+                 &max_spectators) == 5) {
         if (viewers != g_app.session_viewers || queue_pos != g_app.queue_pos ||
             queue_len != g_app.queue_len) {
           LOG(Info, "Session roster: %s", text);
@@ -234,6 +241,7 @@ StateLink g_state_link(
         g_app.session_viewers = viewers;
         g_app.queue_pos = queue_pos;
         g_app.queue_len = queue_len;
+        g_app.max_spectators = max_spectators;
       } else if (strcmp(text, kMsgGrant) == 0) {
         // Our turn: the driver slot is reserved for this page.
         LOG(Info, "Control granted; claiming the driver slot");
@@ -319,15 +327,40 @@ void BuildBrowserGui() {
   };
   const ImVec2 kFullWidth(-FLT_MIN, 0.0f);
 
+  // The window title carries the queue size ("###" keeps the window
+  // identity stable while the visible title changes), and the background
+  // pulses toward a dark orange while someone waits for control.
+  char link_title[48];
+  if (!g_app.spectator && g_app.queue_len > 0) {
+    snprintf(link_title, sizeof(link_title), "Link (%d waiting)###Link",
+             g_app.queue_len);
+  } else {
+    snprintf(link_title, sizeof(link_title), "Link###Link");
+  }
+  const bool pulse = !g_app.spectator && g_app.queue_len > 0;
+  if (pulse) {
+    const float phase =
+        0.5f + 0.5f * sinf(static_cast<float>(ImGui::GetTime()) * 2.5f);
+    ImVec4 bg = ImGui::GetStyleColorVec4(ImGuiCol_WindowBg);
+    const ImVec4 orange(0.45f, 0.22f, 0.02f, bg.w);
+    const float blend = 0.6f * phase;
+    bg.x += (orange.x - bg.x) * blend;
+    bg.y += (orange.y - bg.y) * blend;
+    bg.z += (orange.z - bg.z) * blend;
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, bg);
+  }
+
   if (!g_telemetry.expanded) {
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(6.0f, 6.0f));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowMinSize, ImVec2(16.0f, 16.0f));
 
-    ImGui::Begin("Link", nullptr,
+    ImGui::Begin(link_title, nullptr,
                  ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
                      ImGuiWindowFlags_AlwaysAutoResize);
     if (g_app.spectator) {
       ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.2f, 1.0f), "SPECTATING");
+    } else if (g_app.queue_len > 0) {
+      ImGui::Text("Link (%d waiting)", g_app.queue_len);
     } else {
       ImGui::Text("Link");
     }
@@ -339,7 +372,7 @@ void BuildBrowserGui() {
     ImGui::PopStyleVar(2);
   } else {
     ImGui::Begin(
-        "Link", nullptr,
+        link_title, nullptr,
         ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoCollapse);
 
     if (g_app.spectator) {
@@ -374,7 +407,7 @@ void BuildBrowserGui() {
         }
       }
     } else {
-      centered_banner("DRIVING", ImVec4(0.3f, 0.9f, 0.4f, 1.0f));
+      centered_banner("CONTROLLING", ImVec4(0.3f, 0.9f, 0.4f, 1.0f));
       ImGui::Text("Spectators: %d",
                   g_app.session_viewers > 1 ? g_app.session_viewers - 1 : 0);
       if (g_app.queue_len > 0) {
@@ -385,6 +418,20 @@ void BuildBrowserGui() {
         g_ui_link.Shutdown();
         g_app.spectator = true;
       }
+      // Follow the server's limit while not being edited.
+      static int sMaxSpectators = -1;
+      ImGui::SetNextItemWidth(100.0f);
+      const bool max_changed =
+          ImGui::InputInt("Max spectators", &sMaxSpectators);
+      if (max_changed) {
+        sMaxSpectators = std::clamp(sMaxSpectators, 0, 32);
+        char msg[48];
+        snprintf(msg, sizeof(msg), "%s%d", kMsgMaxSpectatorsPrefix,
+                 sMaxSpectators);
+        g_state_link.SendText(msg);
+      } else if (!ImGui::IsItemActive() || sMaxSpectators < 0) {
+        sMaxSpectators = g_app.max_spectators;
+      }
       ImGui::Separator();
       ImGui::Text("Connection: %s", g_ui_link.StatusString());
       ImGui::Text("Remote Frame: %s",
@@ -393,6 +440,12 @@ void BuildBrowserGui() {
                   static_cast<uint64_t>(g_telemetry.gui_bytes_per_sec / 1024));
       ImGui::Text("Data Rate (Sim): %" PRIu64 " KiB/s",
                   static_cast<uint64_t>(g_telemetry.sim_bytes_per_sec / 1024));
+      // Every connected browser receives the same sim stream, so the host's
+      // total outgoing sim bandwidth is one stream per viewer.
+      ImGui::Text(
+          "Data Rate (Sim, total): %" PRIu64 " KiB/s",
+          static_cast<uint64_t>(g_telemetry.sim_bytes_per_sec *
+                                std::max(1, g_app.session_viewers) / 1024));
       bool use_compression = g_ui_link.UseCompression();
       if (ImGui::Checkbox("Use Compression", &use_compression)) {
         g_ui_link.SetUseCompression(use_compression);
@@ -410,6 +463,9 @@ void BuildBrowserGui() {
       g_telemetry.expanded = false;
     }
     ImGui::End();
+  }
+  if (pulse) {
+    ImGui::PopStyleColor();
   }
 }
 
