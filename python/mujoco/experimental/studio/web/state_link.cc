@@ -86,6 +86,12 @@ void StateLink::Connect(const std::string& url) {
   LOG(Info, "State WebSocket connecting to %s", url.c_str());
 }
 
+void StateLink::SendText(const char* text) {
+  if (socket_ && open_) {
+    emscripten_websocket_send_utf8_text(socket_, text);
+  }
+}
+
 void StateLink::HandleMessage(const uint8_t* data, uint32_t num_bytes) {
   last_message_time_ = emscripten_get_now() / 1000.0;
   if (reload_pending_ || (ready_ && !ready_())) {

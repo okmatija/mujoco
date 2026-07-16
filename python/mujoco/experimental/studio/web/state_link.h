@@ -49,6 +49,10 @@ class StateLink {
 
   void Connect(const std::string& url);
 
+  // Sends a session message (control requests, activity reports) to the
+  // server as a text frame. Dropped silently while not connected.
+  void SendText(const char* text);
+
   // True while a connect attempt exists (possibly still in flight); used to
   // pace reconnects. emscripten_websocket_new returns a handle immediately,
   // so this is NOT the same as Connected().

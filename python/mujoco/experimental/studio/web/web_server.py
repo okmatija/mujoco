@@ -114,6 +114,18 @@ _configure_logging()
 # browser not to reconnect (see state_link.cc / web_client.cc).
 WS_CLOSE_DRIVER_TAKEN = 4001  # /ui: another browser holds the driver slot.
 WS_CLOSE_SESSION_FULL = 4002  # /state: the spectator limit is reached.
+WS_CLOSE_INACTIVE = 4003  # /state: hidden tab kicked to free a viewer slot.
+
+# A granted control claim must arrive within this window, else the grant
+# moves on down the queue.
+_GRANT_EXPIRY_SEC = 5.0
+# A driver whose tab stops running (hidden or closed without a clean
+# disconnect) is released once someone is waiting for control. Detected by
+# silence: a live driver tab sends input packets every frame.
+_DRIVER_SILENT_RELEASE_SEC = 90.0
+# Spectators are kicked after this much heartbeat silence (their tab is
+# hidden or gone), freeing a viewer slot. Live tabs heartbeat every ~30s.
+_SPECTATOR_SILENT_KICK_SEC = 300.0
 
 # How many browsers may watch in addition to the driver. Runtime-editable
 # control by the driver is planned; there is deliberately no config or CLI
@@ -367,16 +379,120 @@ def _run_server(
     active_ui_ws = None
     driver_sid: Optional[str] = None
     state_clients: dict[str, ServerConnection] = {}
+    # Control handoff: spectators queue for the driver slot; when it frees,
+    # the head of the queue is granted a short exclusive claim window.
+    control_queue: list[str] = []
+    pending_grant_sid: Optional[str] = None
+    # Liveness by absence of traffic: a hidden tab's rendering loop stops,
+    # so it cannot report anything — silence is the signal.
+    last_heartbeat: dict[str, float] = {}
+    last_driver_input = [0.0]
+    loop_time = asyncio.get_event_loop().time
 
     async def broadcast_roster() -> None:
-      """Sends every browser the viewer count and its own role."""
+      """Sends every browser the counts, its role and its queue position."""
       count = len(state_clients)
       for sid, client in list(state_clients.items()):
         role = "driver" if sid == driver_sid else "spectator"
         try:
-          await client.send(f"viewers={count};role={role}")
+          pos = control_queue.index(sid) + 1
+        except ValueError:
+          pos = 0
+        try:
+          await client.send(
+              f"viewers={count};role={role};queue_pos={pos};"
+              f"queue_len={len(control_queue)}"
+          )
         except (ConnectionClosed, ConnectionError):
           pass
+
+    async def grant_next() -> None:
+      """Offers the free driver slot to the pending or next queued page."""
+      nonlocal pending_grant_sid
+      if active_ui_ws is not None:
+        return
+      if pending_grant_sid is None:
+        while control_queue:
+          candidate = control_queue.pop(0)
+          if candidate in state_clients:
+            pending_grant_sid = candidate
+            break
+      if pending_grant_sid is None:
+        return
+      client = state_clients.get(pending_grant_sid)
+      if client is None:
+        pending_grant_sid = None
+        await grant_next()
+        return
+      try:
+        await client.send("grant=1")
+      except (ConnectionClosed, ConnectionError):
+        pending_grant_sid = None
+        await grant_next()
+        return
+      logger.info(f"[Session] Control granted to {pending_grant_sid}")
+      await broadcast_roster()
+
+      async def expire(granted: str) -> None:
+        nonlocal pending_grant_sid
+        await asyncio.sleep(_GRANT_EXPIRY_SEC)
+        if pending_grant_sid == granted and active_ui_ws is None:
+          pending_grant_sid = None
+          await grant_next()
+
+      asyncio.create_task(expire(pending_grant_sid))
+
+    async def handle_session_message(sid: str, text: str) -> None:
+      """A control or heartbeat message from one browser (/state text)."""
+      nonlocal pending_grant_sid
+      last_heartbeat[sid] = loop_time()
+      if text == "request_control":
+        if sid != driver_sid and sid not in control_queue:
+          control_queue.append(sid)
+          await grant_next()
+          await broadcast_roster()
+      elif text == "leave_queue":
+        if sid in control_queue:
+          control_queue.remove(sid)
+          await broadcast_roster()
+      elif text == "force_control":
+        if sid != driver_sid:
+          logger.info(f"[Session] {sid} forces control")
+          if sid in control_queue:
+            control_queue.remove(sid)
+          pending_grant_sid = sid
+          if active_ui_ws is not None:
+            # The bridge teardown frees the slot and grant_next honors
+            # the pending claim; the ousted page settles into spectating.
+            await active_ui_ws.close(WS_CLOSE_DRIVER_TAKEN, "control taken")
+          else:
+            await grant_next()
+      elif text == "heartbeat":
+        pass  # last_heartbeat is updated for every message.
+
+    async def enforce_activity() -> None:
+      """Releases a silent driver when someone waits; kicks silent tabs."""
+      while True:
+        await asyncio.sleep(5.0)
+        now = loop_time()
+        if (
+            active_ui_ws is not None
+            and last_driver_input[0] > 0
+            and now - last_driver_input[0] > _DRIVER_SILENT_RELEASE_SEC
+            and (control_queue or pending_grant_sid)
+        ):
+          logger.info("[Session] Releasing control from an inactive driver")
+          await active_ui_ws.close(WS_CLOSE_DRIVER_TAKEN, "inactive")
+        for sid, client in list(state_clients.items()):
+          if sid == driver_sid:
+            continue
+          seen = last_heartbeat.get(sid, now)
+          if now - seen > _SPECTATOR_SILENT_KICK_SEC:
+            logger.info(f"[Session] Kicking inactive spectator {sid}")
+            try:
+              await client.close(WS_CLOSE_INACTIVE, "inactive")
+            except (ConnectionClosed, ConnectionError):
+              pass
 
     async def handle_tcp_client(
         reader: asyncio.StreamReader, writer: asyncio.StreamWriter
@@ -398,15 +514,26 @@ def _run_server(
     # --- /ui: bridge the browser to the NetImgui client ----------------------
 
     async def ui_handler(ws: ServerConnection) -> None:
-      nonlocal active_ui_ws, driver_sid, tcp_reader, tcp_writer
+      nonlocal active_ui_ws, driver_sid, pending_grant_sid
+      nonlocal tcp_reader, tcp_writer
       if active_ui_ws is not None:
         # One driver at a time. The rejected browser spectates and may retry
         # via its "Take control" button once the driver leaves.
         logger.debug("[UiBridge] Driver slot taken; rejecting new browser")
         await ws.close(WS_CLOSE_DRIVER_TAKEN, "driver slot taken")
         return
+      sid = _session_id(ws)
+      if pending_grant_sid is not None and sid != pending_grant_sid:
+        # The slot is reserved for a granted page (queue fairness).
+        await ws.close(WS_CLOSE_DRIVER_TAKEN, "driver slot reserved")
+        return
+      if sid == pending_grant_sid:
+        pending_grant_sid = None
+      if sid in control_queue:
+        control_queue.remove(sid)
       active_ui_ws = ws
-      driver_sid = _session_id(ws)
+      driver_sid = sid
+      last_driver_input[0] = loop_time()
       await broadcast_roster()
 
       # Each browser needs a fresh NetImgui session (full handshake, textures
@@ -436,6 +563,7 @@ def _run_server(
         async def ws_to_tcp() -> None:
           async for message in ws:
             if isinstance(message, bytes):
+              last_driver_input[0] = loop_time()
               my_writer.write(message)
               await my_writer.drain()
 
@@ -471,6 +599,7 @@ def _run_server(
         if active_ui_ws is ws:
           active_ui_ws = None
           driver_sid = None
+          await grant_next()
           await broadcast_roster()
 
     # --- /state: latest-wins payload broadcast --------------------------------
@@ -482,11 +611,12 @@ def _run_server(
         return
       sid = _session_id(ws)
       state_clients[sid] = ws
+      last_heartbeat[sid] = loop_time()
       logger.info(f"[StateWS] Browser connected ({len(state_clients)} total)")
       await broadcast_roster()
 
-      last_gen = 0
-      try:
+      async def send_payloads() -> None:
+        last_gen = 0
         while True:
           await asyncio.sleep(1.0 / 60.0)
           cur_gen = generation.value
@@ -497,11 +627,32 @@ def _run_server(
           if used == 0 or used > shm_capacity:
             continue
           await ws.send(bytes(shm_array[4 : 4 + used]))
+
+      async def recv_messages() -> None:
+        async for message in ws:
+          if isinstance(message, str):
+            await handle_session_message(sid, message)
+
+      try:
+        done, pending = await asyncio.wait(
+            [
+                asyncio.create_task(send_payloads()),
+                asyncio.create_task(recv_messages()),
+            ],
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        for task in pending:
+          task.cancel()
+        for task in done:
+          task.exception()  # Retrieve to avoid "exception never retrieved".
       except (ConnectionClosed, ConnectionError):
         pass
       finally:
         if state_clients.get(sid) is ws:
           del state_clients[sid]
+        if sid in control_queue:
+          control_queue.remove(sid)
+        last_heartbeat.pop(sid, None)
         logger.info(
             f"[StateWS] Browser disconnected ({len(state_clients)} total)")
         await broadcast_roster()
@@ -610,9 +761,11 @@ def _run_server(
     # open connections, so cancellation (SIGTERM from WebServer.stop) could
     # hang the process. Close the listeners explicitly instead; open sockets
     # die with the process.
+    enforcer = asyncio.create_task(enforce_activity())
     try:
       await watch_lifeline()
     finally:
+      enforcer.cancel()
       ws_server.close()
       tcp_server.close()
 

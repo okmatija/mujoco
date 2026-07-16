@@ -66,8 +66,12 @@ struct AppState {
   // user takes control.
   bool spectator = false;
   int ui_reject_count = 0;
-  // Connected browser count, from the server's roster updates.
+  // Session roster, from the server's updates on the state channel.
   int session_viewers = 0;
+  int queue_pos = 0;  // 1-based position in the control queue; 0 = not queued.
+  int queue_len = 0;
+  // Two-step confirmation state for the force-take button.
+  bool force_confirm = false;
 
   // Backend state received from the Python simulation via WebSocket.
   std::vector<mjtNum> backend_state;
@@ -208,12 +212,23 @@ StateLink g_state_link(
     [] { return g_app.model_holder && g_app.model_holder->ok(); },
     ApplyStatePayload,
     [](const char* text) {
-      int viewers = 0;
-      if (sscanf(text, "viewers=%d", &viewers) == 1) {
-        if (viewers != g_app.session_viewers) {
+      int viewers = 0, queue_pos = 0, queue_len = 0;
+      char role[16] = {0};
+      if (sscanf(text, "viewers=%d;role=%15[^;];queue_pos=%d;queue_len=%d",
+                 &viewers, role, &queue_pos, &queue_len) == 4) {
+        if (viewers != g_app.session_viewers || queue_pos != g_app.queue_pos ||
+            queue_len != g_app.queue_len) {
           LOG(Info, "Session roster: %s", text);
         }
         g_app.session_viewers = viewers;
+        g_app.queue_pos = queue_pos;
+        g_app.queue_len = queue_len;
+      } else if (strcmp(text, "grant=1") == 0) {
+        // Our turn: the driver slot is reserved for this page.
+        LOG(Info, "Control granted; claiming the driver slot");
+        g_app.spectator = false;
+        g_app.ui_reject_count = 0;
+        g_ui_link.Connect(WsUrl("/ui"));
       }
     });
 
@@ -226,10 +241,13 @@ void BuildBrowserGui() {
                  ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
                      ImGuiWindowFlags_NoMove |
                      ImGuiWindowFlags_AlwaysAutoResize);
-    ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.2f, 1.0f),
-                       close_code == 4002
-                           ? "Session is full: too many viewers connected."
-                           : "Disconnected by the viewer.");
+    const char* reason = "Disconnected by the viewer.";
+    if (close_code == 4002) {
+      reason = "Session is full: too many viewers connected.";
+    } else if (close_code == 4003) {
+      reason = "Disconnected after inactivity.";
+    }
+    ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.2f, 1.0f), "%s", reason);
     ImGui::TextUnformatted("Reload this page to try again.");
     ImGui::End();
   }
@@ -308,24 +326,52 @@ void BuildBrowserGui() {
     }
 
     if (g_app.spectator) {
-      if (g_app.session_viewers > 1) {
-        ImGui::Text("Spectating: %d viewers connected.",
-                    g_app.session_viewers);
-      } else {
-        ImGui::Text("Spectating: another browser is driving.");
-      }
+      ImGui::SetWindowFontScale(1.6f);
+      ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.2f, 1.0f), "SPECTATING");
+      ImGui::SetWindowFontScale(1.0f);
+      ImGui::Text("Viewers connected: %d", g_app.session_viewers);
       ImGui::Text("Data Rate (Sim): %" PRIu64 " KiB/s",
                   static_cast<uint64_t>(g_telemetry.sim_bytes_per_sec / 1024));
-      if (ImGui::Button("Take control")) {
-        // One attempt; if the driver is still there this page goes straight
-        // back to spectating.
-        g_app.spectator = false;
-        g_app.ui_reject_count = 2;
-        g_ui_link.Connect(WsUrl("/ui"));
+      ImGui::Separator();
+      if (g_app.queue_pos > 0) {
+        ImGui::Text("Control queue: you are #%d of %d.", g_app.queue_pos,
+                    g_app.queue_len);
+        if (ImGui::Button("Leave queue")) {
+          g_state_link.SendText("leave_queue");
+        }
+      } else {
+        if (ImGui::Button("Request control")) {
+          g_state_link.SendText("request_control");
+        }
+      }
+      // Rude but sometimes necessary; confirm before yanking the wheel.
+      if (!g_app.force_confirm) {
+        if (ImGui::Button("Force take control")) {
+          g_app.force_confirm = true;
+        }
+      } else {
+        if (ImGui::Button("Confirm: take control now")) {
+          g_state_link.SendText("force_control");
+          g_app.force_confirm = false;
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel")) {
+          g_app.force_confirm = false;
+        }
       }
     } else {
+      ImGui::TextColored(ImVec4(0.3f, 0.9f, 0.4f, 1.0f), "Driving");
       ImGui::Text("Spectators: %d",
                   g_app.session_viewers > 1 ? g_app.session_viewers - 1 : 0);
+      if (g_app.queue_len > 0) {
+        ImGui::Text("Waiting for control: %d", g_app.queue_len);
+      }
+      if (ImGui::Button("Release control")) {
+        // Become a spectator; the server grants the slot down the queue.
+        g_ui_link.Shutdown();
+        g_app.spectator = true;
+      }
+      ImGui::Separator();
       ImGui::Text("Connection: %s", g_ui_link.StatusString());
       ImGui::Text("Remote Frame: %s",
                   g_ui_link.RemoteDrawData() ? "Received" : "None");
@@ -376,6 +422,15 @@ void MainLoop() {
 void MainLoopImpl() {
   static int sMainFrameCount = 0;
   sMainFrameCount++;
+
+  // Heartbeat on the session channel. A hidden tab's rendering loop stops,
+  // so the heartbeat stops with it — the server kicks spectators (and
+  // releases a driver with a waiting queue) on silence.
+  static int sLastHeartbeatFrame = 0;
+  if (sMainFrameCount - sLastHeartbeatFrame >= 30 * 60) {
+    sLastHeartbeatFrame = sMainFrameCount;
+    g_state_link.SendText("heartbeat");
+  }
 
   // Reconnect the state WebSocket if it dropped — e.g. the Python side
   // restarted its servers after a model change. Receiving a payload with a
