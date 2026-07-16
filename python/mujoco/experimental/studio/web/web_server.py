@@ -129,7 +129,7 @@ class SessionMessage(enum.StrEnum):
 
 # Sent to the page whose control claim the driver slot is reserved for
 # (keep in sync: web_client.cc).
-GRANT_MESSAGE = "grant=1"
+GRANT_MESSAGE = "grant"
 
 
 # A granted control claim must arrive within this window, else the grant

@@ -90,7 +90,7 @@ constexpr char kMsgRequestControl[] = "request_control";
 constexpr char kMsgLeaveQueue[] = "leave_queue";
 constexpr char kMsgForceControl[] = "force_control";
 constexpr char kMsgHeartbeat[] = "heartbeat";
-constexpr char kMsgGrant[] = "grant=1";
+constexpr char kMsgGrant[] = "grant";
 
 // Byte-rate telemetry shown in the Link window.
 struct Telemetry {
