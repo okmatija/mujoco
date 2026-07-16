@@ -55,6 +55,15 @@ using mujoco::studio::StateLink;
 using mujoco::studio::StatePayloadView;
 using mujoco::studio::UiLink;
 
+// How a spectating page drives its camera. The free modes control the local
+// camera directly; kSpecCamFollow mirrors the driver's camera from the state
+// broadcast.
+enum SpectatorCamMode {
+  kSpecCamTumble = 0,  // Orbit around the lookat point with the mouse.
+  kSpecCamWasd,        // Fly camera: WASD/QE moves, mouse drag turns.
+  kSpecCamFollow,      // Follow the driver's camera.
+};
+
 struct AppState {
   std::unique_ptr<mujoco::platform::Window> window;
   std::unique_ptr<mujoco::platform::ModelHolder> model_holder;
@@ -76,6 +85,10 @@ struct AppState {
   int max_spectators = 8;  // Runtime limit, from the roster.
   // Two-step confirmation state for the force-take button.
   bool force_confirm = false;
+
+  // Spectator camera (combo order matches SpectatorCamMode).
+  int spectator_cam_mode = kSpecCamTumble;
+  float spectator_cam_speed = 0.001f;  // WASD speed; accelerates while held.
 
   // Backend state received from the Python simulation via WebSocket.
   std::vector<mjtNum> backend_state;
@@ -180,7 +193,12 @@ void ApplyStatePayload(const StatePayloadView& view) {
   if (view.render_state != nullptr) {
     const char* vis_ptr = view.render_state;
 
-    memcpy(&g_app.camera, vis_ptr, sizeof(mjvCamera));
+    // Spectators in a free camera mode keep their own local camera; everyone
+    // else (the driver, and spectators in Follow Controller) mirrors the
+    // driver's camera.
+    if (!g_app.spectator || g_app.spectator_cam_mode == kSpecCamFollow) {
+      memcpy(&g_app.camera, vis_ptr, sizeof(mjvCamera));
+    }
     vis_ptr += sizeof(mjvCamera);
 
     memcpy(&g_app.perturb, vis_ptr, sizeof(mjvPerturb));
@@ -250,6 +268,126 @@ StateLink g_state_link(
         g_ui_link.Connect(WsUrl("/ui"));
       }
     });
+
+// Switches the spectator camera mode, re-seeding the local camera when
+// entering a free mode so the view starts from the current pose.
+void SetSpectatorCameraMode(int mode) {
+  if (mode == g_app.spectator_cam_mode) {
+    return;
+  }
+  g_app.spectator_cam_mode = mode;
+  if (!g_app.model_holder || !g_app.model_holder->ok()) {
+    return;
+  }
+  const mjModel* model = g_app.model_holder->model();
+  if (mode == kSpecCamTumble) {
+    mujoco::platform::SetCamera(model, &g_app.camera,
+                                mujoco::platform::kTumbleCameraIdx);
+  } else if (mode == kSpecCamWasd) {
+    mujoco::platform::SetCamera(model, &g_app.camera,
+                                mujoco::platform::kFreeCameraIdx);
+  }
+  // kSpecCamFollow: the next state payload restores the driver's camera.
+}
+
+// Local camera control for a spectating page in a free camera mode. The
+// driver's input goes to the headless viewer instead (CaptureAndSendInput),
+// which streams its camera back over the state WebSocket. Mirrors the
+// mouse/WASD camera handling in src/experimental/studio/app.cc.
+// TODO(matijak): Share the camera handling code with the studio app (e.g. in
+// platform/ux/interaction.cc) instead of mirroring it here.
+void HandleSpectatorCameraInput() {
+  if (g_app.spectator_cam_mode == kSpecCamFollow) {
+    return;
+  }
+  if (!g_app.model_holder || !g_app.model_holder->ok()) {
+    return;
+  }
+  const mjModel* model = g_app.model_holder->model();
+  ImGuiIO& io = ImGui::GetIO();
+  const bool wasd = g_app.spectator_cam_mode == kSpecCamWasd;
+
+  // The camera can be fixed on entry (SetupScene honours the model's
+  // vis.global.cameraid, and Follow Controller mirrors whatever camera the
+  // driver uses), and mjv_moveCamera ignores fixed cameras. Coerce to a free
+  // camera so the free modes always respond to input.
+  if (g_app.camera.type == mjCAMERA_FIXED) {
+    mjv_defaultFreeCamera(model, &g_app.camera);
+    if (wasd) {
+      mujoco::platform::SetCamera(model, &g_app.camera,
+                                  mujoco::platform::kFreeCameraIdx);
+    }
+  }
+
+  if (!io.WantCaptureMouse && io.DisplaySize.x > 0 && io.DisplaySize.y > 0) {
+    const float mouse_dx = io.MouseDelta.x / io.DisplaySize.x;
+    const float mouse_dy = io.MouseDelta.y / io.DisplaySize.y;
+    const bool is_mouse_dragging =
+        (mouse_dx != 0.0f || mouse_dy != 0.0f) &&
+        (ImGui::IsMouseDown(ImGuiMouseButton_Left) ||
+         ImGui::IsMouseDown(ImGuiMouseButton_Right) ||
+         ImGui::IsMouseDown(ImGuiMouseButton_Middle));
+    if (is_mouse_dragging) {
+      if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+        if (wasd) {
+          mjv_moveCamera(model, mjMOUSE_TURN_H, mouse_dx, 0.f, &g_app.camera);
+          mjv_moveCamera(model, mjMOUSE_TURN_V, 0.f, mouse_dy, &g_app.camera);
+        } else {
+          mjv_moveCamera(model, mjMOUSE_ROTATE_H, mouse_dx, 0.f,
+                         &g_app.camera);
+          mjv_moveCamera(model, mjMOUSE_ROTATE_V, 0.f, mouse_dy,
+                         &g_app.camera);
+        }
+      } else if (ImGui::IsMouseDown(ImGuiMouseButton_Middle) && !wasd) {
+        mjv_moveCamera(model, mjMOUSE_ZOOM, 0.f, mouse_dy, &g_app.camera);
+      }
+      if (ImGui::IsMouseDown(ImGuiMouseButton_Right)) {
+        mjv_moveCamera(model, io.KeyShift ? mjMOUSE_MOVE_H : mjMOUSE_MOVE_V,
+                       mouse_dx, mouse_dy, &g_app.camera);
+      }
+    }
+    // Mouse scroll zooms towards/away from the lookat point; ignored by the
+    // user-centered WASD camera which has no lookat point.
+    const float mouse_scroll = io.MouseWheel / 50.0f;
+    if (mouse_scroll != 0.0f && !wasd) {
+      mjv_moveCamera(model, mjMOUSE_ZOOM, 0.f, -mouse_scroll, &g_app.camera);
+    }
+  }
+
+  // WASD/QE flying, with the same accelerating speed as the studio app.
+  if (wasd && !io.WantCaptureKeyboard) {
+    bool moved = false;
+    const float speed = g_app.spectator_cam_speed;
+    if (ImGui::IsKeyDown(ImGuiKey_W)) {
+      mjv_moveCamera(model, mjMOUSE_MOVE_H_REL, 0, speed, &g_app.camera);
+      moved = true;
+    } else if (ImGui::IsKeyDown(ImGuiKey_S)) {
+      mjv_moveCamera(model, mjMOUSE_MOVE_H_REL, 0, -speed, &g_app.camera);
+      moved = true;
+    }
+    if (ImGui::IsKeyDown(ImGuiKey_A)) {
+      mjv_moveCamera(model, mjMOUSE_MOVE_H_REL, -speed, 0, &g_app.camera);
+      moved = true;
+    } else if (ImGui::IsKeyDown(ImGuiKey_D)) {
+      mjv_moveCamera(model, mjMOUSE_MOVE_H_REL, speed, 0, &g_app.camera);
+      moved = true;
+    }
+    if (ImGui::IsKeyDown(ImGuiKey_Q)) {
+      mjv_moveCamera(model, mjMOUSE_MOVE_V_REL, 0, speed, &g_app.camera);
+      moved = true;
+    } else if (ImGui::IsKeyDown(ImGuiKey_E)) {
+      mjv_moveCamera(model, mjMOUSE_MOVE_V_REL, 0, -speed, &g_app.camera);
+      moved = true;
+    }
+    if (moved) {
+      const float max_speed = io.KeyShift ? 0.1f : 0.01f;
+      g_app.spectator_cam_speed =
+          std::min(g_app.spectator_cam_speed + 0.001f, max_speed);
+    } else {
+      g_app.spectator_cam_speed = 0.001f;
+    }
+  }
+}
 
 void BuildBrowserGui() {
   if (const int close_code = g_state_link.ServerCloseCode()) {
@@ -393,6 +531,16 @@ void BuildBrowserGui() {
       ImGui::Text("Viewers connected: %d", g_app.session_viewers);
       ImGui::Text("Data Rate (Sim): %" PRIu64 " KiB/s",
                   static_cast<uint64_t>(g_telemetry.sim_bytes_per_sec / 1024));
+      ImGui::Separator();
+      // TODO(matijak): Use the studio camera-selection UI here in future, so
+      // a spectator can also pick any camera defined in the model.
+      ImGui::TextUnformatted("Camera");
+      ImGui::SetNextItemWidth(-FLT_MIN);
+      int cam_mode = g_app.spectator_cam_mode;
+      if (ImGui::Combo("##spectator_camera", &cam_mode,
+                       "Free: tumble\0Free: wasd\0Follow Controller\0")) {
+        SetSpectatorCameraMode(cam_mode);
+      }
       ImGui::Separator();
       if (g_app.queue_pos > 0) {
         ImGui::Text("Control queue: you are #%d of %d.", g_app.queue_pos,
@@ -584,12 +732,17 @@ void MainLoopImpl() {
     return;
   }
 
-  // All scene interaction (camera orbit/zoom, perturbation, picking) is
-  // handled by the headless viewer: CaptureAndSendInput() forwards this
-  // frame's input over NetImgui, the headless ViewerApp runs the same event
-  // handlers as the native viewer, and the resulting camera/perturb state
-  // streams back over the state WebSocket (see ApplyStatePayload).
+  // For the driver, all scene interaction (camera orbit/zoom, perturbation,
+  // picking) is handled by the headless viewer: CaptureAndSendInput()
+  // forwards this frame's input over NetImgui, the headless ViewerApp runs
+  // the same event handlers as the native viewer, and the resulting
+  // camera/perturb state streams back over the state WebSocket (see
+  // ApplyStatePayload). Spectators have no input channel; in a free camera
+  // mode they drive their local camera directly.
   g_ui_link.CaptureAndSendInput();
+  if (g_app.spectator) {
+    HandleSpectatorCameraInput();
+  }
 
   BuildBrowserGui();
 
