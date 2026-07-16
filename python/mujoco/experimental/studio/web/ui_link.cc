@@ -81,6 +81,28 @@ UiLink::ReadyState UiLink::ConnectionState() const {
 
 int UiLink::CloseCode() const { return Network::GetCloseCode(socket_); }
 
+UiLink::RemoteTransform UiLink::GetRemoteTransform() const {
+  RemoteTransform t;
+  if (!receive_only_ || driver_screen_[0] == 0 || driver_screen_[1] == 0 ||
+      max_clip_[0] <= 0.0f || max_clip_[1] <= 0.0f) {
+    return t;
+  }
+  const float sx = max_clip_[0] / driver_screen_[0];
+  const float sy = max_clip_[1] / driver_screen_[1];
+  t.scale = sx < sy ? sx : sy;
+  t.offset_x = (max_clip_[0] - driver_screen_[0] * t.scale) * 0.5f;
+  t.offset_y = (max_clip_[1] - driver_screen_[1] * t.scale) * 0.5f;
+  return t;
+}
+
+bool UiLink::DriverMousePos(float* x, float* y) const {
+  if (!driver_mouse_valid_) return false;
+  const RemoteTransform t = GetRemoteTransform();
+  *x = driver_mouse_[0] * t.scale + t.offset_x;
+  *y = driver_mouse_[1] * t.scale + t.offset_y;
+  return true;
+}
+
 const char* UiLink::StatusString() const {
   return Network::ReadyStateName(ConnectionState());
 }
@@ -215,9 +237,18 @@ void UiLink::ReceiveAndProcessCommands(int frame) {
     } else if (cmdType == CmdHeader::eCommands::Texture) {
       textures_received_++;
       ProcessCmdTexture(reinterpret_cast<CmdTexture*>(pending_rcv_.pCommand));
+    } else if (cmdType == CmdHeader::eCommands::Input) {
+      // Only receive-only links get input: the server mirrors the driver's
+      // input commands to spectators for cursor rendering.
+      const auto* input =
+          reinterpret_cast<const CmdInput*>(pending_rcv_.pCommand);
+      driver_mouse_[0] = input->mMousePos[0];
+      driver_mouse_[1] = input->mMousePos[1];
+      driver_screen_[0] = input->mScreenSize[0];
+      driver_screen_[1] = input->mScreenSize[1];
+      driver_mouse_valid_ = true;
     }
-    // Version, Background, Clipboard, Input — already logged by
-    // log_cmd_received.
+    // Version, Background, Clipboard — already logged by log_cmd_received.
 
     if (pending_rcv_.bAutoFree) netImguiDeleteSafe(pending_rcv_.pCommand);
     pending_rcv_ = PendingCom();
@@ -592,6 +623,8 @@ void UiLink::ProcessCmdDrawFrame(CmdDrawFrame* pCmdDrawFrame) {
     ImDrawIdx* pIndexDst = &pCmdList->IdxBuffer[0];
     ImDrawVert* pVertexDst = &pCmdList->VtxBuffer[0];
     ImDrawCmd* pCommandDst = &pCmdList->CmdBuffer[0];
+    // On spectators, fit the driver-sized layout to this window.
+    const RemoteTransform xform = GetRemoteTransform();
 
     for (uint32_t i(0); i < pCmdDrawFrame->mDrawGroupCount; ++i) {
       const ImguiDrawGroup& drawGroup = pCmdDrawFrame->mpDrawGroups[i];
@@ -611,16 +644,18 @@ void UiLink::ProcessCmdDrawFrame(CmdDrawFrame* pCmdDrawFrame) {
       // Vertices — unpack quantized positions and UVs.
       const ImguiVert* pVertexSrc = drawGroup.mpVertices.Get();
       for (uint32_t vtxIdx(0); vtxIdx < drawGroup.mVerticeCount; ++vtxIdx) {
-        pVertexDst[vtxIdx].pos.x =
+        const float px =
             (static_cast<float>(pVertexSrc[vtxIdx].mPos[0]) *
              (kPosRangeMax - kPosRangeMin)) /
                 static_cast<float>(0xFFFF) +
             kPosRangeMin + drawGroup.mReferenceCoord[0];
-        pVertexDst[vtxIdx].pos.y =
+        const float py =
             (static_cast<float>(pVertexSrc[vtxIdx].mPos[1]) *
              (kPosRangeMax - kPosRangeMin)) /
                 static_cast<float>(0xFFFF) +
             kPosRangeMin + drawGroup.mReferenceCoord[1];
+        pVertexDst[vtxIdx].pos.x = px * xform.scale + xform.offset_x;
+        pVertexDst[vtxIdx].pos.y = py * xform.scale + xform.offset_y;
         pVertexDst[vtxIdx].uv.x =
             (static_cast<float>(pVertexSrc[vtxIdx].mUV[0]) *
              (kUVRangeMax - kUVRangeMin)) /
@@ -649,14 +684,18 @@ void UiLink::ProcessCmdDrawFrame(CmdDrawFrame* pCmdDrawFrame) {
           pCmdList->IdxBuffer[idxOff + ei] += static_cast<ImDrawIdx>(vtxOff);
         }
 
-        float cx = std::max(
-            0.f, std::min(max_clip_[0], pDrawSrc[drawIdx].mClipRect[0]));
-        float cy = std::max(
-            0.f, std::min(max_clip_[1], pDrawSrc[drawIdx].mClipRect[1]));
-        float cz = std::max(
-            cx, std::min(max_clip_[0], pDrawSrc[drawIdx].mClipRect[2]));
-        float cw = std::max(
-            cy, std::min(max_clip_[1], pDrawSrc[drawIdx].mClipRect[3]));
+        const float rx0 =
+            pDrawSrc[drawIdx].mClipRect[0] * xform.scale + xform.offset_x;
+        const float ry0 =
+            pDrawSrc[drawIdx].mClipRect[1] * xform.scale + xform.offset_y;
+        const float rx1 =
+            pDrawSrc[drawIdx].mClipRect[2] * xform.scale + xform.offset_x;
+        const float ry1 =
+            pDrawSrc[drawIdx].mClipRect[3] * xform.scale + xform.offset_y;
+        float cx = std::max(0.f, std::min(max_clip_[0], rx0));
+        float cy = std::max(0.f, std::min(max_clip_[1], ry0));
+        float cz = std::max(cx, std::min(max_clip_[0], rx1));
+        float cw = std::max(cy, std::min(max_clip_[1], ry1));
 
         pCommandDst[drawIdx].ClipRect.x = cx;
         pCommandDst[drawIdx].ClipRect.y = cy;

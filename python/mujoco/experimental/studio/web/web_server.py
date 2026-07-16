@@ -405,6 +405,7 @@ def _run_server(
     # [u32 total size][u8 type][u8 sent flag][2B padding] — see
     # netimgui/Code/Client/Private/NetImgui_CmdPackets.h.
     CMD_HEADER_SIZE = 8
+    CMD_INPUT = 2
     CMD_DRAW_FRAME = 3
 
     # Spectators mirroring the driver's UI stream, keyed by session id.
@@ -538,6 +539,11 @@ def _run_server(
             if isinstance(message, bytes):
               my_writer.write(message)
               await my_writer.drain()
+              # Mirror the driver's input commands to spectators, which
+              # render the driver's cursor from the mouse position inside.
+              if len(message) > 4 and message[4] == CMD_INPUT:
+                async with ui_fanout_lock:
+                  await fan_out(message)
 
         async def tcp_to_ws() -> None:
           # Split the stream at command boundaries so commands can be

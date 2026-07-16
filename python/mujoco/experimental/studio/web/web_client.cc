@@ -247,6 +247,20 @@ void BuildBrowserGui() {
     ImGui::End();
   }
 
+  // The driver's cursor, so spectators can follow along. Drawn into the
+  // local foreground list, which renders above the mirrored UI.
+  if (g_app.spectator) {
+    float mx = 0, my = 0;
+    if (g_ui_link.DriverMousePos(&mx, &my)) {
+      ImDrawList* draw_list = ImGui::GetForegroundDrawList();
+      const ImVec2 tip(mx, my);
+      const ImVec2 a(mx + 12.0f, my + 5.0f);
+      const ImVec2 b(mx + 5.0f, my + 12.0f);
+      draw_list->AddTriangleFilled(tip, a, b, IM_COL32(255, 255, 255, 230));
+      draw_list->AddTriangle(tip, a, b, IM_COL32(0, 0, 0, 230), 1.5f);
+    }
+  }
+
   const double now = ImGui::GetTime();
   if (now - g_telemetry.last_rate_time >= 1.0) {
     g_telemetry.gui_bytes_per_sec = g_ui_link.ConsumeByteCount();

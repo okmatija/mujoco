@@ -116,6 +116,22 @@ class UiLink {
   // The latest assembled remote draw data, or nullptr before the first frame.
   NetImguiImDrawData* RemoteDrawData() { return remote_draw_data_; }
 
+  // Maps the remote UI's coordinate space (laid out for the driver's
+  // window) into this window: uniform scale-to-fit, centered. Identity on
+  // the driver, and on spectators until the driver's window size is known
+  // (it arrives in the mirrored input commands).
+  struct RemoteTransform {
+    float scale = 1.0f;
+    float offset_x = 0.0f;
+    float offset_y = 0.0f;
+  };
+  RemoteTransform GetRemoteTransform() const;
+
+  // The driver's mouse position mapped into this window, for rendering the
+  // driver's cursor on receive-only links. False until the first mirrored
+  // input command arrives.
+  bool DriverMousePos(float* x, float* y) const;
+
   bool UseCompression() const { return use_compression_; }
   void SetUseCompression(bool use) { use_compression_ = use; }
 
@@ -140,6 +156,9 @@ class UiLink {
 
   SocketInfo* socket_ = nullptr;
   bool receive_only_ = false;
+  int16_t driver_mouse_[2] = {0, 0};
+  uint16_t driver_screen_[2] = {0, 0};
+  bool driver_mouse_valid_ = false;
   bool handshake_sent_ = false;
   bool was_connected_ = false;
   ReadyState last_state_ = ReadyState::kDisconnected;

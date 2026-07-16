@@ -114,12 +114,6 @@ static bool Client_Startup(ImGuiContext*& context,
     main_vp->DpiScale = 1.0f;
   }
 
-  // TODO(matijak): io.MouseDrawCursor = true would bake the driver's cursor
-  // into the draw stream so spectators see it; enable it only while
-  // spectators are connected (needs a server-to-viewer signal and a pyd
-  // binding), otherwise the driver sees a duplicate cursor trailing their
-  // own.
-
   ImGui::StyleColorsLight();
 
   auto main_font_data =
