@@ -757,8 +757,7 @@ MJAPI mjtNum mjv_frustumHeight(const mjvScene* scn);
 MJAPI void mjv_alignToCamera(mjtNum res[3], const mjtNum vec[3], const mjtNum forward[3]);
 
 // Move camera with mouse; action is mjtMouse.
-MJAPI void mjv_moveCamera(const mjModel* m, int action, mjtNum reldx, mjtNum reldy,
-                          const mjvScene* scn, mjvCamera* cam);
+MJAPI void mjv_moveCamera(const mjModel* m, int action, mjtNum reldx, mjtNum reldy, mjvCamera* cam);
 
 // Move perturb object with mouse; action is mjtMouse.
 MJAPI void mjv_movePerturb(const mjModel* m, const mjData* d, int action, mjtNum reldx,
@@ -854,6 +853,12 @@ MJAPI void mjv_cameraFrustum(float zver[2], float zhor[2], float zclip[2],  cons
 
 // Set default mjrContext.
 MJAPI void mjr_defaultContext(mjrContext* con);
+
+// Set default mjrRendererInfo.
+MJAPI void mjr_defaultRendererInfo(mjrRendererInfo* info);
+
+// Get active renderer information.
+MJAPI void mjr_getRendererInfo(mjrRendererInfo* info);
 
 // Allocate resources in custom OpenGL context; fontscale is mjtFontScale.
 MJAPI void mjr_makeContext(const mjModel* m, mjrContext* con, int fontscale);

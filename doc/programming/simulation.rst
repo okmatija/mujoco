@@ -723,6 +723,10 @@ Exceptions to the general rule that **real-valued** types **are safe to change**
    * - ``geom_pos`` |br| ``geom_quat`` |br| ``geom_size`` |br| ``geom_rbound`` |br| ``geom_aabb``
      - Unsafe.
      -
+   * - ``geom_surfacevel``
+     - Safe.
+     - If the number of geoms with nonzero surface velocity is changed from zero to non-zero (or vice versa),
+       :ref:`mj_setConst` must be called.
    * - ``{site,cam,light}_`` |br| ``{pos,quat}``
      - Mostly safe.
      - For cameras and lights with tracking or targeting, :ref:`mj_setConst` is required.
@@ -1105,9 +1109,10 @@ does not need timing, and in that case there is no reason to call timing functio
 One part of the simulation pipeline that needs to be monitored closely is the iterative constraint solver. The
 simplest diagnostic here is ``mjData.solver_niter`` which shows how many iterations the solver took on the last call to
 mj_step or ``mj_forward``. Note that the solver has tolerance parameters for early termination, so this number is
-usually smaller than the maximum number of iterations allowed. The array ``mjData.solver`` contains one
-:ref:`mjSolverStat` data structure per iteration of the constraint solver, with information about the constraint state
-and line search.
+usually smaller than the maximum number of iterations allowed; it can be 0 when a warmstarted solution is already
+certified as converged, in which case no iterations are performed and no statistics are written. The array
+``mjData.solver`` contains one :ref:`mjSolverStat` data structure per iteration of the constraint solver, with
+information about the constraint state and line search.
 
 When the option :at:`fwdinv` is enabled in ``mjModel.opt.enableflags``, the field ``mjData.fwdinv`` is also populated.
 It contains the difference between the forward and inverse dynamics, in terms of generalized forces and constraint
