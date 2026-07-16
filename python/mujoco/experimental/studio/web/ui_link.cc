@@ -104,7 +104,7 @@ void UiLink::ReceiveAndProcessCommands(int frame) {
        remote_draw_data_ != nullptr ? "yes" : "no");
 
   if (state == ReadyState::kOpen) {
-    if (!handshake_sent_) {
+    if (!handshake_sent_ && !receive_only_) {
       CmdVersion cmdVersion;
       StringCopy(cmdVersion.mClientName, "MuJoCo Web Viewer");
       LOG(Info,
@@ -342,7 +342,7 @@ void UiLink::ProcessCmdTexture(CmdTexture* pCmdTexture) {
 }
 
 void UiLink::CaptureAndSendInput() {
-  if (!socket_) return;
+  if (!socket_ || receive_only_) return;
 
   if (ConnectionState() != ReadyState::kOpen) return;
 

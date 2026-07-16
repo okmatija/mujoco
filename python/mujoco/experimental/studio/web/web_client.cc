@@ -126,6 +126,14 @@ std::string WsUrl(const char* path) {
   return GetWsBaseUrl() + path + "?sid=" + GetSessionId();
 }
 
+// The /ui URL for this page's current role: the driver claims the
+// interactive slot, spectators attach receive-only to the same stream.
+std::string UiUrl(bool spectate) {
+  std::string url = WsUrl("/ui");
+  if (spectate) url += "&mode=spectate";
+  return url;
+}
+
 // Returns true if the Filament rendering context is initialized and ready for
 // GPU texture uploads. The Renderer object is created in main() and is always
 // non-null, but the Filament context is only initialized when Renderer::Init()
@@ -214,6 +222,11 @@ StateLink g_state_link(
           LOG(Info, "Session roster: %s", text);
         }
         g_app.session_viewers = viewers;
+      } else if (strcmp(text, "keyframe=1") == 0) {
+        // A spectator joined the UI stream; resynchronize it with one
+        // uncompressed frame.
+        LOG(Info, "Keyframe requested for a new spectator");
+        g_ui_link.RequestKeyframe();
       }
     });
 
@@ -318,15 +331,15 @@ void BuildBrowserGui() {
                   static_cast<uint64_t>(g_telemetry.sim_bytes_per_sec / 1024));
       if (ImGui::Button("Take control")) {
         // One attempt; if the driver is still there this page goes straight
-        // back to spectating.
+        // back to spectating (and re-attaches receive-only).
         g_app.spectator = false;
         g_app.ui_reject_count = 2;
-        g_ui_link.Connect(WsUrl("/ui"));
+        g_ui_link.SetReceiveOnly(false);
+        g_ui_link.Connect(UiUrl(false));
       }
     } else {
-      if (g_app.session_viewers > 1) {
-        ImGui::Text("Driving: %d watching.", g_app.session_viewers - 1);
-      }
+      ImGui::Text("Spectators: %d",
+                  g_app.session_viewers > 1 ? g_app.session_viewers - 1 : 0);
       ImGui::Text("Connection: %s", g_ui_link.StatusString());
       ImGui::Text("Remote Frame: %s",
                   g_ui_link.RemoteDrawData() ? "Received" : "None");
@@ -395,10 +408,10 @@ void MainLoopImpl() {
   // whenever its headless-side TCP connection cycles (server restart). A
   // close code 4001 means another browser holds the driver slot: after a
   // few retries (a page reload of the driver races its own slot briefly)
-  // this page settles into spectating.
+  // this page becomes a spectator and re-attaches receive-only to the same
+  // UI stream.
   static int sLastUiWsRetryFrame = 0;
-  if (g_ui_link.HasSocket() && !g_app.spectator &&
-      !g_state_link.ReloadPending() &&
+  if (g_ui_link.HasSocket() && !g_state_link.ReloadPending() &&
       g_state_link.TerminalCloseCode() == 0 &&
       sMainFrameCount - sLastUiWsRetryFrame > 60) {
     const UiLink::ReadyState uiState = g_ui_link.ConnectionState();
@@ -407,13 +420,15 @@ void MainLoopImpl() {
     } else if (uiState == UiLink::ReadyState::kClosed ||
                uiState == UiLink::ReadyState::kError) {
       sLastUiWsRetryFrame = sMainFrameCount;
-      if (g_ui_link.CloseCode() == 4001 && ++g_app.ui_reject_count >= 3) {
+      if (!g_app.spectator && g_ui_link.CloseCode() == 4001 &&
+          ++g_app.ui_reject_count >= 3) {
         LOG(Info, "Driver slot taken; spectating");
         g_app.spectator = true;
-      } else {
-        LOG(Info, "UI WebSocket closed; reconnecting...");
-        g_ui_link.Connect(WsUrl("/ui"));
+        g_ui_link.SetReceiveOnly(true);
       }
+      LOG(Info, "UI WebSocket closed; reconnecting as %s...",
+          g_app.spectator ? "spectator" : "driver");
+      g_ui_link.Connect(UiUrl(g_app.spectator));
     }
   }
 

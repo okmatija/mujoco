@@ -71,6 +71,13 @@ class UiLink {
 
   // (Re)connects to the UI WebSocket. Disconnects any existing socket first.
   void Connect(const std::string& url);
+  // A receive-only link never sends the handshake or input; spectators
+  // mirror the driver's UI stream this way.
+  void SetReceiveOnly(bool receive_only) { receive_only_ = receive_only; }
+  // Asks the remote client for one uncompressed frame with the next input
+  // packet, resynchronizing every receiver of the shared stream (called on
+  // the driver when a spectator joins).
+  void RequestKeyframe() { request_keyframe_ = true; }
   bool HasSocket() const { return socket_ != nullptr; }
   // Current socket state; browser WebSockets connect and close
   // asynchronously, so this can differ from HasSocket() (see
@@ -132,6 +139,7 @@ class UiLink {
   // --- Connection-scoped state, reset on every (re)connect. ----------------
 
   SocketInfo* socket_ = nullptr;
+  bool receive_only_ = false;
   bool handshake_sent_ = false;
   bool was_connected_ = false;
   ReadyState last_state_ = ReadyState::kDisconnected;

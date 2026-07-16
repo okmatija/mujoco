@@ -187,14 +187,18 @@ def bind_loopback_socket(port: int = 0) -> socket.socket:
   sock.bind(("127.0.0.1", port))
   return sock
 
-def _session_id(ws: ServerConnection) -> str:
-  """The page's session id (?sid=...), tying its /ui and /state together."""
+def _query_param(ws: ServerConnection, key: str) -> str:
   path = ws.request.path if ws.request else ""
   query = path.split("?", 1)[1] if "?" in path else ""
   for part in query.split("&"):
-    if part.startswith("sid="):
-      return part[4:]
-  return f"anon-{id(ws)}"
+    if part.startswith(key + "="):
+      return part[len(key) + 1 :]
+  return ""
+
+
+def _session_id(ws: ServerConnection) -> str:
+  """The page's session id (?sid=...), tying its /ui and /state together."""
+  return _query_param(ws, "sid") or f"anon-{id(ws)}"
 
 
 # NetImgui's CmdVersion handshake packet is always 120 bytes.
@@ -397,8 +401,96 @@ def _run_server(
 
     # --- /ui: bridge the browser to the NetImgui client ----------------------
 
+    # NetImgui wire framing: every command starts with an 8-byte header,
+    # [u32 total size][u8 type][u8 sent flag][2B padding] — see
+    # netimgui/Code/Client/Private/NetImgui_CmdPackets.h.
+    CMD_HEADER_SIZE = 8
+    CMD_DRAW_FRAME = 3
+
+    # Spectators mirroring the driver's UI stream, keyed by session id.
+    # Each holds a bounded send queue so one slow spectator is dropped (it
+    # reconnects and resyncs) instead of stalling the driver's stream, plus
+    # its connection for that drop.
+    ui_spectators: dict[str, tuple[asyncio.Queue, ServerConnection]] = {}
+    # Non-DrawFrame commands (handshake, textures) of the current NetImgui
+    # session, replayed to spectators that join mid-session. Draw frames need
+    # no replay: a spectator asks for one uncompressed frame instead.
+    ui_session_cache: list[bytes] = []
+    ui_fanout_lock = asyncio.Lock()
+
+    async def request_ui_keyframe() -> None:
+      """Asks the driver's browser to have the next UI frame sent whole.
+
+      Spectators join midway through a delta-compressed stream; one
+      uncompressed frame resynchronizes every receiver. The request bit
+      lives in the driver's input packets (UiLink::RequestKeyframe).
+      """
+      client = state_clients.get(driver_sid) if driver_sid else None
+      if client is not None:
+        try:
+          await client.send("keyframe=1")
+        except (ConnectionClosed, ConnectionError):
+          pass
+
+    def drop_ui_spectator(sid: str) -> None:
+      entry = ui_spectators.pop(sid, None)
+      if entry is not None:
+        asyncio.create_task(entry[1].close())
+
+    async def fan_out(cmd: bytes) -> None:
+      """Queues one framed command to every spectator UI; caller holds the lock."""
+      for sid, (cmd_queue, _) in list(ui_spectators.items()):
+        try:
+          cmd_queue.put_nowait(cmd)
+        except asyncio.QueueFull:
+          logger.debug(f"[UiBridge] Spectator UI {sid} too slow; dropping")
+          drop_ui_spectator(sid)
+
+    async def ui_spectator_handler(ws: ServerConnection) -> None:
+      """A spectator's receive-only mirror of the driver's UI stream."""
+      sid = _session_id(ws)
+      cmd_queue: asyncio.Queue = asyncio.Queue(maxsize=256)
+      async with ui_fanout_lock:
+        drop_ui_spectator(sid)  # A reconnect replaces the previous connection.
+        for cmd in ui_session_cache:
+          cmd_queue.put_nowait(cmd)
+        ui_spectators[sid] = (cmd_queue, ws)
+      await request_ui_keyframe()
+      logger.debug(f"[UiBridge] Spectator UI attached ({len(ui_spectators)})")
+
+      async def drain_incoming() -> None:
+        async for _ in ws:
+          pass  # Spectators only receive.
+
+      async def send_outgoing() -> None:
+        while True:
+          await ws.send(await cmd_queue.get())
+
+      try:
+        done, pending = await asyncio.wait(
+            [
+                asyncio.create_task(drain_incoming()),
+                asyncio.create_task(send_outgoing()),
+            ],
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        for task in pending:
+          task.cancel()
+        for task in done:
+          task.exception()
+      except (ConnectionClosed, ConnectionError):
+        pass
+      finally:
+        async with ui_fanout_lock:
+          if sid in ui_spectators and ui_spectators[sid][1] is ws:
+            del ui_spectators[sid]
+        logger.debug(f"[UiBridge] Spectator UI detached ({len(ui_spectators)})")
+
     async def ui_handler(ws: ServerConnection) -> None:
       nonlocal active_ui_ws, driver_sid, tcp_reader, tcp_writer
+      if _query_param(ws, "mode") == "spectate":
+        await ui_spectator_handler(ws)
+        return
       if active_ui_ws is not None:
         # One driver at a time. The rejected browser spectates and may retry
         # via its "Take control" button once the driver leaves.
@@ -432,6 +524,14 @@ def _run_server(
         server_version = await my_reader.readexactly(_CMD_VERSION_SIZE)
         await ws.send(server_version)
         logger.debug("[UiBridge] Handshake complete. Bridging.")
+        # A fresh NetImgui session: earlier cached commands (textures of the
+        # previous session) are invalid. Spectator UIs connected across the
+        # change receive the new handshake through the fan-out.
+        async with ui_fanout_lock:
+          ui_session_cache.clear()
+          ui_session_cache.append(server_version)
+          await fan_out(server_version)
+        await request_ui_keyframe()
 
         async def ws_to_tcp() -> None:
           async for message in ws:
@@ -440,11 +540,27 @@ def _run_server(
               await my_writer.drain()
 
         async def tcp_to_ws() -> None:
+          # Split the stream at command boundaries so commands can be
+          # cached for and fanned out to spectators whole.
+          buf = bytearray()
           while True:
             data = await my_reader.read(65536)
             if not data:
               break
-            await ws.send(data)
+            buf += data
+            while len(buf) >= CMD_HEADER_SIZE:
+              (size,) = struct.unpack_from("<I", buf)
+              if size < CMD_HEADER_SIZE:
+                raise ConnectionError("bad NetImgui command header")
+              if len(buf) < size:
+                break
+              cmd = bytes(buf[:size])
+              del buf[:size]
+              async with ui_fanout_lock:
+                if cmd[4] != CMD_DRAW_FRAME:
+                  ui_session_cache.append(cmd)
+                await fan_out(cmd)
+              await ws.send(cmd)
 
         done, pending = await asyncio.wait(
             [
@@ -461,6 +577,7 @@ def _run_server(
         pass
       finally:
         logger.debug("[UiBridge] Bridge closed.")
+        ui_session_cache.clear()
         # Tear down this bridge's TCP connection so the NetImgui client
         # reconnects and re-sends everything to the next browser.
         my_writer.close()
