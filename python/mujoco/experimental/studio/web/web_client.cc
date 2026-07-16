@@ -438,19 +438,25 @@ void BuildBrowserGui() {
         NetImgui::SetCompressionMode(use_compression ? NetImgui::kForceEnable
                                                      : NetImgui::kForceDisable);
       }
-      // Follow the server's limit while not being edited.
+      // Local edits win for a grace period (the roster round trip takes a
+      // few frames and typing takes longer); afterwards the server's value
+      // is the truth.
       static int sMaxSpectators = -1;
+      static double sLastMaxEdit = -1e9;
+      if (sMaxSpectators < 0 || ImGui::GetTime() - sLastMaxEdit > 1.5) {
+        sMaxSpectators = g_app.max_spectators;
+      }
       ImGui::SetNextItemWidth(100.0f);
-      const bool max_changed =
-          ImGui::InputInt("Max spectators", &sMaxSpectators);
-      if (max_changed) {
+      if (ImGui::InputInt("Max spectators", &sMaxSpectators)) {
+        sLastMaxEdit = ImGui::GetTime();
         sMaxSpectators = std::clamp(sMaxSpectators, 0, 32);
         char msg[48];
         snprintf(msg, sizeof(msg), "%s%d", kMsgMaxSpectatorsPrefix,
                  sMaxSpectators);
         g_state_link.SendText(msg);
-      } else if (!ImGui::IsItemActive() || sMaxSpectators < 0) {
-        sMaxSpectators = g_app.max_spectators;
+      }
+      if (ImGui::IsItemActive()) {
+        sLastMaxEdit = ImGui::GetTime();
       }
       if (!g_ui_link.RemoteDrawData()) {
         ImGui::TextColored(ImVec4(1.0f, 0.0f, 0.0f, 1.0f),
