@@ -11,6 +11,8 @@
 #include <stdint.h>
 #include <stdio.h>
 
+#include <algorithm>
+#include <cfloat>
 #include <cinttypes>
 #include <cstddef>
 #include <cstring>
@@ -305,6 +307,18 @@ void BuildBrowserGui() {
   ImGui::SetNextWindowPos(ImVec2(ImGui::GetIO().DisplaySize.x * 0.5f, 8.0f),
                           ImGuiCond_FirstUseEver, ImVec2(0.5f, 0.0f));
 
+  // Small centered banner text helper, and full-width buttons: the window
+  // expands while hovered and collapses when the mouse leaves.
+  const auto centered_banner = [](const char* text, const ImVec4& color) {
+    ImGui::SetWindowFontScale(1.6f);
+    const float text_width = ImGui::CalcTextSize(text).x;
+    ImGui::SetCursorPosX(
+        std::max(0.0f, (ImGui::GetWindowWidth() - text_width) * 0.5f));
+    ImGui::TextColored(color, "%s", text);
+    ImGui::SetWindowFontScale(1.0f);
+  };
+  const ImVec2 kFullWidth(-FLT_MIN, 0.0f);
+
   if (!g_telemetry.expanded) {
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(6.0f, 6.0f));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowMinSize, ImVec2(16.0f, 16.0f));
@@ -312,32 +326,24 @@ void BuildBrowserGui() {
     ImGui::Begin("Link", nullptr,
                  ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
                      ImGuiWindowFlags_AlwaysAutoResize);
-    ImGui::Text("Link");
-    if (ImGui::IsItemHovered()) {
-      if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
-        g_telemetry.expanded = true;
-      }
-      ImGui::SetTooltip("Double-click toggle telemetry");
+    if (g_app.spectator) {
+      ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.2f, 1.0f), "SPECTATING");
+    } else {
+      ImGui::Text("Link");
+    }
+    if (ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem)) {
+      g_telemetry.expanded = true;
     }
     ImGui::End();
 
     ImGui::PopStyleVar(2);
   } else {
-    bool p_open = true;
-    bool should_collapse = false;
-
     ImGui::Begin(
-        "Link", &p_open,
+        "Link", nullptr,
         ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoCollapse);
-    if (ImGui::IsWindowHovered() &&
-        ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
-      should_collapse = true;
-    }
 
     if (g_app.spectator) {
-      ImGui::SetWindowFontScale(1.6f);
-      ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.2f, 1.0f), "SPECTATING");
-      ImGui::SetWindowFontScale(1.0f);
+      centered_banner("SPECTATING", ImVec4(1.0f, 0.75f, 0.2f, 1.0f));
       ImGui::Text("Viewers connected: %d", g_app.session_viewers);
       ImGui::Text("Data Rate (Sim): %" PRIu64 " KiB/s",
                   static_cast<uint64_t>(g_telemetry.sim_bytes_per_sec / 1024));
@@ -345,37 +351,36 @@ void BuildBrowserGui() {
       if (g_app.queue_pos > 0) {
         ImGui::Text("Control queue: you are #%d of %d.", g_app.queue_pos,
                     g_app.queue_len);
-        if (ImGui::Button("Leave queue")) {
+        if (ImGui::Button("Leave queue", kFullWidth)) {
           g_state_link.SendText(kMsgLeaveQueue);
         }
       } else {
-        if (ImGui::Button("Request control")) {
+        if (ImGui::Button("Request control", kFullWidth)) {
           g_state_link.SendText(kMsgRequestControl);
         }
       }
       // Rude but sometimes necessary; confirm before yanking the wheel.
       if (!g_app.force_confirm) {
-        if (ImGui::Button("Force take control")) {
+        if (ImGui::Button("Force take control", kFullWidth)) {
           g_app.force_confirm = true;
         }
       } else {
-        if (ImGui::Button("Confirm: take control now")) {
+        if (ImGui::Button("Confirm: take control now", kFullWidth)) {
           g_state_link.SendText(kMsgForceControl);
           g_app.force_confirm = false;
         }
-        ImGui::SameLine();
-        if (ImGui::Button("Cancel")) {
+        if (ImGui::Button("Cancel", kFullWidth)) {
           g_app.force_confirm = false;
         }
       }
     } else {
-      ImGui::TextColored(ImVec4(0.3f, 0.9f, 0.4f, 1.0f), "Driving");
+      centered_banner("DRIVING", ImVec4(0.3f, 0.9f, 0.4f, 1.0f));
       ImGui::Text("Spectators: %d",
                   g_app.session_viewers > 1 ? g_app.session_viewers - 1 : 0);
       if (g_app.queue_len > 0) {
         ImGui::Text("Waiting for control: %d", g_app.queue_len);
       }
-      if (ImGui::Button("Release control")) {
+      if (ImGui::Button("Release control", kFullWidth)) {
         // Become a spectator; the server grants the slot down the queue.
         g_ui_link.Shutdown();
         g_app.spectator = true;
@@ -399,11 +404,12 @@ void BuildBrowserGui() {
                            "Waiting for Draw Data...");
       }
     }
-    ImGui::End();
-
-    if (!p_open || should_collapse) {
+    // Collapse as soon as the mouse leaves the window.
+    if (!ImGui::IsWindowHovered(
+            ImGuiHoveredFlags_AllowWhenBlockedByActiveItem)) {
       g_telemetry.expanded = false;
     }
+    ImGui::End();
   }
 }
 
