@@ -37,9 +37,15 @@ class StateLink {
   using ReadyFn = std::function<bool()>;
   // Applies a parsed payload to the app (physics + render state + geoms).
   using OnPayloadFn = std::function<void(const StatePayloadView&)>;
+  // Receives session metadata (roster updates etc.), sent by the server as
+  // text frames on the same socket as the binary state payloads.
+  using OnSessionMessageFn = std::function<void(const char* text)>;
 
-  StateLink(ReadyFn ready, OnPayloadFn on_payload)
-      : ready_(std::move(ready)), on_payload_(std::move(on_payload)) {}
+  StateLink(ReadyFn ready, OnPayloadFn on_payload,
+            OnSessionMessageFn on_session_message = nullptr)
+      : ready_(std::move(ready)),
+        on_payload_(std::move(on_payload)),
+        on_session_message_(std::move(on_session_message)) {}
 
   void Connect(const std::string& url);
 
@@ -94,6 +100,7 @@ class StateLink {
 
   ReadyFn ready_;
   OnPayloadFn on_payload_;
+  OnSessionMessageFn on_session_message_;
 
   EMSCRIPTEN_WEBSOCKET_T socket_ = 0;
   bool open_ = false;

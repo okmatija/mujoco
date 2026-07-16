@@ -66,6 +66,8 @@ struct AppState {
   // user takes control.
   bool spectator = false;
   int ui_reject_count = 0;
+  // Connected browser count, from the server's roster updates.
+  int session_viewers = 0;
 
   // Backend state received from the Python simulation via WebSocket.
   std::vector<mjtNum> backend_state;
@@ -107,6 +109,21 @@ std::string GetWsBaseUrl() {
     return "ws://localhost:8080";
   }
   return url;
+}
+
+// Stable per-page id sent with every WebSocket connect (?sid=...), letting
+// the server tie this page's /ui and /state connections together.
+// (crypto.randomUUID would need a secure context, which plain http on a LAN
+// is not, hence the homegrown id; uniqueness is all that matters here.)
+std::string GetSessionId() {
+  static const std::string sid = emscripten_run_script_string(
+      "Module.sessionId = Module.sessionId || "
+      "(Date.now().toString(36) + Math.random().toString(36).slice(2))");
+  return sid;
+}
+
+std::string WsUrl(const char* path) {
+  return GetWsBaseUrl() + path + "?sid=" + GetSessionId();
 }
 
 // Returns true if the Filament rendering context is initialized and ready for
@@ -189,7 +206,16 @@ UiLink g_ui_link(
     IsFilamentReady);
 StateLink g_state_link(
     [] { return g_app.model_holder && g_app.model_holder->ok(); },
-    ApplyStatePayload);
+    ApplyStatePayload,
+    [](const char* text) {
+      int viewers = 0;
+      if (sscanf(text, "viewers=%d", &viewers) == 1) {
+        if (viewers != g_app.session_viewers) {
+          LOG(Info, "Session roster: %s", text);
+        }
+        g_app.session_viewers = viewers;
+      }
+    });
 
 void BuildBrowserGui() {
   if (const int close_code = g_state_link.TerminalCloseCode()) {
@@ -282,7 +308,12 @@ void BuildBrowserGui() {
     }
 
     if (g_app.spectator) {
-      ImGui::Text("Spectating: another browser is driving.");
+      if (g_app.session_viewers > 1) {
+        ImGui::Text("Spectating: %d viewers connected.",
+                    g_app.session_viewers);
+      } else {
+        ImGui::Text("Spectating: another browser is driving.");
+      }
       ImGui::Text("Data Rate (Sim): %" PRIu64 " KiB/s",
                   static_cast<uint64_t>(g_telemetry.sim_bytes_per_sec / 1024));
       if (ImGui::Button("Take control")) {
@@ -290,9 +321,12 @@ void BuildBrowserGui() {
         // back to spectating.
         g_app.spectator = false;
         g_app.ui_reject_count = 2;
-        g_ui_link.Connect(GetWsBaseUrl() + "/ui");
+        g_ui_link.Connect(WsUrl("/ui"));
       }
     } else {
+      if (g_app.session_viewers > 1) {
+        ImGui::Text("Driving: %d watching.", g_app.session_viewers - 1);
+      }
       ImGui::Text("Connection: %s", g_ui_link.StatusString());
       ImGui::Text("Remote Frame: %s",
                   g_ui_link.RemoteDrawData() ? "Received" : "None");
@@ -354,7 +388,7 @@ void MainLoopImpl() {
       sMainFrameCount - sLastStateWsRetryFrame > 60) {
     sLastStateWsRetryFrame = sMainFrameCount;
     LOG(Info, "State WebSocket down; reconnecting...");
-    g_state_link.Connect(GetWsBaseUrl() + "/state");
+    g_state_link.Connect(WsUrl("/state"));
   }
 
   // Reconnect the NetImgui UI socket too — the proxy tears the bridge down
@@ -378,7 +412,7 @@ void MainLoopImpl() {
         g_app.spectator = true;
       } else {
         LOG(Info, "UI WebSocket closed; reconnecting...");
-        g_ui_link.Connect(GetWsBaseUrl() + "/ui");
+        g_ui_link.Connect(WsUrl("/ui"));
       }
     }
   }
@@ -511,7 +545,7 @@ void OnFetchSuccess(emscripten_fetch_t* fetch) {
       SetupScene(g_app.model_holder->model());
     }
     // Connect the state WebSocket to receive simulation state from Python.
-    g_state_link.Connect(GetWsBaseUrl() + "/state");
+    g_state_link.Connect(WsUrl("/state"));
   } else {
     LOG(Error, "Failed to load model: %s",
         g_app.model_holder ? g_app.model_holder->error().data()
@@ -600,7 +634,7 @@ int main(int argc, char** argv) {
   SDL_StartTextInput();
 
   // The UI stream is a path on the page's own host and port.
-  g_ui_link.Connect(GetWsBaseUrl() + "/ui");
+  g_ui_link.Connect(WsUrl("/ui"));
 
   emscripten_fetch_attr_t attr;
   emscripten_fetch_attr_init(&attr);

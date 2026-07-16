@@ -24,7 +24,12 @@ EM_BOOL StateLink::OnWsMessage(int event_type,
                                const EmscriptenWebSocketMessageEvent* event,
                                void* user_data) {
   auto* link = static_cast<StateLink*>(user_data);
-  if (!event->isText) {
+  if (event->isText) {
+    // Text frames carry session metadata; emscripten null-terminates them.
+    if (link->on_session_message_) {
+      link->on_session_message_(reinterpret_cast<const char*>(event->data));
+    }
+  } else {
     link->HandleMessage(event->data, event->numBytes);
   }
   return EM_TRUE;

@@ -6,7 +6,8 @@ This server runs in a child process with one asyncio loop on a single public por
   * WebSocket /ui      serves the bridge to the headless NetImgui client, which
                        connects over loopback TCP (see ui_server.cc).
   * WebSocket /state   serves the latest-wins state payload broadcast at ~60Hz
-                       (payload format: see render_state.h).
+                       (payload format: see render_state.h) as binary frames,
+                       and session roster updates as text frames.
 
 Because everything is served through one port, a single firewall rule,
 port-forward, or HTTPS tunnel exposes the whole viewer. The browser derives its
@@ -186,6 +187,16 @@ def bind_loopback_socket(port: int = 0) -> socket.socket:
   sock.bind(("127.0.0.1", port))
   return sock
 
+def _session_id(ws: ServerConnection) -> str:
+  """The page's session id (?sid=...), tying its /ui and /state together."""
+  path = ws.request.path if ws.request else ""
+  query = path.split("?", 1)[1] if "?" in path else ""
+  for part in query.split("&"):
+    if part.startswith("sid="):
+      return part[4:]
+  return f"anon-{id(ws)}"
+
+
 # NetImgui's CmdVersion handshake packet is always 120 bytes.
 _CMD_VERSION_SIZE = 120
 
@@ -352,9 +363,20 @@ def _run_server(
     tcp_connected = asyncio.Event()
 
     # The browser driving the UI (single slot) and all browsers receiving
-    # the state broadcast (driver + spectators).
+    # the state broadcast (driver + spectators), keyed by session id.
     active_ui_ws = None
-    state_clients: set[ServerConnection] = set()
+    driver_sid: Optional[str] = None
+    state_clients: dict[str, ServerConnection] = {}
+
+    async def broadcast_roster() -> None:
+      """Sends every browser the viewer count and its own role."""
+      count = len(state_clients)
+      for sid, client in list(state_clients.items()):
+        role = "driver" if sid == driver_sid else "spectator"
+        try:
+          await client.send(f"viewers={count};role={role}")
+        except (ConnectionClosed, ConnectionError):
+          pass
 
     async def handle_tcp_client(
         reader: asyncio.StreamReader, writer: asyncio.StreamWriter
@@ -376,7 +398,7 @@ def _run_server(
     # --- /ui: bridge the browser to the NetImgui client ----------------------
 
     async def ui_handler(ws: ServerConnection) -> None:
-      nonlocal active_ui_ws, tcp_reader, tcp_writer
+      nonlocal active_ui_ws, driver_sid, tcp_reader, tcp_writer
       if active_ui_ws is not None:
         # One driver at a time. The rejected browser spectates and may retry
         # via its "Take control" button once the driver leaves.
@@ -384,6 +406,8 @@ def _run_server(
         await ws.close(WS_CLOSE_DRIVER_TAKEN, "driver slot taken")
         return
       active_ui_ws = ws
+      driver_sid = _session_id(ws)
+      await broadcast_roster()
 
       # Each browser needs a fresh NetImgui session (full handshake, textures
       # and draw state). Drop any connection used by a previous bridge and
@@ -446,6 +470,8 @@ def _run_server(
           tcp_connected.clear()
         if active_ui_ws is ws:
           active_ui_ws = None
+          driver_sid = None
+          await broadcast_roster()
 
     # --- /state: latest-wins payload broadcast --------------------------------
 
@@ -454,8 +480,10 @@ def _run_server(
         logger.info("[StateWS] Session full; rejecting browser")
         await ws.close(WS_CLOSE_SESSION_FULL, "session full")
         return
-      state_clients.add(ws)
+      sid = _session_id(ws)
+      state_clients[sid] = ws
       logger.info(f"[StateWS] Browser connected ({len(state_clients)} total)")
+      await broadcast_roster()
 
       last_gen = 0
       try:
@@ -472,9 +500,11 @@ def _run_server(
       except (ConnectionClosed, ConnectionError):
         pass
       finally:
-        state_clients.discard(ws)
+        if state_clients.get(sid) is ws:
+          del state_clients[sid]
         logger.info(
             f"[StateWS] Browser disconnected ({len(state_clients)} total)")
+        await broadcast_roster()
 
     # --- Dispatch --------------------------------------------------------------
 
