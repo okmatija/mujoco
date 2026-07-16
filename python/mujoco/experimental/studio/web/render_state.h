@@ -14,18 +14,18 @@
 
 // Serialization of the render state sent to the web viewer browser app.
 //
-// The browser renders with the same call the native viewer makes each frame
-// (width/height are the browser's own canvas size):
+// The browser renders with the same call the native viewer makes each frame:
 //
 //   Render(model, data, perturb, camera, vis_options, width, height,
 //          extra_geoms)
 //
-// Each remaining argument crosses the process boundary in its cheapest form:
+// width/height are the browser's own canvas size. The other arguments come
+// from the Python process, each sent in its cheapest form:
 //
 //   * model       — fetched once over HTTP as /model.mjb; its runtime-mutable
 //                   parts (opt/vis/stat) re-sent in the render state block.
 //   * data        — streamed as the physics state vector (mjSTATE_INTEGRATION);
-//                   the browser recomputes the rest via mj_setState+mj_forward.
+//                   the browser recomputes the rest via mj_setState/mj_forward.
 //   * extra_geoms — optional variable-size kTagExtraGeoms block.
 //   * the rest    — the fixed-size render state block:
 //                   [mjvCamera][mjvPerturb][mjvOption][mjOption][mjVisual]
@@ -39,19 +39,22 @@
 #ifndef MUJOCO_PYTHON_EXPERIMENTAL_STUDIO_WEB_RENDER_STATE_H_
 #define MUJOCO_PYTHON_EXPERIMENTAL_STUDIO_WEB_RENDER_STATE_H_
 
+#include <mujoco/mujoco.h>
+
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <vector>
 
-#include <mujoco/mujoco.h>
-
 namespace mujoco::studio {
 
 // Fixed byte size of the render state block appended after physics state.
-// Both sides (Linux x86_64 Python and Emscripten WASM) use identical struct
-// layouts — these structs contain no pointers and both ABIs align doubles to
-// 8 bytes — so the size is the same everywhere.
+// These are plain C structs of int/float/double members — no pointers and no
+// types whose width varies by platform — and every ABI MuJoCo runs on
+// (Linux/macOS/Windows on x86_64 and arm64, Emscripten wasm32) lays them out
+// identically under natural alignment, so the size matches everywhere. If
+// the two sides still disagree (e.g. built from different MuJoCo versions),
+// ParseStatePayload rejects the block rather than misreading it.
 inline constexpr size_t kRenderStateSize =
     sizeof(mjvCamera) + sizeof(mjvPerturb) + sizeof(mjvOption) +
     sizeof(mjOption) + sizeof(mjVisual) + sizeof(mjStatistic) + mjNRNDFLAG;
@@ -96,10 +99,6 @@ inline std::vector<char> SerializeRenderState(
   return buffer;
 }
 
-// -----------------------------------------------------------------------------
-// State payload: the full StateServer WebSocket message.
-// -----------------------------------------------------------------------------
-
 // "MJWS" as little-endian bytes. This magic constant identifies the
 // StateServer WebSocket payload header and helps detect malformed or
 // misrouted messages.
@@ -121,10 +120,9 @@ struct StatePayloadHeader {
   uint32_t magic = kStatePayloadMagic;
   uint16_t version = kStatePayloadVersion;
   uint16_t nblocks = 0;
-  // Identity of the model the payload refers to (CRC32 of the MJB bytes).
-  // When this changes, the browser must refetch /model.mjb before applying
-  // any further state.
-  uint32_t model_ident = 0;
+  // CRC32 of the model's MJB bytes. When this changes, the browser must
+  // refetch /model.mjb before applying any further state.
+  uint32_t model_crc32 = 0;
   uint32_t reserved = 0;
 };
 static_assert(sizeof(StatePayloadHeader) == 16);
@@ -155,7 +153,7 @@ inline void AppendStateBlock(std::vector<char>& buffer, uint32_t tag,
 
 // Serialize the complete state payload sent over the state WebSocket.
 inline std::vector<char> SerializeStatePayload(
-    uint32_t model_ident, int32_t physics_spec, const void* physics,
+    uint32_t model_crc32, int32_t physics_spec, const void* physics,
     size_t physics_bytes, const mjvCamera& camera, const mjvPerturb& perturb,
     const mjvOption& vis_options, const mjOption& opt, const mjVisual& vis,
     const mjStatistic& stat, const std::vector<uint8_t>& render_flags,
@@ -167,7 +165,7 @@ inline std::vector<char> SerializeStatePayload(
 
   StatePayloadHeader header;
   header.nblocks = extra_geom_count > 0 ? 3 : 2;
-  header.model_ident = model_ident;
+  header.model_crc32 = model_crc32;
   const char* header_bytes = reinterpret_cast<const char*>(&header);
   buffer.insert(buffer.end(), header_bytes,
                 header_bytes + sizeof(StatePayloadHeader));
@@ -197,7 +195,7 @@ inline std::vector<char> SerializeStatePayload(
 // Parsed view into a serialized payload. Pointers alias the input buffer and
 // are NOT guaranteed to be aligned — memcpy the data out before use.
 struct StatePayloadView {
-  uint32_t model_ident = 0;
+  uint32_t model_crc32 = 0;
   int32_t physics_spec = 0;
   const char* physics = nullptr;
   size_t physics_bytes = 0;
@@ -218,7 +216,7 @@ inline bool ParseStatePayload(const void* data, size_t size,
   memcpy(&header, bytes, sizeof(header));
   if (header.magic != kStatePayloadMagic) return false;
   if (header.version != kStatePayloadVersion) return false;
-  out->model_ident = header.model_ident;
+  out->model_crc32 = header.model_crc32;
 
   size_t offset = sizeof(StatePayloadHeader);
   for (uint16_t i = 0; i < header.nblocks; ++i) {

@@ -111,12 +111,12 @@ void StateLink::HandleMessage(const uint8_t* data, uint32_t num_bytes) {
     return;
   }
 
-  if (!have_model_ident_) {
-    model_ident_ = view.model_ident;
-    have_model_ident_ = true;
-  } else if (view.model_ident != model_ident_) {
+  if (!have_model_crc32_) {
+    model_crc32_ = view.model_crc32;
+    have_model_crc32_ = true;
+  } else if (view.model_crc32 != model_crc32_) {
     LOG(Info, "Model changed on the Python side (ident %u -> %u); reloading",
-        model_ident_, view.model_ident);
+        model_crc32_, view.model_crc32);
     reload_pending_ = true;
     EM_ASM({ setTimeout(function() { location.reload(); }, 0); });
     return;

@@ -249,7 +249,7 @@ class WebViewer(viewer_protocol.Viewer):
     # The single-port server (HTTP + /ui + /state). This is restarted whenever
     # the model changes.
     self._web_server: web_server.WebServer | None = None
-    self._model_ident = 0
+    self._model_crc32 = 0
     # Files dropped onto the browser page arrive here from the server child
     # as a dict of relative path -> bytes; owned by the viewer so it
     # survives server restarts.
@@ -276,7 +276,7 @@ class WebViewer(viewer_protocol.Viewer):
     mjb_data = _serialize_model(self.model)
     # Identity of the served model, included in every state payload. When it
     # changes, the browser refetches /model.mjb by reloading the page.
-    self._model_ident = zlib.crc32(mjb_data)
+    self._model_crc32 = zlib.crc32(mjb_data)
 
     _, state_size = self._state_signature_and_size()
     max_payload = ui_server.UiServer.max_state_payload_size(
@@ -346,7 +346,7 @@ class WebViewer(viewer_protocol.Viewer):
       state = np.empty(state_size, np.float64)
       mujoco.mj_getState(self.model, self.data, state, sig)
       payload = self._ui_server.serialize_state_payload(
-          self._model_ident,
+          self._model_crc32,
           sig,
           state.tobytes(),
           self.camera,

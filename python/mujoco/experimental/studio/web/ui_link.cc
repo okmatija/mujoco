@@ -41,16 +41,17 @@ void log_unmapped_texture(
 
 void log_cmd_received(CmdHeader::eCommands cmdType, uint32_t cmdSize,
                       int drawFrames, int textures,
-                      const PendingCom& pendingRcv) {
-  if (cmdType == CmdHeader::eCommands::DrawFrame) {
-    VLOG(2, "Received DrawFrame #%d (size=%u)", drawFrames, cmdSize);
-  } else if (cmdType == CmdHeader::eCommands::Texture) {
-    VLOG(2, "Received Texture #%d (size=%u)", textures, cmdSize);
-  } else if (cmdType == CmdHeader::eCommands::Version) {
-    auto* pVer = reinterpret_cast<const CmdVersion*>(pendingRcv.pCommand);
+                      const PendingCom& pendingReceive) {
+  if (cmdType == CmdHeader::eCommands::Version) {
+    const CmdVersion* pVer =
+        reinterpret_cast<const CmdVersion*>(pendingReceive.pCommand);
     LOG(Info,
         "Received CmdVersion from client: name='%s', version=%d, wcharSize=%d",
         pVer->mClientName, static_cast<int>(pVer->mVersion), pVer->mWCharSize);
+  } else if (cmdType == CmdHeader::eCommands::DrawFrame) {
+    VLOG(2, "Received DrawFrame #%d (size=%u)", drawFrames, cmdSize);
+  } else if (cmdType == CmdHeader::eCommands::Texture) {
+    VLOG(2, "Received Texture #%d (size=%u)", textures, cmdSize);
   } else if (cmdType == CmdHeader::eCommands::Background) {
     VLOG(2, "Received Background cmd (size=%u)", cmdSize);
   } else if (cmdType != CmdHeader::eCommands::Count &&
@@ -150,8 +151,9 @@ void UiLink::ReceiveAndProcessCommands(int frame) {
     LOG(Info, "Connection lost (status='%s'). Discarding buffered data.",
         Network::ReadyStateName(state));
     // Reset any in-progress receive.
-    if (pending_rcv_.bAutoFree) netImguiDeleteSafe(pending_rcv_.pCommand);
-    pending_rcv_ = PendingCom();
+    if (pending_receive_.bAutoFree)
+      netImguiDeleteSafe(pending_receive_.pCommand);
+    pending_receive_ = PendingCom();
     was_connected_ = false;
   }
   if (isConnected) was_connected_ = true;
@@ -164,63 +166,67 @@ void UiLink::ReceiveAndProcessCommands(int frame) {
   }
 
   while (isConnected && maxCommandsPerFrame-- > 0) {
-    if (pending_rcv_.IsReady()) {
+    if (pending_receive_.IsReady()) {
       cmd_pending_read_ = CmdPendingRead();
-      pending_rcv_.pCommand = &cmd_pending_read_;
-      pending_rcv_.bAutoFree = false;
+      pending_receive_.pCommand = &cmd_pending_read_;
+      pending_receive_.bAutoFree = false;
     }
 
     if (!Network::DataReceivePending(socket_)) break;
 
-    Network::DataReceive(socket_, pending_rcv_);
+    Network::DataReceive(socket_, pending_receive_);
 
-    if (pending_rcv_.pCommand->mSize > sizeof(CmdPendingRead) &&
-        pending_rcv_.pCommand == &cmd_pending_read_) {
+    if (pending_receive_.pCommand->mSize > sizeof(CmdPendingRead) &&
+        pending_receive_.pCommand == &cmd_pending_read_) {
       VLOG(2, "Allocating %u bytes for incoming cmd type=%d",
-           pending_rcv_.pCommand->mSize,
-           static_cast<int>(pending_rcv_.pCommand->mType));
+           pending_receive_.pCommand->mSize,
+           static_cast<int>(pending_receive_.pCommand->mType));
       CmdPendingRead* pCmdHeader = reinterpret_cast<CmdPendingRead*>(
-          netImguiSizedNew<uint8_t>(pending_rcv_.pCommand->mSize));
+          netImguiSizedNew<uint8_t>(pending_receive_.pCommand->mSize));
       *pCmdHeader = cmd_pending_read_;
-      pending_rcv_.pCommand = pCmdHeader;
-      pending_rcv_.bAutoFree = true;
+      pending_receive_.pCommand = pCmdHeader;
+      pending_receive_.bAutoFree = true;
     }
 
-    if (!pending_rcv_.IsDone()) {
-      if (pending_rcv_.IsError()) {
+    if (!pending_receive_.IsDone()) {
+      if (pending_receive_.IsError()) {
         LOG(Error, "Receive ERROR: cmdSize=%u, got=%zu, type=%d",
-            pending_rcv_.pCommand->mSize,
-            static_cast<size_t>(pending_rcv_.SizeCurrent),
-            static_cast<int>(pending_rcv_.pCommand->mType));
-        if (pending_rcv_.bAutoFree) netImguiDeleteSafe(pending_rcv_.pCommand);
-        pending_rcv_ = PendingCom();
+            pending_receive_.pCommand->mSize,
+            static_cast<size_t>(pending_receive_.SizeCurrent),
+            static_cast<int>(pending_receive_.pCommand->mType));
+        if (pending_receive_.bAutoFree)
+          netImguiDeleteSafe(pending_receive_.pCommand);
+        pending_receive_ = PendingCom();
       }
       continue;
     }
 
     // Command fully received — dispatch.
-    bytes_accum_ += pending_rcv_.pCommand->mSize;
+    bytes_accum_ += pending_receive_.pCommand->mSize;
     cmdsThisFrame++;
     total_cmds_received_++;
-    CmdHeader::eCommands cmdType = pending_rcv_.pCommand->mType;
-    log_cmd_received(cmdType, pending_rcv_.pCommand->mSize,
-                     draw_frames_received_, textures_received_, pending_rcv_);
+    CmdHeader::eCommands cmdType = pending_receive_.pCommand->mType;
+    log_cmd_received(cmdType, pending_receive_.pCommand->mSize,
+                     draw_frames_received_, textures_received_,
+                     pending_receive_);
 
     if (cmdType == CmdHeader::eCommands::Count) {
       // CmdPendingRead sentinel — skip silently.
     } else if (cmdType == CmdHeader::eCommands::DrawFrame) {
       draw_frames_received_++;
       ProcessCmdDrawFrame(
-          reinterpret_cast<CmdDrawFrame*>(pending_rcv_.pCommand));
+          reinterpret_cast<CmdDrawFrame*>(pending_receive_.pCommand));
     } else if (cmdType == CmdHeader::eCommands::Texture) {
       textures_received_++;
-      ProcessCmdTexture(reinterpret_cast<CmdTexture*>(pending_rcv_.pCommand));
+      ProcessCmdTexture(
+          reinterpret_cast<CmdTexture*>(pending_receive_.pCommand));
     }
     // Version, Background, Clipboard, Input — already logged by
     // log_cmd_received.
 
-    if (pending_rcv_.bAutoFree) netImguiDeleteSafe(pending_rcv_.pCommand);
-    pending_rcv_ = PendingCom();
+    if (pending_receive_.bAutoFree)
+      netImguiDeleteSafe(pending_receive_.pCommand);
+    pending_receive_ = PendingCom();
   }
 
   VLOG(2, "Frame %d: processed %d commands", frame, cmdsThisFrame);
@@ -408,8 +414,8 @@ void UiLink::CaptureAndSendInput() {
     cmdInput.mMouseWheelHoriz = 0;
   }
 
-  // Mouse Buttons Inputs
-  // If Dear ImGui Update this enum, must also adjust our enum copy
+  // Mouse button inputs. This static_assert detects when a Dear ImGui update
+  // changes ImGuiMouseButton, which requires updating NetImgui's enum copy.
   static_assert(
       static_cast<int>(CmdInput::NetImguiMouseButton::ImGuiMouseButton_COUNT) ==
           static_cast<int>(ImGuiMouseButton_::ImGuiMouseButton_COUNT),
@@ -434,9 +440,8 @@ void UiLink::CaptureAndSendInput() {
         ImGui::IsMouseDown(4) ? 1 << CmdInput::ImGuiMouseButton_Extra2 : 0;
   }
 
-// Keyboard Inputs
-// If Dear ImGui Update their enum, must also adjust our enum copy,
-// so adding a few check to detect a change
+// Keyboard inputs. These static_asserts detect when a Dear ImGui update
+// changes ImGuiKey, which requires updating NetImgui's enum copy to match.
 #define EnumKeynameTest(KEYNAME)                                               \
   static_cast<int>(CmdInput::NetImguiKeys::KEYNAME) ==                         \
       static_cast<int>(ImGuiKey::KEYNAME - ImGuiKey::ImGuiKey_NamedKey_BEGIN), \
@@ -517,8 +522,8 @@ void UiLink::CaptureAndSendInput() {
 void UiLink::ProcessCmdDrawFrame(CmdDrawFrame* pCmdDrawFrame) {
   if (!pCmdDrawFrame) return;
 
-  // Take ownership to prevent pending_rcv_ from deleting it prematurely.
-  pending_rcv_.bAutoFree = false;
+  // Take ownership to prevent pending_receive_ from deleting it prematurely.
+  pending_receive_.bAutoFree = false;
   pCmdDrawFrame->ToPointers();
 
   if (pCmdDrawFrame->mCompressed) {

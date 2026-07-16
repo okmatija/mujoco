@@ -13,15 +13,6 @@
 # limitations under the License.
 
 # MuJoCo web viewer.
-#
-# This CMakeLists is included from two different build contexts:
-#  1. The Python bindings build (from experimental/studio/CMakeLists.txt),
-#     which builds the `ui_server` pybind module: a headless ImGui context
-#     that streams UI draw data to the browser via the NetImgui protocol.
-#  2. The main MuJoCo tree under Emscripten (from
-#     src/experimental/studio/CMakeLists.txt), which builds the `web_client`
-#     WASM binary: the browser app that renders the MuJoCo scene via Filament,
-#     displays the remote ImGui draw data, and sends input back.
 
 set(NETIMGUI_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../netimgui)
 

@@ -23,6 +23,12 @@
 // 3. Receives input events from the remote viewer and injects them into
 //    the ImGui context.
 
+#include <imgui.h>
+#include <implot.h>
+#include <mujoco/mujoco.h>
+#include <pybind11/pybind11.h>
+#include <pybind11/stl.h>
+
 #include <atomic>
 #include <chrono>
 #include <cstddef>
@@ -35,15 +41,10 @@
 #include <thread>
 #include <vector>
 
-#include <imgui.h>
-#include <implot.h>
-#include <mujoco/mujoco.h>
 #include "NetImgui_Api.h"
 #include "google/logging.h"
 #include "render_state.h"
 #include "structs.h"
-#include <pybind11/pybind11.h>
-#include <pybind11/stl.h>
 
 namespace py = pybind11;
 
@@ -60,7 +61,7 @@ static std::vector<std::byte> LoadFontAsset(const std::string& assets_dir,
   if (!file.is_open()) {
     return {};
   }
-  auto file_size = file.tellg();
+  const std::streamsize file_size = file.tellg();
   file.seekg(0, std::ios::beg);
   std::vector<std::byte> buffer(file_size);
   if (!file.read(reinterpret_cast<char*>(buffer.data()), file_size)) {
@@ -116,9 +117,10 @@ static bool Client_Startup(ImGuiContext*& context,
 
   ImGui::StyleColorsLight();
 
-  auto main_font_data =
+  const std::vector<std::byte> main_font_data =
       LoadFontAsset(assets_dir, "AtkinsonHyperlegibleNext[wght].ttf");
-  auto icon_font_data = LoadFontAsset(assets_dir, "fontawesome-webfont.ttf");
+  const std::vector<std::byte> icon_font_data =
+      LoadFontAsset(assets_dir, "fontawesome-webfont.ttf");
 
   // Font sizes match the native viewer (platform/hal/window.cc) so the UI
   // has the same proportions in the browser as in native Studio.
@@ -171,8 +173,10 @@ static void Client_Connect(const char* title, int port) {
   bool pending = NetImgui::IsConnectionPending();
 
   if (!connected && !pending) {
-    static auto last_reconnect_time = std::chrono::steady_clock::now();
-    auto now = std::chrono::steady_clock::now();
+    static std::chrono::steady_clock::time_point last_reconnect_time =
+        std::chrono::steady_clock::now();
+    const std::chrono::steady_clock::time_point now =
+        std::chrono::steady_clock::now();
     if (now - last_reconnect_time > std::chrono::seconds(1)) {
       last_reconnect_time = now;
       VLOG(1, "Retrying ConnectToApp...");
@@ -196,13 +200,13 @@ class UiServer {
     }
 
     VLOG(1, "Calling ConnectToApp('%s', '127.0.0.1', %d)", title_.c_str(),
-        port_);
+         port_);
     bool connect_result =
         NetImgui::ConnectToApp(title_.c_str(), "127.0.0.1", port_);
     VLOG(1, "ConnectToApp returned: %s", connect_result ? "true" : "false");
     VLOG(1, "IsConnected: %s, IsConnectionPending: %s",
-        NetImgui::IsConnected() ? "true" : "false",
-        NetImgui::IsConnectionPending() ? "true" : "false");
+         NetImgui::IsConnected() ? "true" : "false",
+         NetImgui::IsConnectionPending() ? "true" : "false");
   }
 
   ~UiServer() { Client_Shutdown(context_); }
@@ -220,7 +224,8 @@ class UiServer {
     // This ensures that every call to NewFrame() that returns true
     // guarantees an active ImGui frame, eliminating the need for
     // is_frame_active() in the Python API.
-    auto last_signal_check = std::chrono::steady_clock::now();
+    std::chrono::steady_clock::time_point last_signal_check =
+        std::chrono::steady_clock::now();
     while (true) {
       if (close_requested_) {
         is_drawing_remote_ = false;
@@ -228,7 +233,8 @@ class UiServer {
       }
       // While blocked (e.g. no browser connected), periodically check for
       // Python signals so Ctrl+C interrupts the wait instead of hanging.
-      auto now = std::chrono::steady_clock::now();
+      const std::chrono::steady_clock::time_point now =
+          std::chrono::steady_clock::now();
       if (now - last_signal_check > std::chrono::milliseconds(200)) {
         last_signal_check = now;
         py::gil_scoped_acquire acquire;
@@ -278,7 +284,7 @@ class UiServer {
   // Serialize the complete state WebSocket payload (see render_state.h):
   // physics state, render state and extra geoms as tagged blocks.
   py::bytes SerializeStatePayload(
-      uint32_t model_ident, int physics_spec, const py::bytes& physics_state,
+      uint32_t model_crc32, int physics_spec, const py::bytes& physics_state,
       const mujoco::python::MjvCameraWrapper& camera,
       const mujoco::python::MjvPerturbWrapper& perturb,
       const mujoco::python::MjvOptionWrapper& vis_options,
@@ -287,15 +293,15 @@ class UiServer {
       const std::vector<mujoco::python::MjvGeomWrapper>& extra_geoms) {
     std::vector<mjvGeom> geoms;
     geoms.reserve(extra_geoms.size());
-    for (const auto& geom_wrapper : extra_geoms) {
+    for (const mujoco::python::MjvGeomWrapper& geom_wrapper : extra_geoms) {
       if (geom_wrapper.get()) {
         geoms.push_back(*geom_wrapper.get());
       }
     }
 
     std::string physics = physics_state;
-    auto buffer = mujoco::studio::SerializeStatePayload(
-        model_ident, physics_spec, physics.data(), physics.size(),
+    const std::vector<char> buffer = mujoco::studio::SerializeStatePayload(
+        model_crc32, physics_spec, physics.data(), physics.size(),
         *camera.get(), *perturb.get(), *vis_options.get(), model.get()->opt,
         model.get()->vis, model.get()->stat, render_flags, geoms.data(),
         geoms.size());

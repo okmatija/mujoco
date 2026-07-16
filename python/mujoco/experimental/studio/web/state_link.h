@@ -13,7 +13,7 @@
 // limitations under the License.
 
 // State link: receives simulation state payloads from the Python StateServer
-// over the /state WebSocket and owns the model-identity / page-reload /
+// over the /state WebSocket and owns the model-change / page-reload /
 // supersede policy. Applying a payload to the app is delegated to the
 // on_payload callback, so this file stays free of scene and renderer
 // dependencies.
@@ -21,11 +21,11 @@
 #ifndef MUJOCO_PYTHON_EXPERIMENTAL_STUDIO_WEB_STATE_LINK_H_
 #define MUJOCO_PYTHON_EXPERIMENTAL_STUDIO_WEB_STATE_LINK_H_
 
+#include <emscripten/websocket.h>
+
 #include <cstdint>
 #include <functional>
 #include <string>
-
-#include <emscripten/websocket.h>
 
 #include "render_state.h"
 
@@ -61,8 +61,8 @@ class StateLink {
   // True only while the WebSocket is actually open.
   bool Connected() const { return open_; }
 
-  // True once a payload with a new model identity has scheduled a page
-  // reload; all traffic is dropped from then on.
+  // True once a payload with a new model has scheduled a page reload; all
+  // traffic is dropped from then on.
   bool ReloadPending() const { return reload_pending_; }
 
   // The close code from the server deliberately ending this connection
@@ -79,15 +79,14 @@ class StateLink {
     return bytes;
   }
 
-  // Wall-clock seconds (emscripten_get_now-based) of the last received
-  // message, or 0 before the first one. Payloads stream at ~60Hz while the
-  // Python side is alive, so staleness here means the server is gone —
-  // even if the socket still looks open (a suspended process keeps its
-  // sockets established).
+  // Wall-clock seconds of the last received message, or 0 before the first
+  // one. Payloads stream at ~60Hz while the Python side is alive, so
+  // staleness here means the server is gone — even if the socket still
+  // looks open (a suspended process keeps its sockets established).
   double LastMessageTime() const { return last_message_time_; }
 
-  // Parses one WebSocket message and applies the identity/reload policy;
-  // public for tests.
+  // Parses one WebSocket message and applies the model-change/reload
+  // policy; public for tests.
   void HandleMessage(const uint8_t* data, uint32_t num_bytes);
 
  private:
@@ -111,11 +110,11 @@ class StateLink {
   EMSCRIPTEN_WEBSOCKET_T socket_ = 0;
   bool open_ = false;
 
-  // Identity of the model this page loaded (adopted from the first payload).
-  // When the payload's identity changes, the Python side has swapped models:
+  // CRC32 of the model this page loaded (adopted from the first payload).
+  // When the payload's crc changes, the Python side has swapped models:
   // reload the page, which refetches /model.mjb and reconnects everything.
-  uint32_t model_ident_ = 0;
-  bool have_model_ident_ = false;
+  uint32_t model_crc32_ = 0;
+  bool have_model_crc32_ = false;
   bool reload_pending_ = false;
 
   int server_close_code_ = 0;

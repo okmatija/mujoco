@@ -24,6 +24,8 @@
 #ifndef MUJOCO_PYTHON_EXPERIMENTAL_STUDIO_WEB_UI_LINK_H_
 #define MUJOCO_PYTHON_EXPERIMENTAL_STUDIO_WEB_UI_LINK_H_
 
+#include <imgui.h>
+
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -31,7 +33,6 @@
 #include <unordered_map>
 #include <vector>
 
-#include <imgui.h>
 #include "NetImgui_Api.h"
 #include "NetImgui_CmdPackets.h"
 #include "NetImgui_Network.h"
@@ -135,7 +136,7 @@ class UiLink {
   bool handshake_sent_ = false;
   bool was_connected_ = false;
   ReadyState last_state_ = ReadyState::kDisconnected;
-  NetImgui::Internal::PendingCom pending_rcv_;
+  NetImgui::Internal::PendingCom pending_receive_;
   NetImgui::Internal::CmdPendingRead cmd_pending_read_;
   // When true, the next CmdInput asks the client to send one uncompressed
   // draw frame (CmdInput::mCompressionSkip). Set on (re)connect and whenever
