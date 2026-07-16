@@ -624,9 +624,19 @@ void BuildBrowserGui() {
                            "Waiting for Draw Data...");
       }
     }
-    // Collapse as soon as the mouse leaves the window.
-    if (!ImGui::IsWindowHovered(
-            ImGuiHoveredFlags_AllowWhenBlockedByActiveItem)) {
+    // Collapse when the mouse leaves the window, with a short grace period.
+    // A popup (e.g. the camera combo's dropdown) is a separate window, so
+    // moving the mouse into it unhovers this one; keep the window expanded
+    // while one of its popups is open, and give brief excursions time to
+    // come back before snapping shut.
+    constexpr double kCollapseGraceSec = 0.2;
+    static double s_last_hovered_time = 0.0;
+    const bool popup_open = ImGui::IsPopupOpen(
+        "", ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel);
+    if (popup_open ||
+        ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem)) {
+      s_last_hovered_time = ImGui::GetTime();
+    } else if (ImGui::GetTime() - s_last_hovered_time > kCollapseGraceSec) {
       g_telemetry.expanded = false;
     }
     ImGui::End();
