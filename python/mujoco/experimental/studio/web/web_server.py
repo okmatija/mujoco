@@ -26,6 +26,7 @@ directory to serve a locally-built web_client without reinstalling the package.
 import asyncio
 import ctypes
 import datetime
+import enum
 import logging
 import multiprocessing
 import multiprocessing.queues
@@ -115,6 +116,21 @@ _configure_logging()
 WS_CLOSE_DRIVER_TAKEN = 4001  # /ui: another browser holds the driver slot.
 WS_CLOSE_SESSION_FULL = 4002  # /state: the spectator limit is reached.
 WS_CLOSE_INACTIVE = 4003  # /state: hidden tab kicked to free a viewer slot.
+
+
+class SessionMessage(enum.StrEnum):
+  """Text messages browsers send on /state (keep in sync: web_client.cc)."""
+
+  REQUEST_CONTROL = "request_control"
+  LEAVE_QUEUE = "leave_queue"
+  FORCE_CONTROL = "force_control"
+  HEARTBEAT = "heartbeat"
+
+
+# Sent to the page whose control claim the driver slot is reserved for
+# (keep in sync: web_client.cc).
+GRANT_MESSAGE = "grant=1"
+
 
 # A granted control claim must arrive within this window, else the grant
 # moves on down the queue.
@@ -425,7 +441,7 @@ def _run_server(
         await grant_next()
         return
       try:
-        await client.send("grant=1")
+        await client.send(GRANT_MESSAGE)
       except (ConnectionClosed, ConnectionError):
         pending_grant_sid = None
         await grant_next()
@@ -446,16 +462,16 @@ def _run_server(
       """A control or heartbeat message from one browser (/state text)."""
       nonlocal pending_grant_sid
       last_heartbeat[sid] = loop_time()
-      if text == "request_control":
+      if text == SessionMessage.REQUEST_CONTROL:
         if sid != driver_sid and sid not in control_queue:
           control_queue.append(sid)
           await grant_next()
           await broadcast_roster()
-      elif text == "leave_queue":
+      elif text == SessionMessage.LEAVE_QUEUE:
         if sid in control_queue:
           control_queue.remove(sid)
           await broadcast_roster()
-      elif text == "force_control":
+      elif text == SessionMessage.FORCE_CONTROL:
         if sid != driver_sid:
           logger.info(f"[Session] {sid} forces control")
           if sid in control_queue:
@@ -467,7 +483,7 @@ def _run_server(
             await active_ui_ws.close(WS_CLOSE_DRIVER_TAKEN, "control taken")
           else:
             await grant_next()
-      elif text == "heartbeat":
+      elif text == SessionMessage.HEARTBEAT:
         pass  # last_heartbeat is updated for every message.
 
     async def enforce_activity() -> None:

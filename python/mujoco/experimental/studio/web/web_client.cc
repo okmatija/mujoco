@@ -83,6 +83,15 @@ struct AppState {
 };
 AppState g_app;
 
+// Session-channel messages, sent and received as text frames on the state
+// WebSocket. Keep in sync with SessionMessage / GRANT_MESSAGE in
+// web_server.py.
+constexpr char kMsgRequestControl[] = "request_control";
+constexpr char kMsgLeaveQueue[] = "leave_queue";
+constexpr char kMsgForceControl[] = "force_control";
+constexpr char kMsgHeartbeat[] = "heartbeat";
+constexpr char kMsgGrant[] = "grant=1";
+
 // Byte-rate telemetry shown in the Link window.
 struct Telemetry {
   double last_rate_time = 0;
@@ -223,7 +232,7 @@ StateLink g_state_link(
         g_app.session_viewers = viewers;
         g_app.queue_pos = queue_pos;
         g_app.queue_len = queue_len;
-      } else if (strcmp(text, "grant=1") == 0) {
+      } else if (strcmp(text, kMsgGrant) == 0) {
         // Our turn: the driver slot is reserved for this page.
         LOG(Info, "Control granted; claiming the driver slot");
         g_app.spectator = false;
@@ -337,11 +346,11 @@ void BuildBrowserGui() {
         ImGui::Text("Control queue: you are #%d of %d.", g_app.queue_pos,
                     g_app.queue_len);
         if (ImGui::Button("Leave queue")) {
-          g_state_link.SendText("leave_queue");
+          g_state_link.SendText(kMsgLeaveQueue);
         }
       } else {
         if (ImGui::Button("Request control")) {
-          g_state_link.SendText("request_control");
+          g_state_link.SendText(kMsgRequestControl);
         }
       }
       // Rude but sometimes necessary; confirm before yanking the wheel.
@@ -351,7 +360,7 @@ void BuildBrowserGui() {
         }
       } else {
         if (ImGui::Button("Confirm: take control now")) {
-          g_state_link.SendText("force_control");
+          g_state_link.SendText(kMsgForceControl);
           g_app.force_confirm = false;
         }
         ImGui::SameLine();
@@ -429,7 +438,7 @@ void MainLoopImpl() {
   static int sLastHeartbeatFrame = 0;
   if (sMainFrameCount - sLastHeartbeatFrame >= 30 * 60) {
     sLastHeartbeatFrame = sMainFrameCount;
-    g_state_link.SendText("heartbeat");
+    g_state_link.SendText(kMsgHeartbeat);
   }
 
   // Reconnect the state WebSocket if it dropped — e.g. the Python side
