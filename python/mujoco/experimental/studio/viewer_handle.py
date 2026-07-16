@@ -21,6 +21,21 @@ from mujoco.experimental.studio import messages
 from mujoco.experimental.studio import sim as _sim
 import numpy as np
 
+# Launcher-owned liveness probe: returns True while the viewer's container
+# is still alive. If the viewer runs in a separate thread this is
+# Thread.is_alive; if the viewer runs in a separate process (not implemented)
+# it is Process.is_alive. Lets the handle notice a viewer that died without
+# sending ExitEvent.
+IsAliveFn = Callable[[], bool]
+
+# Launcher-owned shutdown hook: makes the viewer exit promptly and waits (up
+# to the given timeout in seconds) for it to finish. If the viewer runs in a
+# separate thread, call the viewer's request_close() and join the thread; if
+# the viewer runs in a separate process (not implemented), signal the process
+# and join it. Waiting lets the viewer release its resources before the
+# interpreter starts tearing itself down.
+ShutdownFn = Callable[[float], None]
+
 
 class ViewerHandle:
   """A handle for interacting with a running Studio application from the sim."""
@@ -30,8 +45,8 @@ class ViewerHandle:
       sim_endpoint: endpoints.SimEndpoint,
       *,
       handlers: list[Any] | None = None,
-      is_alive_fn: Callable[[], bool] | None = None,
-      shutdown_fn: Callable[[float], None] | None = None,
+      is_alive_fn: IsAliveFn | None = None,
+      shutdown_fn: ShutdownFn | None = None,
   ) -> None:
     """Initializes the ViewerHandle.
 
@@ -39,14 +54,10 @@ class ViewerHandle:
       sim_endpoint: The endpoint to use for communication with the viewer.
       handlers: Optional list of handler instances for sim-side processing,
         which are classes with methods decorated with ``@handler``.
-      is_alive_fn: Optional function called to check if the viewer is still
-        alive/responsive. If not provided, the viewer is assumed to be running
-        until ``close()`` is called.
-      shutdown_fn: Optional function that asks the viewer loop to exit
-        (unblocking it if necessary) and waits, up to the given timeout in
-        seconds, for it to finish. Waiting lets the viewer release its
-        resources (server processes, render contexts) before the interpreter
-        starts tearing itself down.
+      is_alive_fn: Optional liveness probe; without one the viewer is assumed
+        to be running until ``close()`` is called.
+      shutdown_fn: Optional launcher-owned shutdown hook, called by
+        ``close()``.
     """
 
     self._sim_endpoint = sim_endpoint
