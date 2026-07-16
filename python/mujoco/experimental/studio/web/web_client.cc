@@ -464,6 +464,9 @@ void MainLoopImpl() {
       if (g_ui_link.CloseCode() == 4001 && ++g_app.ui_reject_count >= 3) {
         LOG(Info, "Driver slot taken; spectating");
         g_app.spectator = true;
+        // Also drops the last received UI frame: a page forced out of the
+        // driver slot must not keep showing a frozen Studio UI.
+        g_ui_link.Shutdown();
       } else {
         LOG(Info, "UI WebSocket closed; reconnecting...");
         g_ui_link.Connect(WsUrl("/ui"));
@@ -510,7 +513,7 @@ void MainLoopImpl() {
   // call to ImGui::NewFrame().
   mujoco::studio::NetImguiImDrawData* remoteDrawData =
       g_ui_link.RemoteDrawData();
-  if (remoteDrawData && remoteDrawData->Valid) {
+  if (remoteDrawData && remoteDrawData->Valid && !g_app.spectator) {
     ImDrawData* localDrawData = ImGui::GetDrawData();
     if (localDrawData) {
       // Save local draw lists.
