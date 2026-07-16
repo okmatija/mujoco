@@ -52,12 +52,12 @@ EM_BOOL StateLink::OnWsClose(int event_type,
   LOG(Info, "State WebSocket closed (code=%d)", event->code);
   link->socket_ = 0;
   link->open_ = false;
-  // Close code 4000: another browser tab took over the viewer slot.
-  if (event->code == 4000) {
-    link->superseded_ = true;
-    LOG(Info,
-        "Another browser tab took over this viewer; not reconnecting. "
-        "Reload this page to take control back.");
+  // Codes 4000-4999 are deliberate server-side closes (e.g. 4002 =
+  // session full): stop reconnecting and let the GUI show a notice.
+  if (event->code >= 4000 && event->code <= 4999) {
+    link->terminal_close_code_ = event->code;
+    LOG(Info, "Server ended this connection (code=%d); not reconnecting.",
+        event->code);
   }
   return EM_TRUE;
 }

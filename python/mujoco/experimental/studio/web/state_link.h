@@ -55,12 +55,10 @@ class StateLink {
   // reload; all traffic is dropped from then on.
   bool ReloadPending() const { return reload_pending_; }
 
-  // Set when the Python side kicked this page because another browser tab
-  // took over the single viewer slot (WebSocket close code 4000). Both
-  // reconnect loops must stop — otherwise two tabs kick each other in an
-  // endless loop — and the page shows a notice instead. Reloading the page
-  // takes the slot back.
-  bool Superseded() const { return superseded_; }
+  // The close code when the server deliberately ended this connection
+  // (codes 4000-4999, e.g. 4002 = session full), else 0. On such a close
+  // both reconnect loops must stop and the page shows a notice instead.
+  int TerminalCloseCode() const { return terminal_close_code_; }
 
   // Returns the bytes received since the last call and resets the counter.
   uint64_t ConsumeByteCount() {
@@ -107,7 +105,7 @@ class StateLink {
   bool have_model_ident_ = false;
   bool reload_pending_ = false;
 
-  bool superseded_ = false;
+  int terminal_close_code_ = 0;
 
   uint64_t bytes_accum_ = 0;
   double last_message_time_ = 0;

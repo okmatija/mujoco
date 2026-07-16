@@ -76,6 +76,9 @@ class UiLink {
   // asynchronously, so this can differ from HasSocket() (see
   // google/network_status.h).
   ReadyState ConnectionState() const;
+  // The WebSocket close code once the socket has closed, else 0 (e.g.
+  // 4001 = another browser holds the driver slot).
+  int CloseCode() const;
   // Human-readable ConnectionState(), for the status overlay.
   const char* StatusString() const;
 

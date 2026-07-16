@@ -61,6 +61,12 @@ struct AppState {
   mjvOption vis_options;
   int camera_idx = 0;
 
+  // True when another browser holds the driver slot: this page renders the
+  // scene from the state broadcast but has no UI stream or input until the
+  // user takes control.
+  bool spectator = false;
+  int ui_reject_count = 0;
+
   // Backend state received from the Python simulation via WebSocket.
   std::vector<mjtNum> backend_state;
   int backend_state_sig = 0;
@@ -186,17 +192,19 @@ StateLink g_state_link(
     ApplyStatePayload);
 
 void BuildBrowserGui() {
-  if (g_state_link.Superseded()) {
+  if (const int close_code = g_state_link.TerminalCloseCode()) {
     const ImGuiIO& io = ImGui::GetIO();
     ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, 48.0f),
                             ImGuiCond_Always, ImVec2(0.5f, 0.0f));
-    ImGui::Begin("##superseded", nullptr,
+    ImGui::Begin("##disconnected_by_server", nullptr,
                  ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
                      ImGuiWindowFlags_NoMove |
                      ImGuiWindowFlags_AlwaysAutoResize);
     ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.2f, 1.0f),
-                       "Viewer taken over by another tab or window.");
-    ImGui::TextUnformatted("Reload this page to take control back.");
+                       close_code == 4002
+                           ? "Session is full: too many viewers connected."
+                           : "Disconnected by the viewer.");
+    ImGui::TextUnformatted("Reload this page to try again.");
     ImGui::End();
   }
 
@@ -211,12 +219,13 @@ void BuildBrowserGui() {
   // than socket state: a killed, suspended (Ctrl+Z), or unreachable server
   // all go silent, but only a killed one closes its sockets. Clears itself
   // when traffic resumes. Suppressed before the first payload (initial
-  // load), when superseded (its own notice), and during model-swap reloads.
+  // load), after a deliberate server-side close (its own notice), and
+  // during model-swap reloads.
   const double last_msg = g_state_link.LastMessageTime();
   const bool link_stale =
       last_msg > 0 &&
       emscripten_get_now() / 1000.0 - last_msg > kServerSilenceNoticeSec &&
-      !g_state_link.Superseded() && !g_state_link.ReloadPending();
+      g_state_link.TerminalCloseCode() == 0 && !g_state_link.ReloadPending();
   if (!link_stale) {
     g_telemetry.disconnected_notice_logged = false;
   } else {
@@ -272,22 +281,35 @@ void BuildBrowserGui() {
       should_collapse = true;
     }
 
-    ImGui::Text("Connection: %s", g_ui_link.StatusString());
-    ImGui::Text("Remote Frame: %s",
-                g_ui_link.RemoteDrawData() ? "Received" : "None");
-    ImGui::Text("Data Rate (GUI): %" PRIu64 " KiB/s",
-                static_cast<uint64_t>(g_telemetry.gui_bytes_per_sec / 1024));
-    ImGui::Text("Data Rate (Sim): %" PRIu64 " KiB/s",
-                static_cast<uint64_t>(g_telemetry.sim_bytes_per_sec / 1024));
-    bool use_compression = g_ui_link.UseCompression();
-    if (ImGui::Checkbox("Use Compression", &use_compression)) {
-      g_ui_link.SetUseCompression(use_compression);
-      NetImgui::SetCompressionMode(use_compression ? NetImgui::kForceEnable
-                                                   : NetImgui::kForceDisable);
-    }
-    if (!g_ui_link.RemoteDrawData()) {
-      ImGui::TextColored(ImVec4(1.0f, 0.0f, 0.0f, 1.0f),
-                         "Waiting for Draw Data...");
+    if (g_app.spectator) {
+      ImGui::Text("Spectating: another browser is driving.");
+      ImGui::Text("Data Rate (Sim): %" PRIu64 " KiB/s",
+                  static_cast<uint64_t>(g_telemetry.sim_bytes_per_sec / 1024));
+      if (ImGui::Button("Take control")) {
+        // One attempt; if the driver is still there this page goes straight
+        // back to spectating.
+        g_app.spectator = false;
+        g_app.ui_reject_count = 2;
+        g_ui_link.Connect(GetWsBaseUrl() + "/ui");
+      }
+    } else {
+      ImGui::Text("Connection: %s", g_ui_link.StatusString());
+      ImGui::Text("Remote Frame: %s",
+                  g_ui_link.RemoteDrawData() ? "Received" : "None");
+      ImGui::Text("Data Rate (GUI): %" PRIu64 " KiB/s",
+                  static_cast<uint64_t>(g_telemetry.gui_bytes_per_sec / 1024));
+      ImGui::Text("Data Rate (Sim): %" PRIu64 " KiB/s",
+                  static_cast<uint64_t>(g_telemetry.sim_bytes_per_sec / 1024));
+      bool use_compression = g_ui_link.UseCompression();
+      if (ImGui::Checkbox("Use Compression", &use_compression)) {
+        g_ui_link.SetUseCompression(use_compression);
+        NetImgui::SetCompressionMode(use_compression ? NetImgui::kForceEnable
+                                                     : NetImgui::kForceDisable);
+      }
+      if (!g_ui_link.RemoteDrawData()) {
+        ImGui::TextColored(ImVec4(1.0f, 0.0f, 0.0f, 1.0f),
+                           "Waiting for Draw Data...");
+      }
     }
     ImGui::End();
 
@@ -327,7 +349,7 @@ void MainLoopImpl() {
   // different model identity then triggers a page reload (StateLink).
   static int sLastStateWsRetryFrame = 0;
   if (!g_state_link.HasSocket() && !g_state_link.ReloadPending() &&
-      !g_state_link.Superseded() && g_app.model_holder &&
+      g_state_link.TerminalCloseCode() == 0 && g_app.model_holder &&
       g_app.model_holder->ok() &&
       sMainFrameCount - sLastStateWsRetryFrame > 60) {
     sLastStateWsRetryFrame = sMainFrameCount;
@@ -336,18 +358,28 @@ void MainLoopImpl() {
   }
 
   // Reconnect the NetImgui UI socket too — the proxy tears the bridge down
-  // whenever its headless-side TCP connection cycles (server restart, or
-  // another browser tab briefly taking the single UI slot).
+  // whenever its headless-side TCP connection cycles (server restart). A
+  // close code 4001 means another browser holds the driver slot: after a
+  // few retries (a page reload of the driver races its own slot briefly)
+  // this page settles into spectating.
   static int sLastUiWsRetryFrame = 0;
-  if (g_ui_link.HasSocket() && !g_state_link.ReloadPending() &&
-      !g_state_link.Superseded() &&
+  if (g_ui_link.HasSocket() && !g_app.spectator &&
+      !g_state_link.ReloadPending() &&
+      g_state_link.TerminalCloseCode() == 0 &&
       sMainFrameCount - sLastUiWsRetryFrame > 60) {
     const UiLink::ReadyState uiState = g_ui_link.ConnectionState();
-    if (uiState == UiLink::ReadyState::kClosed ||
-        uiState == UiLink::ReadyState::kError) {
+    if (uiState == UiLink::ReadyState::kOpen) {
+      g_app.ui_reject_count = 0;
+    } else if (uiState == UiLink::ReadyState::kClosed ||
+               uiState == UiLink::ReadyState::kError) {
       sLastUiWsRetryFrame = sMainFrameCount;
-      LOG(Info, "UI WebSocket closed; reconnecting...");
-      g_ui_link.Connect(GetWsBaseUrl() + "/ui");
+      if (g_ui_link.CloseCode() == 4001 && ++g_app.ui_reject_count >= 3) {
+        LOG(Info, "Driver slot taken; spectating");
+        g_app.spectator = true;
+      } else {
+        LOG(Info, "UI WebSocket closed; reconnecting...");
+        g_ui_link.Connect(GetWsBaseUrl() + "/ui");
+      }
     }
   }
 

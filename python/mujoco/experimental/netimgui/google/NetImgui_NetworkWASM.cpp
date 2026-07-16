@@ -31,6 +31,7 @@ struct SocketInfo {
   std::atomic<bool> mConnected{false};
   std::atomic<bool> mError{false};
   std::atomic<bool> mClosed{false};
+  std::atomic<int> mCloseCode{0};
 
   std::vector<uint8_t> mBuffer;
   std::mutex mBufferMutex;
@@ -70,10 +71,11 @@ static EM_BOOL OnWebSocketMessage(int /*event_type*/,
 }
 
 static EM_BOOL OnWebSocketClose(int /*event_type*/,
-                                const EmscriptenWebSocketCloseEvent* /*event*/,
+                                const EmscriptenWebSocketCloseEvent* event,
                                 void* user_data) {
   auto* socket = static_cast<SocketInfo*>(user_data);
   if (socket) {
+    socket->mCloseCode = event->code;
     socket->mClosed = true;
   }
   return EM_TRUE;
@@ -285,6 +287,10 @@ SocketInfo* ListenStart(uint32_t /*listen_port*/) {
 }
 
 SocketInfo* ListenConnect(SocketInfo* /*listen_socket*/) { return nullptr; }
+
+int GetCloseCode(SocketInfo* client_socket) {
+  return client_socket ? client_socket->mCloseCode.load() : 0;
+}
 
 ReadyState GetReadyState(SocketInfo* client_socket) {
   if (!client_socket) return ReadyState::kDisconnected;

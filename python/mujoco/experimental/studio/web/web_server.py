@@ -12,10 +12,11 @@ Because everything is served through one port, a single firewall rule,
 port-forward, or HTTPS tunnel exposes the whole viewer. The browser derives its
 WebSocket URLs from the page origin, so no client configuration is needed.
 
-Single-viewer semantics: one browser at a time owns the interactive session.
-When a new browser connects, the previous one is closed with WebSocket code
-4000 ("superseded"); the kicked page stops reconnecting and shows a
-"taken over" notice (see web_client.cc).
+One browser at a time drives the interactive session (it owns the /ui
+bridge); later browsers are rejected from /ui with WebSocket close code 4001
+and spectate instead: they receive the state broadcast and render the scene,
+and can take the driver slot once it frees up (see web_client.cc). /state
+connections beyond the spectator limit are closed with code 4002.
 
 Development: Set MUJOCO_WEB_VIEWER_DIST to point to a custom Emscripten build
 directory to serve a locally-built web_client without reinstalling the package.
@@ -108,10 +109,15 @@ def _configure_logging() -> None:
 _configure_logging()
 
 
-# WebSocket close code telling a browser that another browser took over the
-# single viewer slot. The client must stop reconnecting when it sees this
-# (otherwise two tabs kick each other in an endless loop).
-WS_CLOSE_SUPERSEDED = 4000
+# Deliberate WebSocket close codes. Codes in the 4xxx range tell the
+# browser not to reconnect (see state_link.cc / web_client.cc).
+WS_CLOSE_DRIVER_TAKEN = 4001  # /ui: another browser holds the driver slot.
+WS_CLOSE_SESSION_FULL = 4002  # /state: the spectator limit is reached.
+
+# How many browsers may watch in addition to the driver. Runtime-editable
+# control by the driver is planned; there is deliberately no config or CLI
+# option (spectating exposes nothing that driving does not).
+DEFAULT_MAX_SPECTATORS = 2
 
 # Default public port, and how many consecutive ports to try when it is
 # taken (e.g. by another running viewer).
@@ -345,9 +351,10 @@ def _run_server(
     tcp_writer = None
     tcp_connected = asyncio.Event()
 
-    # Active browser connections (single-viewer slot).
+    # The browser driving the UI (single slot) and all browsers receiving
+    # the state broadcast (driver + spectators).
     active_ui_ws = None
-    active_state_ws = None
+    state_clients: set[ServerConnection] = set()
 
     async def handle_tcp_client(
         reader: asyncio.StreamReader, writer: asyncio.StreamWriter
@@ -366,24 +373,16 @@ def _run_server(
       tcp_connected.set()
       logger.debug("[UiBridge] NetImgui TCP connection accepted")
 
-    def supersede(ws: ServerConnection) -> None:
-      """Kicks a browser connection in the background (close code 4000)."""
-
-      async def _kick() -> None:
-        try:
-          await ws.close(WS_CLOSE_SUPERSEDED, "superseded")
-        except Exception:  # pylint: disable=broad-exception-caught
-          pass
-
-      asyncio.create_task(_kick())
-
     # --- /ui: bridge the browser to the NetImgui client ----------------------
 
     async def ui_handler(ws: ServerConnection) -> None:
       nonlocal active_ui_ws, tcp_reader, tcp_writer
       if active_ui_ws is not None:
-        logger.debug("[UiBridge] New browser; superseding previous one")
-        supersede(active_ui_ws)
+        # One driver at a time. The rejected browser spectates and may retry
+        # via its "Take control" button once the driver leaves.
+        logger.debug("[UiBridge] Driver slot taken; rejecting new browser")
+        await ws.close(WS_CLOSE_DRIVER_TAKEN, "driver slot taken")
+        return
       active_ui_ws = ws
 
       # Each browser needs a fresh NetImgui session (full handshake, textures
@@ -395,13 +394,10 @@ def _run_server(
         tcp_writer = None
         tcp_connected.clear()
       logger.debug("[UiBridge] Waiting for NetImgui TCP connection...")
-      # Loop: a newer browser bridge can reset the connection (and clear the
-      # event) between the event firing and this task waking up.
+      # Loop: the connection can be replaced (and the event cleared) between
+      # the event firing and this task waking up.
       while tcp_writer is None:
         await tcp_connected.wait()
-      if active_ui_ws is not ws:
-        # Superseded while waiting; the newer bridge owns the connection.
-        return
       my_reader, my_writer = tcp_reader, tcp_writer
 
       try:
@@ -454,12 +450,12 @@ def _run_server(
     # --- /state: latest-wins payload broadcast --------------------------------
 
     async def state_handler(ws: ServerConnection) -> None:
-      nonlocal active_state_ws
-      if active_state_ws is not None:
-        logger.debug("[StateWS] New browser; superseding previous one")
-        supersede(active_state_ws)
-      active_state_ws = ws
-      logger.info("[StateWS] Browser connected")
+      if len(state_clients) > DEFAULT_MAX_SPECTATORS:  # driver + spectators
+        logger.info("[StateWS] Session full; rejecting browser")
+        await ws.close(WS_CLOSE_SESSION_FULL, "session full")
+        return
+      state_clients.add(ws)
+      logger.info(f"[StateWS] Browser connected ({len(state_clients)} total)")
 
       last_gen = 0
       try:
@@ -474,10 +470,11 @@ def _run_server(
             continue
           await ws.send(bytes(shm_array[4 : 4 + used]))
       except (ConnectionClosed, ConnectionError):
-        logger.info("[StateWS] Browser disconnected")
+        pass
       finally:
-        if active_state_ws is ws:
-          active_state_ws = None
+        state_clients.discard(ws)
+        logger.info(
+            f"[StateWS] Browser disconnected ({len(state_clients)} total)")
 
     # --- Dispatch --------------------------------------------------------------
 

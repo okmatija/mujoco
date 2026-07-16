@@ -30,6 +30,11 @@ enum class ReadyState {
 // Implemented in NetImgui_NetworkWASM.cpp (Emscripten builds only).
 ReadyState GetReadyState(SocketInfo* client_socket);
 
+// The WebSocket close code once the socket has closed, else 0. Lets callers
+// distinguish a deliberate server-side rejection (e.g. 4001 = driver slot
+// taken) from an ordinary drop. Implemented in NetImgui_NetworkWASM.cpp.
+int GetCloseCode(SocketInfo* client_socket);
+
 // Human-readable state name, for status overlays and logs.
 inline const char* ReadyStateName(ReadyState state) {
   switch (state) {
