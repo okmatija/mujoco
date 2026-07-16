@@ -154,6 +154,24 @@ class Viewer(abc.ABC):
         pass  # Ignore exceptions, the sim may have already closed.
       self._endpoint.close()
 
+  def request_close(self) -> None:
+    """Asks the viewer loop to exit; safe to call from another thread.
+
+    Unlike close(), this only flips the running flag: run_viewer_loop
+    observes it through is_running() within a frame and shuts the viewer
+    down on the viewer thread. This suffices for viewers whose frame wait
+    always returns (the native viewer paces at display rate); viewers whose
+    wait can block indefinitely override this to also interrupt the wait
+    (see WebViewer.request_close).
+    """
+    self._is_running = False
+
+  @messages.handler(priority=messages.Priority.CRITICAL)
+  def _on_exit(self, _: messages.ExitEvent) -> bool:
+    """Stops the viewer loop when the sim side requests an exit."""
+    self.request_close()
+    return False  # Do not consume; app handlers may want cleanup too.
+
   def is_running(self) -> bool:
     """Returns True while the viewer has not been closed."""
     return self._is_running

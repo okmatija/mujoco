@@ -23,6 +23,7 @@
 // 3. Receives input events from the remote viewer and injects them into
 //    the ImGui context.
 
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -174,14 +175,14 @@ static void Client_Connect(const char* title, int port) {
     auto now = std::chrono::steady_clock::now();
     if (now - last_reconnect_time > std::chrono::seconds(1)) {
       last_reconnect_time = now;
-      LOG(Info, "Retrying ConnectToApp...");
+      VLOG(1, "Retrying ConnectToApp...");
       NetImgui::ConnectToApp(title, "127.0.0.1", port);
     }
   }
 
   static bool last_connected = false;
   if (connected != last_connected) {
-    LOG(Info, "Status change: Connected=%s", connected ? "true" : "false");
+    VLOG(1, "Status change: Connected=%s", connected ? "true" : "false");
     last_connected = connected;
   }
 }
@@ -194,17 +195,20 @@ class UiServer {
       return;
     }
 
-    LOG(Info, "Calling ConnectToApp('%s', '127.0.0.1', %d)", title_.c_str(),
+    VLOG(1, "Calling ConnectToApp('%s', '127.0.0.1', %d)", title_.c_str(),
         port_);
     bool connect_result =
         NetImgui::ConnectToApp(title_.c_str(), "127.0.0.1", port_);
-    LOG(Info, "ConnectToApp returned: %s", connect_result ? "true" : "false");
-    LOG(Info, "IsConnected: %s, IsConnectionPending: %s",
+    VLOG(1, "ConnectToApp returned: %s", connect_result ? "true" : "false");
+    VLOG(1, "IsConnected: %s, IsConnectionPending: %s",
         NetImgui::IsConnected() ? "true" : "false",
         NetImgui::IsConnectionPending() ? "true" : "false");
   }
 
   ~UiServer() { Client_Shutdown(context_); }
+
+  // Makes a NewFrame() call return false instead of blocking. Thread safe.
+  void RequestClose() { close_requested_ = true; }
 
   bool NewFrame() {
     py::gil_scoped_release no_gil;
@@ -218,6 +222,10 @@ class UiServer {
     // is_frame_active() in the Python API.
     auto last_signal_check = std::chrono::steady_clock::now();
     while (true) {
+      if (close_requested_) {
+        is_drawing_remote_ = false;
+        return false;
+      }
       // While blocked (e.g. no browser connected), periodically check for
       // Python signals so Ctrl+C interrupts the wait instead of hanging.
       auto now = std::chrono::steady_clock::now();
@@ -358,6 +366,7 @@ class UiServer {
   int port_;
   ImGuiContext* context_ = nullptr;
   bool is_drawing_remote_ = false;
+  std::atomic<bool> close_requested_{false};
   // User texture ids start well above the ids ImGui's managed texture system
   // (font atlas) hands out, so the two can never collide in the browser's
   // texture map.
@@ -371,7 +380,15 @@ PYBIND11_MODULE(ui_server, m, pybind11::mod_gil_not_used()) {
   py::class_<UiServer>(m, "UiServer")
       .def(py::init<const std::string&, int, const std::string&>(),
            py::arg("title"), py::arg("port") = 8888, py::arg("assets_dir") = "")
-      .def("new_frame", &UiServer::NewFrame)
+      .def("new_frame", &UiServer::NewFrame,
+           "Starts a headless ImGui frame, returning True once the frame is "
+           "active. When a browser is viewing the page (via the URL printed "
+           "at startup), this returns at the browser's requested frame rate. "
+           "When no browser is viewing, it blocks until one connects. "
+           "Returns False only if request_close() interrupts the wait.")
+      .def("request_close", &UiServer::RequestClose,
+           "Makes a blocked (or future) new_frame() call return False. "
+           "Safe to call from any thread.")
       .def("end_frame", &UiServer::EndFrame)
       .def("get_context", &UiServer::GetContext)
       .def("get_implot_context", &UiServer::GetImPlotContext)

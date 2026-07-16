@@ -13,7 +13,6 @@
 # limitations under the License.
 """Interactive Studio GUI viewer for MuJoCo."""
 
-import os
 
 from absl import app as _app
 from absl import flags
@@ -39,15 +38,9 @@ _PORT = flags.DEFINE_integer(
     'Web viewer port. 0 picks the first free port starting at 8080, so '
     'several viewers can run side by side.',
 )
-_VERBOSE = flags.DEFINE_bool(
-    'verbose', False, 'Enable verbose web server logging.'
-)
 
 
 def main(argv: list[str]) -> None:
-  if _VERBOSE.value:
-    os.environ['MUJOCO_WEB_VERBOSE'] = '1'
-
   config = vp.ViewerConfig(
       width=_WIDTH.value,
       height=_HEIGHT.value,
@@ -76,9 +69,13 @@ def main(argv: list[str]) -> None:
 
     # Run the simulation.
     step_control = sim.StepControl()
-    while handle.is_running():
-      step_control.advance(model, data)
-      model, data, step_control = handle.sync(model, data, step_control)
+    try:
+      while handle.is_running():
+        step_control.advance(model, data)
+        model, data, step_control = handle.sync(model, data, step_control)
+    except KeyboardInterrupt:
+      # Ctrl+C is the documented way to quit; exit cleanly, no traceback.
+      print('\nShutting down.', flush=True)
 
 
 _app.run(main)

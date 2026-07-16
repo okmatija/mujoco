@@ -31,6 +31,7 @@ import signal
 import socket
 import struct
 import sys
+import threading
 from typing import Optional
 
 from websockets.asyncio.server import serve
@@ -53,16 +54,48 @@ class _WebServerFormatter(logging.Formatter):
 
 
 logger = logging.getLogger("WebServer")
-# Quiet by default: the viewer prints its URL itself. Set MUJOCO_WEB_VERBOSE
-# (e.g. via viewer.py --verbose) for connection/bridge chatter.
-logger.setLevel(
-    logging.INFO if os.environ.get("MUJOCO_WEB_VERBOSE") else logging.WARNING
-)
-if not logger.handlers:
+
+
+class _PreconnectNoiseFilter(logging.Filter):
+  """Drops handshake-failure logs from connections that sent no request.
+
+  Browsers speculatively open spare connections and close them unused. The
+  websockets library logs every such closure as an opening-handshake
+  failure — an ERROR-level record with a full traceback. Raising the log
+  level would hide real handshake errors too, hence a filter matching
+  exactly this signature. (Filters do not inherit down the logger tree, so
+  it must be attached to "websockets.server" itself.)
+  """
+
+  def filter(self, record: logging.LogRecord) -> bool:
+    if record.getMessage() != "opening handshake failed":
+      return True
+    exc = record.exc_info[1] if record.exc_info else None
+    return not (exc and "did not receive a valid HTTP request" in str(exc))
+
+
+def _configure_logging() -> None:
+  """Configures this module's logger and reins in the websockets library's.
+
+  Called once at import time; a no-op if already configured (re-import).
+  """
+  if logger.handlers:
+    return
+  # Info is a curated, always-on channel (browser connect/disconnect);
+  # connection plumbing is logged at DEBUG.
+  logger.setLevel(logging.INFO)
   handler = logging.StreamHandler(sys.stdout)
   handler.setFormatter(_WebServerFormatter())
   logger.addHandler(handler)
   logger.propagate = False
+  # The websockets library logs its own lifecycle chatter at INFO ("server
+  # listening", "connection rejected (200 OK)" for every HTTP request); keep
+  # it to warnings and errors.
+  logging.getLogger("websockets").setLevel(logging.WARNING)
+  logging.getLogger("websockets.server").addFilter(_PreconnectNoiseFilter())
+
+
+_configure_logging()
 
 
 # WebSocket close code telling a browser that another browser took over the
@@ -158,8 +191,12 @@ def _terminate_process(proc, timeout: float = 2.0) -> None:
   prevents the C++ NetImgui client from ever noticing the disconnect and
   reconnecting to the replacement server.
   """
-  proc.terminate()
+  # Grace period first: the child normally exits on its own (lifeline EOF),
+  # and signalling a process mid-exit makes it print noise on stderr.
   proc.join(timeout=timeout)
+  if proc.is_alive():
+    proc.terminate()
+    proc.join(timeout=timeout)
   if proc.is_alive():
     logger.warning(f"[Http] Process {proc.pid} ignored SIGTERM; killing.")
     proc.kill()
@@ -209,6 +246,12 @@ def _run_cancellable(main_loop_func):
       await main_loop_func()
     except asyncio.CancelledError:
       pass
+    finally:
+      # Detach the handlers (and asyncio's signal wakeup pipe) before the
+      # loop closes: a signal landing afterwards would try to write to the
+      # closed pipe and print "Exception ignored ... BrokenPipeError".
+      loop.remove_signal_handler(signal.SIGINT)
+      loop.remove_signal_handler(signal.SIGTERM)
 
   try:
     asyncio.run(_wrapped())
@@ -294,7 +337,7 @@ def _run_server(
     async def handle_tcp_client(reader, writer):
       nonlocal tcp_reader, tcp_writer
       if tcp_writer is not None:
-        logger.info("[UiBridge] Replacing previous NetImgui TCP connection")
+        logger.debug("[UiBridge] Replacing previous NetImgui TCP connection")
         tcp_writer.close()
       tcp_reader = reader
       tcp_writer = writer
@@ -304,7 +347,7 @@ def _run_server(
       if sock:
         sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
       tcp_connected.set()
-      logger.info("[UiBridge] NetImgui TCP connection accepted")
+      logger.debug("[UiBridge] NetImgui TCP connection accepted")
 
     def supersede(ws):
       """Kicks a browser connection in the background (close code 4000)."""
@@ -322,7 +365,7 @@ def _run_server(
     async def ui_handler(ws):
       nonlocal active_ui_ws, tcp_reader, tcp_writer
       if active_ui_ws is not None:
-        logger.info("[UiBridge] New browser; superseding previous one")
+        logger.debug("[UiBridge] New browser; superseding previous one")
         supersede(active_ui_ws)
       active_ui_ws = ws
 
@@ -334,7 +377,7 @@ def _run_server(
         tcp_reader = None
         tcp_writer = None
         tcp_connected.clear()
-      logger.info("[UiBridge] Waiting for NetImgui TCP connection...")
+      logger.debug("[UiBridge] Waiting for NetImgui TCP connection...")
       # Loop: a newer browser bridge can reset the connection (and clear the
       # event) between the event firing and this task waking up.
       while tcp_writer is None:
@@ -351,7 +394,7 @@ def _run_server(
         await my_writer.drain()
         server_version = await my_reader.readexactly(_CMD_VERSION_SIZE)
         await ws.send(server_version)
-        logger.info("[UiBridge] Handshake complete. Bridging.")
+        logger.debug("[UiBridge] Handshake complete. Bridging.")
 
         async def ws_to_tcp():
           async for message in ws:
@@ -380,7 +423,7 @@ def _run_server(
       except (ConnectionClosed, ConnectionError, asyncio.IncompleteReadError):
         pass
       finally:
-        logger.info("[UiBridge] Bridge closed.")
+        logger.debug("[UiBridge] Bridge closed.")
         # Tear down this bridge's TCP connection so the NetImgui client
         # reconnects and re-sends everything to the next browser.
         my_writer.close()
@@ -396,7 +439,7 @@ def _run_server(
     async def state_handler(ws):
       nonlocal active_state_ws
       if active_state_ws is not None:
-        logger.info("[StateWS] New browser; superseding previous one")
+        logger.debug("[StateWS] New browser; superseding previous one")
         supersede(active_state_ws)
       active_state_ws = ws
       logger.info("[StateWS] Browser connected")
@@ -442,9 +485,24 @@ def _run_server(
     # orphaned server would otherwise keep serving a stale model and fight
     # any replacement server for browsers.
     async def watch_lifeline():
+      # A dedicated daemon thread rather than run_in_executor: executor
+      # threads are non-daemonic and are joined at interpreter exit, so a
+      # blocked os.read would keep this process alive for as long as the
+      # viewer holds the lifeline open — e.g. when the viewer is still
+      # tearing down after Ctrl+C hit both processes.
       loop = asyncio.get_running_loop()
-      await loop.run_in_executor(None, os.read, lifeline_r, 1)
-      logger.info("[Http] Viewer process exited; shutting down.")
+      eof = asyncio.Event()
+
+      def wait_for_eof():
+        try:
+          os.read(lifeline_r, 1)
+          loop.call_soon_threadsafe(eof.set)
+        except (OSError, RuntimeError):
+          pass  # fd or loop already closed — the process is exiting anyway.
+
+      threading.Thread(target=wait_for_eof, daemon=True).start()
+      await eof.wait()
+      logger.debug("[Http] Viewer process exited; shutting down.")
 
     tcp_server = await asyncio.start_server(handle_tcp_client, sock=tcp_sock)
     # NetImgui does its own delta compression and the state payload is small;
@@ -459,7 +517,7 @@ def _run_server(
     )
     http_host, http_port = http_sock.getsockname()[:2]
     tcp_port = tcp_sock.getsockname()[1]
-    logger.info(
+    logger.debug(
         f"[Http] Serving on http://{http_host}:{http_port} "
         f"(/, /model.mjb, /ui, /state; NetImgui TCP on 127.0.0.1:{tcp_port})"
     )
@@ -543,7 +601,7 @@ class WebServer:
     if not self.static_files_dir:
       logger.warning("[Http] WARNING: Could not find web viewer static files.")
       return
-    logger.info(f"[Http] Serving web viewer from: {self.static_files_dir}")
+    logger.debug(f"[Http] Serving web viewer from: {self.static_files_dir}")
     # Lifeline pipe: the child holds the read end and exits on EOF, which
     # happens when this process closes the write end (stop()) or dies for
     # any reason at all — no orphaned servers.

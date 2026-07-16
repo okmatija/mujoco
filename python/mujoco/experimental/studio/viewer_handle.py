@@ -31,6 +31,7 @@ class ViewerHandle:
       *,
       handlers: list[Any] | None = None,
       is_alive_fn: Callable[[], bool] | None = None,
+      shutdown_fn: Callable[[float], None] | None = None,
   ) -> None:
     """Initializes the ViewerHandle.
 
@@ -41,11 +42,17 @@ class ViewerHandle:
       is_alive_fn: Optional function called to check if the viewer is still
         alive/responsive. If not provided, the viewer is assumed to be running
         until ``close()`` is called.
+      shutdown_fn: Optional function that asks the viewer loop to exit
+        (unblocking it if necessary) and waits, up to the given timeout in
+        seconds, for it to finish. Waiting lets the viewer release its
+        resources (server processes, render contexts) before the interpreter
+        starts tearing itself down.
     """
 
     self._sim_endpoint = sim_endpoint
     self._is_running = True
     self._is_alive_fn = is_alive_fn
+    self._shutdown_fn = shutdown_fn
     self.model: mujoco.MjModel | None = None
     self.data: mujoco.MjData | None = None
     self.step_control: _sim.StepControl | None = None
@@ -56,13 +63,15 @@ class ViewerHandle:
     self._handlers = handler_registry.HandlerRegistry(all_handlers)
 
   def close(self) -> None:
-    """Signals the viewer to exit and closes the sim endpoint."""
+    """Signals the viewer to exit and waits for it to shut down."""
     if self._is_running:
       self._is_running = False
       try:
         self.send_to_viewer(messages.ExitEvent())
       except Exception:  # pylint: disable=broad-exception-caught
         pass  # Ignore exceptions, the viewer may have already closed.
+      if self._shutdown_fn is not None:
+        self._shutdown_fn(5.0)
     self._sim_endpoint.close()
 
   def __enter__(self) -> 'ViewerHandle':
