@@ -418,20 +418,6 @@ void BuildBrowserGui() {
         g_ui_link.Shutdown();
         g_app.spectator = true;
       }
-      // Follow the server's limit while not being edited.
-      static int sMaxSpectators = -1;
-      ImGui::SetNextItemWidth(100.0f);
-      const bool max_changed =
-          ImGui::InputInt("Max spectators", &sMaxSpectators);
-      if (max_changed) {
-        sMaxSpectators = std::clamp(sMaxSpectators, 0, 32);
-        char msg[48];
-        snprintf(msg, sizeof(msg), "%s%d", kMsgMaxSpectatorsPrefix,
-                 sMaxSpectators);
-        g_state_link.SendText(msg);
-      } else if (!ImGui::IsItemActive() || sMaxSpectators < 0) {
-        sMaxSpectators = g_app.max_spectators;
-      }
       ImGui::Separator();
       ImGui::Text("Connection: %s", g_ui_link.StatusString());
       ImGui::Text("Remote Frame: %s",
@@ -447,10 +433,24 @@ void BuildBrowserGui() {
           static_cast<uint64_t>(g_telemetry.sim_bytes_per_sec *
                                 std::max(1, g_app.session_viewers) / 1024));
       bool use_compression = g_ui_link.UseCompression();
-      if (ImGui::Checkbox("Use Compression", &use_compression)) {
+      if (ImGui::Checkbox("Compress GUI Stream", &use_compression)) {
         g_ui_link.SetUseCompression(use_compression);
         NetImgui::SetCompressionMode(use_compression ? NetImgui::kForceEnable
                                                      : NetImgui::kForceDisable);
+      }
+      // Follow the server's limit while not being edited.
+      static int sMaxSpectators = -1;
+      ImGui::SetNextItemWidth(100.0f);
+      const bool max_changed =
+          ImGui::InputInt("Max spectators", &sMaxSpectators);
+      if (max_changed) {
+        sMaxSpectators = std::clamp(sMaxSpectators, 0, 32);
+        char msg[48];
+        snprintf(msg, sizeof(msg), "%s%d", kMsgMaxSpectatorsPrefix,
+                 sMaxSpectators);
+        g_state_link.SendText(msg);
+      } else if (!ImGui::IsItemActive() || sMaxSpectators < 0) {
+        sMaxSpectators = g_app.max_spectators;
       }
       if (!g_ui_link.RemoteDrawData()) {
         ImGui::TextColored(ImVec4(1.0f, 0.0f, 0.0f, 1.0f),
