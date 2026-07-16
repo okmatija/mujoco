@@ -266,6 +266,8 @@ void BuildBrowserGui() {
     } else if (close_code == 4003) {
       reason = "Disconnected after inactivity.";
     }
+    // TODO(matijak): Move centered-text helpers (this and centered_banner
+    // below) into platform/ux/imgui_widgets.cc.
     const auto centered_line = [](const char* text, const ImVec4* color) {
       ImGui::SetCursorPosX(std::max(
           0.0f,

@@ -506,6 +506,23 @@ def _run_server(
           return
         max_spectators = max(0, min(MAX_SPECTATOR_HARD_CAP, value))
         logger.info(f"[Session] Spectator limit set to {max_spectators}")
+        # Enforce the new limit immediately, kicking the newest spectators
+        # first. A kicked page shows the session-full notice and retries,
+        # so it walks back in when a slot frees up.
+        excess = len(state_clients) - (max_spectators + 1)
+        for kick_sid in reversed(list(state_clients)):
+          if excess <= 0:
+            break
+          if kick_sid == driver_sid:
+            continue
+          client = state_clients.get(kick_sid)
+          if client is not None:
+            logger.info(f"[Session] Kicking spectator over the new limit")
+            try:
+              await client.close(WS_CLOSE_SESSION_FULL, "session full")
+            except (ConnectionClosed, ConnectionError):
+              pass
+          excess -= 1
         await broadcast_roster()
 
     async def enforce_activity() -> None:
