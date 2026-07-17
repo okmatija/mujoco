@@ -434,6 +434,10 @@ def _run_server(
     # the head of the queue is granted a short exclusive claim window.
     control_queue: list[str] = []
     pending_grant_sid: Optional[str] = None
+    # Strong references to fire-and-forget tasks (the grant-expiry watchdog):
+    # asyncio holds only a weak reference, so without this a task can be
+    # garbage-collected mid-sleep and never run.
+    background_tasks: set[asyncio.Task] = set()
     max_spectators = DEFAULT_MAX_SPECTATORS
     # Liveness by absence of traffic: a hidden tab's rendering loop stops,
     # so it cannot report anything — silence is the signal.
@@ -492,7 +496,9 @@ def _run_server(
           pending_grant_sid = None
           await grant_next()
 
-      asyncio.create_task(expire(pending_grant_sid))
+      task = asyncio.create_task(expire(pending_grant_sid))
+      background_tasks.add(task)
+      task.add_done_callback(background_tasks.discard)
 
     async def handle_session_message(sid: str, text: str) -> None:
       """A control or heartbeat message from one browser (/state text)."""
