@@ -17,7 +17,7 @@
 # This CMakeLists is included from two different build contexts:
 #  1. The main MuJoCo tree under Emscripten (for the web viewer WASM client),
 #     where the `dear_imgui` target exists.
-#  2. The Python bindings build (for the ui_server pybind module), where Dear
+#  2. The Python bindings build (for the headless_ui pybind module), where Dear
 #     ImGui is an imported archive named `mujoco::dep::dear_imgui`.
 
 if(TARGET netimgui)
