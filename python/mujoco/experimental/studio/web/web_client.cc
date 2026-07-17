@@ -524,9 +524,11 @@ void BuildBrowserGui() {
 
     ImGui::PopStyleVar(2);
   } else {
+    // No title bar; the window is still movable by dragging empty space
+    // (ImGui's default when ConfigWindowsMoveFromTitleBarOnly is off).
     ImGui::Begin(
         "Link", nullptr,
-        ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoCollapse);
+        ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoTitleBar);
 
     if (g_app.spectator) {
       centered_banner("SPECTATING", kSpectatingColor);
