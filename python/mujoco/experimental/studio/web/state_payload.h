@@ -36,8 +36,8 @@
 //   [StatePayloadHeader][u32 tag][u32 size][payload]...
 // and readers skip unknown tags, so new blocks don't break older clients.
 
-#ifndef MUJOCO_PYTHON_EXPERIMENTAL_STUDIO_WEB_RENDER_STATE_H_
-#define MUJOCO_PYTHON_EXPERIMENTAL_STUDIO_WEB_RENDER_STATE_H_
+#ifndef MUJOCO_PYTHON_EXPERIMENTAL_STUDIO_WEB_STATE_PAYLOAD_H_
+#define MUJOCO_PYTHON_EXPERIMENTAL_STUDIO_WEB_STATE_PAYLOAD_H_
 
 #include <mujoco/mujoco.h>
 
@@ -253,4 +253,4 @@ inline bool ParseStatePayload(const void* data, size_t size,
 
 }  // namespace mujoco::studio
 
-#endif  // MUJOCO_PYTHON_EXPERIMENTAL_STUDIO_WEB_RENDER_STATE_H_
+#endif  // MUJOCO_PYTHON_EXPERIMENTAL_STUDIO_WEB_STATE_PAYLOAD_H_

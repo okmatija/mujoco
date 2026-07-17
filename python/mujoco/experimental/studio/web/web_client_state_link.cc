@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "state_link.h"
+#include "web_client_state_link.h"
 
 #include <emscripten.h>
 

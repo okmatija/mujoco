@@ -18,8 +18,8 @@
 // on_payload callback, so this file stays free of scene and renderer
 // dependencies.
 
-#ifndef MUJOCO_PYTHON_EXPERIMENTAL_STUDIO_WEB_STATE_LINK_H_
-#define MUJOCO_PYTHON_EXPERIMENTAL_STUDIO_WEB_STATE_LINK_H_
+#ifndef MUJOCO_PYTHON_EXPERIMENTAL_STUDIO_WEB_WEB_CLIENT_STATE_LINK_H_
+#define MUJOCO_PYTHON_EXPERIMENTAL_STUDIO_WEB_WEB_CLIENT_STATE_LINK_H_
 
 #include <emscripten/websocket.h>
 
@@ -27,7 +27,7 @@
 #include <functional>
 #include <string>
 
-#include "render_state.h"
+#include "state_payload.h"
 
 namespace mujoco::studio {
 
@@ -125,4 +125,4 @@ class StateLink {
 
 }  // namespace mujoco::studio
 
-#endif  // MUJOCO_PYTHON_EXPERIMENTAL_STUDIO_WEB_STATE_LINK_H_
+#endif  // MUJOCO_PYTHON_EXPERIMENTAL_STUDIO_WEB_WEB_CLIENT_STATE_LINK_H_

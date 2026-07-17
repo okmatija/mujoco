@@ -25,7 +25,8 @@ if(EMSCRIPTEN)
     return()
   endif()
 
-  add_executable(web_client web_client.cc ui_link.cc state_link.cc)
+  add_executable(web_client web_client.cc web_client_ui_link.cc
+                 web_client_state_link.cc)
 
   target_include_directories(web_client
     PRIVATE

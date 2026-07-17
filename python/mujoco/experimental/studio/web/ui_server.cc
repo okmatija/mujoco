@@ -43,7 +43,7 @@
 
 #include "NetImgui_Api.h"
 #include "google/logging.h"
-#include "render_state.h"
+#include "state_payload.h"
 #include "structs.h"
 
 namespace py = pybind11;
@@ -281,7 +281,7 @@ class UiServer {
     NetImgui::EndFrame();
   }
 
-  // Serialize the complete state WebSocket payload (see render_state.h):
+  // Serialize the complete state WebSocket payload (see state_payload.h):
   // physics state, render state and extra geoms as tagged blocks.
   py::bytes SerializeStatePayload(
       uint32_t model_crc32, int physics_spec, const py::bytes& physics_state,

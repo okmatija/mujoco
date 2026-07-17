@@ -3,18 +3,24 @@
 // context.
 //
 // This file is the Emscripten glue: app/scene state, the main loop, and the
-// wiring between the two links (ui_link.h for the streamed Studio UI,
-// state_link.h for simulation state) and the Filament renderer.
+// wiring between the two links (web_client_ui_link.h for the streamed Studio
+// UI, web_client_state_link.h for simulation state) and the Filament
+// renderer.
 
 #include <SDL.h>
 #include <SDL_opengl.h>
+#include <emscripten.h>
+#include <emscripten/fetch.h>
+#include <imgui.h>
+#include <implot.h>
+#include <mujoco/mujoco.h>
 #include <stdint.h>
 #include <stdio.h>
 
 #include <algorithm>
 #include <cfloat>
-#include <cmath>
 #include <cinttypes>
+#include <cmath>
 #include <cstddef>
 #include <cstring>
 #include <fstream>
@@ -24,21 +30,15 @@
 #include <string_view>
 #include <vector>
 
-#include <imgui.h>
-#include <implot.h>
-#include <mujoco/mujoco.h>
 #include "NetImgui_Api.h"
 #include "experimental/platform/hal/renderer.h"
 #include "experimental/platform/hal/window.h"
 #include "experimental/platform/sim/model_holder.h"
 #include "experimental/platform/ux/interaction.h"
 #include "google/logging.h"
-#include "ui_link.h"
-#include "render_state.h"
-#include "state_link.h"
-
-#include <emscripten.h>
-#include <emscripten/fetch.h>
+#include "state_payload.h"
+#include "web_client_state_link.h"
+#include "web_client_ui_link.h"
 
 #if !defined(__EMSCRIPTEN__)
 #error "web_client.cc is only supported for Emscripten builds"
@@ -77,6 +77,13 @@ enum LinkWindowPos {
   kLinkPosBottomRight,
 };
 
+// Byte-rate telemetry shown in the Link window.
+struct Telemetry {
+  double last_rate_time = 0;
+  uint64_t gui_bytes_per_sec = 0;
+  uint64_t sim_bytes_per_sec = 0;
+};
+
 struct AppState {
   std::unique_ptr<mujoco::platform::Window> window;
   std::unique_ptr<mujoco::platform::ModelHolder> model_holder;
@@ -105,6 +112,26 @@ struct AppState {
 
   // Link window anchor; updated by the drag-snap logic in BuildBrowserGui.
   int link_window_pos = kLinkPosTopMid;
+  // Link window hover-expand state: expanded form, last hovered time (for
+  // the collapse grace period), and whether a drag started on the window.
+  bool link_expanded = false;
+  double link_hover_time = 0;
+  bool link_dragging = false;
+  // Max spectators edit grace: the local value wins over the roster until
+  // max_spectators_edit_time is old enough (see the InputInt).
+  int max_spectators_edit = -1;
+  double max_spectators_edit_time = -1e9;
+  // True while the server-not-reachable notice is up (log once per outage).
+  bool disconnected_notice_logged = false;
+
+  Telemetry telemetry;
+
+  // Main loop frame counters (MainLoopImpl): heartbeat pacing and
+  // reconnect pacing for the two WebSockets.
+  int frame_count = 0;
+  int last_heartbeat_frame = 0;
+  int last_state_retry_frame = 0;
+  int last_ui_retry_frame = 0;
 
   // Backend state received from the Python simulation via WebSocket.
   std::vector<mjtNum> backend_state;
@@ -125,16 +152,6 @@ constexpr char kMsgForceControl[] = "force_control";
 constexpr char kMsgHeartbeat[] = "heartbeat";
 constexpr char kMsgGrant[] = "grant";
 constexpr char kMsgMaxSpectatorsPrefix[] = "max_spectators=";
-
-// Byte-rate telemetry shown in the Link window.
-struct Telemetry {
-  double last_rate_time = 0;
-  uint64_t gui_bytes_per_sec = 0;
-  uint64_t sim_bytes_per_sec = 0;
-  bool expanded = false;
-  bool disconnected_notice_logged = false;
-};
-Telemetry g_telemetry;
 
 // How long the state stream (~60Hz while the Python side is alive) may go
 // silent before the "server not reachable" notice appears. A model-change
@@ -179,7 +196,9 @@ std::string WsUrl(const char* path) {
 // upload and gives immediate feedback.
 void SetSpectator(bool spectator) {
   g_app.spectator = spectator;
-  EM_ASM({ Module.isSpectator = $0 !== 0; }, spectator ? 1 : 0);
+  // The JS avoids operators that clang-format would reformat into invalid
+  // JavaScript (it once split a `!==` into `!= =`, breaking the build).
+  EM_ASM({ Module.isSpectator = !!$0; }, spectator ? 1 : 0);
 }
 
 // Returns true if the Filament rendering context is initialized and ready for
@@ -257,7 +276,7 @@ void ApplyStatePayload(const StatePayloadView& view) {
 }
 
 // The two links to the Python side. Their connection-scoped state lives
-// inside the classes; see ui_link.h and state_link.h.
+// inside the classes; see web_client_ui_link.h and web_client_state_link.h.
 UiLink g_ui_link(
     [](uintptr_t current, const std::byte* rgba, uint32_t width,
        uint32_t height) -> uintptr_t {
@@ -358,10 +377,8 @@ void HandleSpectatorCameraInput() {
           mjv_moveCamera(model, mjMOUSE_TURN_H, mouse_dx, 0.f, &g_app.camera);
           mjv_moveCamera(model, mjMOUSE_TURN_V, 0.f, mouse_dy, &g_app.camera);
         } else {
-          mjv_moveCamera(model, mjMOUSE_ROTATE_H, mouse_dx, 0.f,
-                         &g_app.camera);
-          mjv_moveCamera(model, mjMOUSE_ROTATE_V, 0.f, mouse_dy,
-                         &g_app.camera);
+          mjv_moveCamera(model, mjMOUSE_ROTATE_H, mouse_dx, 0.f, &g_app.camera);
+          mjv_moveCamera(model, mjMOUSE_ROTATE_V, 0.f, mouse_dy, &g_app.camera);
         }
       } else if (ImGui::IsMouseDown(ImGuiMouseButton_Middle) && !wasd) {
         mjv_moveCamera(model, mjMOUSE_ZOOM, 0.f, mouse_dy, &g_app.camera);
@@ -457,10 +474,10 @@ void BuildBrowserGui() {
   }
 
   const double now = ImGui::GetTime();
-  if (now - g_telemetry.last_rate_time >= 1.0) {
-    g_telemetry.gui_bytes_per_sec = g_ui_link.ConsumeByteCount();
-    g_telemetry.sim_bytes_per_sec = g_state_link.ConsumeByteCount();
-    g_telemetry.last_rate_time = now;
+  if (now - g_app.telemetry.last_rate_time >= 1.0) {
+    g_app.telemetry.gui_bytes_per_sec = g_ui_link.ConsumeByteCount();
+    g_app.telemetry.sim_bytes_per_sec = g_state_link.ConsumeByteCount();
+    g_app.telemetry.last_rate_time = now;
   }
 
   // "Server not reachable" notice, keyed on state-stream staleness rather
@@ -475,11 +492,11 @@ void BuildBrowserGui() {
       emscripten_get_now() / 1000.0 - last_msg > kServerSilenceNoticeSec &&
       g_state_link.ServerCloseCode() == 0 && !g_state_link.ReloadPending();
   if (!link_stale) {
-    g_telemetry.disconnected_notice_logged = false;
+    g_app.disconnected_notice_logged = false;
   } else {
-    if (!g_telemetry.disconnected_notice_logged) {
+    if (!g_app.disconnected_notice_logged) {
       LOG(Info, "Showing server-not-reachable notice");
-      g_telemetry.disconnected_notice_logged = true;
+      g_app.disconnected_notice_logged = true;
     }
     const ImGuiIO& io = ImGui::GetIO();
     ImGui::SetNextWindowPos(
@@ -519,8 +536,7 @@ void BuildBrowserGui() {
       {0.0f, 1.0f}, {0.5f, 1.0f}, {1.0f, 1.0f},
   };
 
-  static bool s_link_dragging = false;
-  if (g_app.link_window_pos != kLinkPosFree && !s_link_dragging) {
+  if (g_app.link_window_pos != kLinkPosFree && !g_app.link_dragging) {
     const int anchor = g_app.link_window_pos - kLinkPosTopLeft;
     ImGui::SetNextWindowPos(anchor_pos[anchor], ImGuiCond_Always,
                             anchor_pivot[anchor]);
@@ -532,14 +548,15 @@ void BuildBrowserGui() {
   // was dropped. Call between Begin and End of whichever form is visible.
   const auto update_window_snap = [&] {
     if (ImGui::IsMouseClicked(ImGuiMouseButton_Left) &&
-        ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem)) {
-      s_link_dragging = true;
-    } else if (s_link_dragging && !ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
-      s_link_dragging = false;
+        ImGui::IsWindowHovered(
+            ImGuiHoveredFlags_AllowWhenBlockedByActiveItem)) {
+      g_app.link_dragging = true;
+    } else if (g_app.link_dragging &&
+               !ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+      g_app.link_dragging = false;
       const ImVec2 pos = ImGui::GetWindowPos();
       const ImVec2 size = ImGui::GetWindowSize();
-      const float threshold =
-          std::max(0.2f * std::max(size.x, size.y), 100.0f);
+      const float threshold = std::max(0.2f * std::max(size.x, size.y), 100.0f);
       int best = -1;
       float best_d2 = threshold * threshold;
       for (int i = 0; i < 6; ++i) {
@@ -551,8 +568,7 @@ void BuildBrowserGui() {
           best = i;
         }
       }
-      g_app.link_window_pos =
-          best >= 0 ? kLinkPosTopLeft + best : kLinkPosFree;
+      g_app.link_window_pos = best >= 0 ? kLinkPosTopLeft + best : kLinkPosFree;
     }
   };
 
@@ -575,7 +591,7 @@ void BuildBrowserGui() {
     ImGui::PushStyleColor(ImGuiCol_WindowBg, bg);
   }
 
-  if (!g_telemetry.expanded) {
+  if (!g_app.link_expanded) {
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(6.0f, 6.0f));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowMinSize, ImVec2(16.0f, 16.0f));
 
@@ -587,8 +603,9 @@ void BuildBrowserGui() {
     } else {
       ImGui::TextColored(kControllingColor, "CONTROLLING");
     }
-    if (ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem)) {
-      g_telemetry.expanded = true;
+    if (ImGui::IsWindowHovered(
+            ImGuiHoveredFlags_AllowWhenBlockedByActiveItem)) {
+      g_app.link_expanded = true;
     }
     update_window_snap();
     ImGui::End();
@@ -634,8 +651,9 @@ void BuildBrowserGui() {
 
       // Data rate group.
       ImGui::Separator();
-      ImGui::Text("Data Rate (Sim): %" PRIu64 " KiB/s",
-                  static_cast<uint64_t>(g_telemetry.sim_bytes_per_sec / 1024));
+      ImGui::Text(
+          "Data Rate (Sim): %" PRIu64 " KiB/s",
+          static_cast<uint64_t>(g_app.telemetry.sim_bytes_per_sec / 1024));
 
       // Camera group.
       ImGui::Separator();
@@ -669,15 +687,17 @@ void BuildBrowserGui() {
 
       // Data rate group.
       ImGui::Separator();
-      ImGui::Text("Data Rate (GUI): %" PRIu64 " KiB/s",
-                  static_cast<uint64_t>(g_telemetry.gui_bytes_per_sec / 1024));
-      ImGui::Text("Data Rate (Sim): %" PRIu64 " KiB/s",
-                  static_cast<uint64_t>(g_telemetry.sim_bytes_per_sec / 1024));
+      ImGui::Text(
+          "Data Rate (GUI): %" PRIu64 " KiB/s",
+          static_cast<uint64_t>(g_app.telemetry.gui_bytes_per_sec / 1024));
+      ImGui::Text(
+          "Data Rate (Sim): %" PRIu64 " KiB/s",
+          static_cast<uint64_t>(g_app.telemetry.sim_bytes_per_sec / 1024));
       // Every connected browser receives the same sim stream, so the host's
       // total outgoing sim bandwidth is one stream per viewer.
       ImGui::Text(
           "Data Rate (Sim, total): %" PRIu64 " KiB/s",
-          static_cast<uint64_t>(g_telemetry.sim_bytes_per_sec *
+          static_cast<uint64_t>(g_app.telemetry.sim_bytes_per_sec *
                                 std::max(1, g_app.session_viewers) / 1024));
       if (!g_ui_link.RemoteDrawData()) {
         ImGui::TextColored(ImVec4(1.0f, 0.0f, 0.0f, 1.0f),
@@ -695,22 +715,22 @@ void BuildBrowserGui() {
       // Local edits win for a grace period (the roster round trip takes a
       // few frames and typing takes longer); afterwards the server's value
       // is the truth.
-      static int sMaxSpectators = -1;
-      static double sLastMaxEdit = -1e9;
-      if (sMaxSpectators < 0 || ImGui::GetTime() - sLastMaxEdit > 1.5) {
-        sMaxSpectators = g_app.max_spectators;
+      if (g_app.max_spectators_edit < 0 ||
+          ImGui::GetTime() - g_app.max_spectators_edit_time > 1.5) {
+        g_app.max_spectators_edit = g_app.max_spectators;
       }
       ImGui::SetNextItemWidth(100.0f);
-      if (ImGui::InputInt("Max spectators", &sMaxSpectators)) {
-        sLastMaxEdit = ImGui::GetTime();
-        sMaxSpectators = std::clamp(sMaxSpectators, 0, 32);
+      if (ImGui::InputInt("Max spectators", &g_app.max_spectators_edit)) {
+        g_app.max_spectators_edit_time = ImGui::GetTime();
+        g_app.max_spectators_edit =
+            std::clamp(g_app.max_spectators_edit, 0, 32);
         char msg[48];
         snprintf(msg, sizeof(msg), "%s%d", kMsgMaxSpectatorsPrefix,
-                 sMaxSpectators);
+                 g_app.max_spectators_edit);
         g_state_link.SendText(msg);
       }
       if (ImGui::IsItemActive()) {
-        sLastMaxEdit = ImGui::GetTime();
+        g_app.max_spectators_edit_time = ImGui::GetTime();
       }
     }
 
@@ -722,14 +742,13 @@ void BuildBrowserGui() {
     // while one of its popups is open, and give brief excursions time to
     // come back before snapping shut.
     constexpr double kCollapseGraceSec = 0.2;
-    static double s_last_hovered_time = 0.0;
     const bool popup_open = ImGui::IsPopupOpen(
         "", ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel);
-    if (popup_open ||
-        ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem)) {
-      s_last_hovered_time = ImGui::GetTime();
-    } else if (ImGui::GetTime() - s_last_hovered_time > kCollapseGraceSec) {
-      g_telemetry.expanded = false;
+    if (popup_open || ImGui::IsWindowHovered(
+                          ImGuiHoveredFlags_AllowWhenBlockedByActiveItem)) {
+      g_app.link_hover_time = ImGui::GetTime();
+    } else if (ImGui::GetTime() - g_app.link_hover_time > kCollapseGraceSec) {
+      g_app.link_expanded = false;
     }
     ImGui::End();
   }
@@ -760,30 +779,27 @@ void MainLoop() {
 }
 
 void MainLoopImpl() {
-  static int sMainFrameCount = 0;
-  sMainFrameCount++;
+  g_app.frame_count++;
 
   // Heartbeat on the session channel. A hidden tab's rendering loop stops,
   // so the heartbeat stops with it — the server kicks spectators (and
   // releases a driver with a waiting queue) on silence.
-  static int sLastHeartbeatFrame = 0;
-  if (sMainFrameCount - sLastHeartbeatFrame >= 30 * 60) {
-    sLastHeartbeatFrame = sMainFrameCount;
+  if (g_app.frame_count - g_app.last_heartbeat_frame >= 30 * 60) {
+    g_app.last_heartbeat_frame = g_app.frame_count;
     g_state_link.SendText(kMsgHeartbeat);
   }
 
   // Reconnect the state WebSocket if it dropped — e.g. the Python side
   // restarted its servers after a model change. Receiving a payload with a
   // different model identity then triggers a page reload (StateLink).
-  static int sLastStateWsRetryFrame = 0;
   // Deliberate server closes (session full, inactivity) are transient;
   // retry them too, just at a gentler pace.
   const int state_retry_interval =
       g_state_link.ServerCloseCode() != 0 ? 300 : 60;
   if (!g_state_link.HasSocket() && !g_state_link.ReloadPending() &&
       g_app.model_holder && g_app.model_holder->ok() &&
-      sMainFrameCount - sLastStateWsRetryFrame > state_retry_interval) {
-    sLastStateWsRetryFrame = sMainFrameCount;
+      g_app.frame_count - g_app.last_state_retry_frame > state_retry_interval) {
+    g_app.last_state_retry_frame = g_app.frame_count;
     LOG(Info, "State WebSocket down; reconnecting...");
     g_state_link.Connect(WsUrl("/state"));
   }
@@ -793,17 +809,15 @@ void MainLoopImpl() {
   // close code 4001 means another browser holds the driver slot: after a
   // few retries (a page reload of the driver races its own slot briefly)
   // this page settles into spectating.
-  static int sLastUiWsRetryFrame = 0;
   if (g_ui_link.HasSocket() && !g_app.spectator &&
-      !g_state_link.ReloadPending() &&
-      g_state_link.ServerCloseCode() == 0 &&
-      sMainFrameCount - sLastUiWsRetryFrame > 60) {
+      !g_state_link.ReloadPending() && g_state_link.ServerCloseCode() == 0 &&
+      g_app.frame_count - g_app.last_ui_retry_frame > 60) {
     const UiLink::ReadyState uiState = g_ui_link.ConnectionState();
     if (uiState == UiLink::ReadyState::kOpen) {
       g_app.ui_reject_count = 0;
     } else if (uiState == UiLink::ReadyState::kClosed ||
                uiState == UiLink::ReadyState::kError) {
-      sLastUiWsRetryFrame = sMainFrameCount;
+      g_app.last_ui_retry_frame = g_app.frame_count;
       if (g_ui_link.CloseCode() == 4001 && ++g_app.ui_reject_count >= 3) {
         LOG(Info, "Driver slot taken; spectating");
         SetSpectator(true);
@@ -823,7 +837,7 @@ void MainLoopImpl() {
     g_ui_link.SetMaxClip(static_cast<float>(g_app.window->GetWidth()),
                          static_cast<float>(g_app.window->GetHeight()));
   }
-  g_ui_link.ReceiveAndProcessCommands(sMainFrameCount);
+  g_ui_link.ReceiveAndProcessCommands(g_app.frame_count);
 
   // Event loop and ImGui NewFrame via window abstraction.
   mujoco::platform::Window::Status status = g_app.window->NewFrame();

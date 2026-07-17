@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "ui_link.h"
+#include "web_client_ui_link.h"
 
 #include <algorithm>
 #include <cstring>
@@ -495,7 +495,7 @@ void UiLink::CaptureAndSendInput() {
       pending_input_chars_.resize(charRemainCount);
     }
     if (cmdInput.mKeyCharCount > 0) {
-      VLOG(1, "[ui_link.cc] Queued %u characters to send\n",
+      VLOG(1, "[web_client_ui_link.cc] Queued %u characters to send\n",
            cmdInput.mKeyCharCount);
     }
   } else {

@@ -21,8 +21,8 @@
 // dependencies and can be exercised natively in tests by feeding synthetic
 // CmdDrawFrame/CmdTexture buffers to the ProcessCmd* methods.
 
-#ifndef MUJOCO_PYTHON_EXPERIMENTAL_STUDIO_WEB_UI_LINK_H_
-#define MUJOCO_PYTHON_EXPERIMENTAL_STUDIO_WEB_UI_LINK_H_
+#ifndef MUJOCO_PYTHON_EXPERIMENTAL_STUDIO_WEB_WEB_CLIENT_UI_LINK_H_
+#define MUJOCO_PYTHON_EXPERIMENTAL_STUDIO_WEB_WEB_CLIENT_UI_LINK_H_
 
 #include <imgui.h>
 
@@ -179,4 +179,4 @@ class UiLink {
 
 }  // namespace mujoco::studio
 
-#endif  // MUJOCO_PYTHON_EXPERIMENTAL_STUDIO_WEB_UI_LINK_H_
+#endif  // MUJOCO_PYTHON_EXPERIMENTAL_STUDIO_WEB_WEB_CLIENT_UI_LINK_H_
