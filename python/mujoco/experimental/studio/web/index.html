@@ -71,7 +71,7 @@ limitations under the License.
       // walked recursively so models with separate asset files work; the
       // viewer picks the root model file (see web_viewer._pick_drop_root).
       // Loading a model changes the session for everyone, so only the
-      // driver may drop; the server rejects drops from other pages and the
+      // controller may drop; the server rejects drops from other pages and the
       // spectator check below just skips the pointless upload.
       window.addEventListener("dragover", (e) => e.preventDefault());
       window.addEventListener("drop", async (e) => {
@@ -121,7 +121,7 @@ limitations under the License.
         }
         const proto = location.protocol === "https:" ? "wss://" : "ws://";
         // The session id tells the server which page is dropping; it only
-        // accepts drops from the driver.
+        // accepts drops from the controller.
         const sid = (window.Module && Module.sessionId) || "";
         const ws = new WebSocket(
           proto + location.host + "/drop?sid=" + encodeURIComponent(sid)

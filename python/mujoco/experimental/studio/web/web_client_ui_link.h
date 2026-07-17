@@ -78,7 +78,7 @@ class UiLink {
   // google/network_status.h).
   ReadyState ConnectionState() const;
   // The WebSocket close code once the socket has closed, else 0 (e.g.
-  // 4001 = another browser holds the driver slot).
+  // 4001 = another browser holds the controller slot).
   int CloseCode() const;
 
   // Remote clip rects are clamped to this (logical pixels); set each frame

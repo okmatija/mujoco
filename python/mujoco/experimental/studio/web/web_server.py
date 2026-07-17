@@ -23,16 +23,16 @@ This server runs in a child process with one asyncio loop on a single public por
                        (payload format: see state_payload.h) as binary frames,
                        and session roster updates as text frames.
   * WebSocket /drop    receives models dragged onto the page (one binary
-                       frame per file, driver only; see drop_handler).
+                       frame per file, controller only; see drop_handler).
 
 Because everything is served through one port, a single firewall rule,
 port-forward, or HTTPS tunnel exposes the whole viewer. The browser derives its
 WebSocket URLs from the page origin, so no client configuration is needed.
 
-One browser at a time drives the interactive session (it owns the /ui
+One browser at a time controls the interactive session (it owns the /ui
 bridge); later browsers are rejected from /ui with WebSocket close code 4001
 and spectate instead: they receive the state broadcast and render the scene,
-and can take the driver slot once it frees up (see web_client.cc). /state
+and can take the controller slot once it frees up (see web_client.cc). /state
 connections beyond the spectator limit are closed with code 4002.
 
 Development: Set MUJOCO_WEB_VIEWER_DIST to point to a custom Emscripten build
@@ -129,10 +129,10 @@ _configure_logging()
 
 # Deliberate WebSocket close codes. Codes in the 4xxx range tell the
 # browser not to reconnect (see web_client_state_link.cc / web_client.cc).
-WS_CLOSE_DRIVER_TAKEN = 4001  # /ui: another browser holds the driver slot.
+WS_CLOSE_CONTROLLER_TAKEN = 4001  # /ui: another browser is controlling.
 WS_CLOSE_SESSION_FULL = 4002  # /state: the spectator limit is reached.
 WS_CLOSE_INACTIVE = 4003  # /state: hidden tab kicked to free a viewer slot.
-WS_CLOSE_NOT_DRIVER = 4004  # /drop: only the driver may load models.
+WS_CLOSE_NOT_CONTROLLER = 4004  # /drop: only the controller may load models.
 
 
 class SessionMessage(enum.StrEnum):
@@ -144,11 +144,11 @@ class SessionMessage(enum.StrEnum):
   HEARTBEAT = "heartbeat"
 
 
-# Sent to the page whose control claim the driver slot is reserved for
+# Sent to the page whose control claim the controller slot is reserved for
 # (keep in sync: web_client.cc).
 GRANT_MESSAGE = "grant"
 
-# Driver-only message carrying the new spectator limit, e.g.
+# Controller-only message carrying the new spectator limit, e.g.
 # "max_spectators=4" (keep in sync: web_client.cc).
 MAX_SPECTATORS_PREFIX = "max_spectators="
 
@@ -159,21 +159,21 @@ MAX_SPECTATOR_HARD_CAP = 32
 # A granted control claim must arrive within this window, else the grant
 # moves on down the queue.
 _GRANT_EXPIRY_SEC = 5.0
-# A driver whose tab stops running (hidden or closed without a clean
+# A controller whose tab stops running (hidden or closed without a clean
 # disconnect) is released once someone is waiting for control. Detected by
-# silence: a live driver tab sends input packets every frame.
-_DRIVER_SILENT_RELEASE_SEC = 90.0
+# silence: a live controller tab sends input packets every frame.
+_CONTROLLER_SILENT_RELEASE_SEC = 90.0
 # Spectators are kicked after this much heartbeat silence (their tab is
 # hidden or gone), freeing a viewer slot. Live tabs heartbeat every ~30s.
 _SPECTATOR_SILENT_KICK_SEC = 300.0
 
-# How many browsers may watch in addition to the driver; the driver can
+# How many browsers may watch in addition to the controller; the controller can
 # change it at runtime (up to MAX_SPECTATOR_HARD_CAP). The limit is about
 # session behaviour — keeping the crowd and the control-request queue at a
 # manageable size — not about resources: a state payload is a few KB at
 # 60Hz, serialized once and sent per viewer, so even a full session costs
 # only a few Mbit/s of upload. There is deliberately no config or CLI
-# option (spectating exposes nothing that driving does not).
+# option (spectating exposes nothing that controlling does not).
 DEFAULT_MAX_SPECTATORS = 8
 
 # Default public port, and how many consecutive ports to try when it is
@@ -418,12 +418,12 @@ def _run_server(
     tcp_writer = None
     tcp_connected = asyncio.Event()
 
-    # The browser driving the UI (single slot) and all browsers receiving
-    # the state broadcast (driver + spectators), keyed by session id.
+    # The browser controlling the UI (single slot) and all browsers receiving
+    # the state broadcast (controller + spectators), keyed by session id.
     active_ui_ws = None
-    driver_sid: Optional[str] = None
+    controller_sid: Optional[str] = None
     state_clients: dict[str, ServerConnection] = {}
-    # Control handoff: spectators queue for the driver slot; when it frees,
+    # Control handoff: spectators queue for the controller slot; when it frees,
     # the head of the queue is granted a short exclusive claim window.
     control_queue: list[str] = []
     pending_grant_sid: Optional[str] = None
@@ -431,14 +431,14 @@ def _run_server(
     # Liveness by absence of traffic: a hidden tab's rendering loop stops,
     # so it cannot report anything — silence is the signal.
     last_heartbeat: dict[str, float] = {}
-    last_driver_input = [0.0]
+    last_controller_input = [0.0]
     loop_time = asyncio.get_event_loop().time
 
     async def broadcast_roster() -> None:
       """Sends every browser the counts, its role and its queue position."""
       count = len(state_clients)
       for sid, client in list(state_clients.items()):
-        role = "driver" if sid == driver_sid else "spectator"
+        role = "controller" if sid == controller_sid else "spectator"
         try:
           pos = control_queue.index(sid) + 1
         except ValueError:
@@ -452,7 +452,7 @@ def _run_server(
           pass
 
     async def grant_next() -> None:
-      """Offers the free driver slot to the pending or next queued page."""
+      """Offers the free controller slot to the pending or next queued page."""
       nonlocal pending_grant_sid
       if active_ui_ws is not None:
         return
@@ -492,7 +492,7 @@ def _run_server(
       nonlocal pending_grant_sid, max_spectators
       last_heartbeat[sid] = loop_time()
       if text == SessionMessage.REQUEST_CONTROL:
-        if sid != driver_sid and sid not in control_queue:
+        if sid != controller_sid and sid not in control_queue:
           control_queue.append(sid)
           await grant_next()
           await broadcast_roster()
@@ -501,7 +501,7 @@ def _run_server(
           control_queue.remove(sid)
           await broadcast_roster()
       elif text == SessionMessage.FORCE_CONTROL:
-        if sid != driver_sid:
+        if sid != controller_sid:
           logger.info(f"[Session] {sid} forces control")
           if sid in control_queue:
             control_queue.remove(sid)
@@ -509,14 +509,14 @@ def _run_server(
           if active_ui_ws is not None:
             # The bridge teardown frees the slot and grant_next honors
             # the pending claim; the ousted page settles into spectating.
-            await active_ui_ws.close(WS_CLOSE_DRIVER_TAKEN, "control taken")
+            await active_ui_ws.close(WS_CLOSE_CONTROLLER_TAKEN, "control taken")
           else:
             await grant_next()
       elif text == SessionMessage.HEARTBEAT:
         pass  # last_heartbeat is updated for every message.
       elif text.startswith(MAX_SPECTATORS_PREFIX):
-        if sid != driver_sid:
-          return  # Only the driver sets the limit.
+        if sid != controller_sid:
+          return  # Only the controller sets the limit.
         try:
           value = int(text[len(MAX_SPECTATORS_PREFIX):])
         except ValueError:
@@ -530,7 +530,7 @@ def _run_server(
         for kick_sid in reversed(list(state_clients)):
           if excess <= 0:
             break
-          if kick_sid == driver_sid:
+          if kick_sid == controller_sid:
             continue
           client = state_clients.get(kick_sid)
           if client is not None:
@@ -543,20 +543,20 @@ def _run_server(
         await broadcast_roster()
 
     async def enforce_activity() -> None:
-      """Releases a silent driver when someone waits; kicks silent tabs."""
+      """Releases a silent controller when someone waits; kicks silent tabs."""
       while True:
         await asyncio.sleep(5.0)
         now = loop_time()
         if (
             active_ui_ws is not None
-            and last_driver_input[0] > 0
-            and now - last_driver_input[0] > _DRIVER_SILENT_RELEASE_SEC
+            and last_controller_input[0] > 0
+            and now - last_controller_input[0] > _CONTROLLER_SILENT_RELEASE_SEC
             and (control_queue or pending_grant_sid)
         ):
-          logger.info("[Session] Releasing control from an inactive driver")
-          await active_ui_ws.close(WS_CLOSE_DRIVER_TAKEN, "inactive")
+          logger.info("[Session] Releasing control from an inactive controller")
+          await active_ui_ws.close(WS_CLOSE_CONTROLLER_TAKEN, "inactive")
         for sid, client in list(state_clients.items()):
-          if sid == driver_sid:
+          if sid == controller_sid:
             continue
           seen = last_heartbeat.get(sid, now)
           if now - seen > _SPECTATOR_SILENT_KICK_SEC:
@@ -586,26 +586,26 @@ def _run_server(
     # --- /ui: bridge the browser to the NetImgui client ----------------------
 
     async def ui_handler(ws: ServerConnection) -> None:
-      nonlocal active_ui_ws, driver_sid, pending_grant_sid
+      nonlocal active_ui_ws, controller_sid, pending_grant_sid
       nonlocal tcp_reader, tcp_writer
       if active_ui_ws is not None:
-        # One driver at a time. The rejected browser spectates and may retry
-        # via its "Take control" button once the driver leaves.
-        logger.debug("[UiBridge] Driver slot taken; rejecting new browser")
-        await ws.close(WS_CLOSE_DRIVER_TAKEN, "driver slot taken")
+        # One controller at a time. The rejected browser spectates and may retry
+        # via its "Take control" button once the controller leaves.
+        logger.debug("[UiBridge] Controller slot taken; rejecting new browser")
+        await ws.close(WS_CLOSE_CONTROLLER_TAKEN, "controller slot taken")
         return
       sid = _session_id(ws)
       if pending_grant_sid is not None and sid != pending_grant_sid:
         # The slot is reserved for a granted page (queue fairness).
-        await ws.close(WS_CLOSE_DRIVER_TAKEN, "driver slot reserved")
+        await ws.close(WS_CLOSE_CONTROLLER_TAKEN, "controller slot reserved")
         return
       if sid == pending_grant_sid:
         pending_grant_sid = None
       if sid in control_queue:
         control_queue.remove(sid)
       active_ui_ws = ws
-      driver_sid = sid
-      last_driver_input[0] = loop_time()
+      controller_sid = sid
+      last_controller_input[0] = loop_time()
       await broadcast_roster()
 
       # Each browser needs a fresh NetImgui session (full handshake, textures
@@ -635,7 +635,7 @@ def _run_server(
         async def ws_to_tcp() -> None:
           async for message in ws:
             if isinstance(message, bytes):
-              last_driver_input[0] = loop_time()
+              last_controller_input[0] = loop_time()
               my_writer.write(message)
               await my_writer.drain()
 
@@ -670,14 +670,14 @@ def _run_server(
           tcp_connected.clear()
         if active_ui_ws is ws:
           active_ui_ws = None
-          driver_sid = None
+          controller_sid = None
           await grant_next()
           await broadcast_roster()
 
     # --- /state: latest-wins payload broadcast --------------------------------
 
     async def state_handler(ws: ServerConnection) -> None:
-      if len(state_clients) > max_spectators:  # driver + spectators
+      if len(state_clients) > max_spectators:  # controller + spectators
         logger.info("[StateWS] Session full; rejecting browser")
         await ws.close(WS_CLOSE_SESSION_FULL, "session full")
         return
@@ -754,11 +754,11 @@ def _run_server(
       regular drop-loading flow.
 
       Loading a model changes the session for every connected page, so only
-      the driver may do it; drops from other pages are rejected.
+      the controller may do it; drops from other pages are rejected.
       """
-      if driver_sid is None or _session_id(ws) != driver_sid:
-        logger.info("[Drop] Ignored a model drop from a non-driver page")
-        await ws.close(WS_CLOSE_NOT_DRIVER, "not the driver")
+      if controller_sid is None or _session_id(ws) != controller_sid:
+        logger.info("[Drop] Ignored a model drop from a non-controller page")
+        await ws.close(WS_CLOSE_NOT_CONTROLLER, "not the controller")
         return
       files: dict[str, bytes] = {}
       try:

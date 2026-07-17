@@ -70,12 +70,12 @@ using mujoco::studio::StatePayloadView;
 using mujoco::studio::UiLink;
 
 // How a spectating page drives its camera. The free modes control the local
-// camera directly; kSpecCamFollow mirrors the driver's camera from the state
-// broadcast.
+// camera directly; kSpecCamFollow mirrors the controller's camera from the
+// state broadcast.
 enum SpectatorCamMode {
   kSpecCamTumble = 0,  // Orbit around the lookat point with the mouse.
   kSpecCamWasd,        // Fly camera: WASD/QE moves, mouse drag turns.
-  kSpecCamFollow,      // Follow the driver's camera.
+  kSpecCamFollow,      // Follow the controller's camera.
 };
 
 // Where the Link window is anchored on the page. The window is always
@@ -107,7 +107,7 @@ struct AppState {
   mjvOption vis_options;
   int camera_idx = 0;
 
-  // True when another browser holds the driver slot: this page renders the
+  // True when another browser holds the controller slot: this page renders the
   // scene from the state broadcast but has no UI stream or input until the
   // user takes control.
   bool spectator = false;
@@ -205,7 +205,7 @@ std::string WsUrl(const char* path) {
 }
 
 // Updates the spectator flag, mirroring it into JS (Module.isSpectator) so
-// the page script can gate driver-only actions like model drag-and-drop.
+// the page script can gate controller-only actions like model drag-and-drop.
 // The server enforces the same rule; the mirror only saves a pointless
 // upload and gives immediate feedback.
 void SetSpectator(bool spectator) {
@@ -252,8 +252,8 @@ void ApplyStatePayload(const StatePayloadView& view) {
     const char* vis_ptr = view.render_state;
 
     // Spectators in a free camera mode keep their own local camera; everyone
-    // else (the driver, and spectators in Follow Controller) mirrors the
-    // driver's camera.
+    // else (the controller, and spectators in Follow Controller) mirrors the
+    // controller's camera.
     if (!g_app.spectator || g_app.spectator_cam_mode == kSpecCamFollow) {
       memcpy(&g_app.camera, vis_ptr, sizeof(mjvCamera));
     }
@@ -319,8 +319,8 @@ StateLink g_state_link(
         g_app.queue_len = queue_len;
         g_app.max_spectators = max_spectators;
       } else if (strcmp(text, kMsgGrant) == 0) {
-        // Our turn: the driver slot is reserved for this page.
-        LOG(Info, "Control granted; claiming the driver slot");
+        // Our turn: the controller slot is reserved for this page.
+        LOG(Info, "Control granted; claiming the controller slot");
         SetSpectator(false);
         g_app.ui_reject_count = 0;
         g_ui_link.Connect(WsUrl("/ui"));
@@ -345,11 +345,11 @@ void SetSpectatorCameraMode(int mode) {
     mujoco::platform::SetCamera(model, &g_app.camera,
                                 mujoco::platform::kFreeCameraIdx);
   }
-  // kSpecCamFollow: the next state payload restores the driver's camera.
+  // kSpecCamFollow: the next state payload restores the controller's camera.
 }
 
 // Local camera control for a spectating page in a free camera mode. The
-// driver's input goes to the headless viewer instead (CaptureAndSendInput),
+// controller's input goes to the headless viewer instead (CaptureAndSendInput),
 // which streams its camera back over the state WebSocket. Mirrors the
 // mouse/WASD camera handling in src/experimental/studio/app.cc.
 // TODO(matijak): Share the camera handling code with the studio app (e.g. in
@@ -367,8 +367,8 @@ void HandleSpectatorCameraInput() {
 
   // The camera can be fixed on entry (SetupScene honours the model's
   // vis.global.cameraid, and Follow Controller mirrors whatever camera the
-  // driver uses), and mjv_moveCamera ignores fixed cameras. Coerce to a free
-  // camera so the free modes always respond to input.
+  // controller uses), and mjv_moveCamera ignores fixed cameras. Coerce to a
+  // free camera so the free modes always respond to input.
   if (g_app.camera.type == mjCAMERA_FIXED) {
     mjv_defaultFreeCamera(model, &g_app.camera);
     if (wasd) {
@@ -797,7 +797,7 @@ void MainLoopImpl() {
 
   // Heartbeat on the session channel. A hidden tab's rendering loop stops,
   // so the heartbeat stops with it — the server kicks spectators (and
-  // releases a driver with a waiting queue) on silence.
+  // releases a controller with a waiting queue) on silence.
   if (g_app.frame_count - g_app.last_heartbeat_frame >= 30 * 60) {
     g_app.last_heartbeat_frame = g_app.frame_count;
     g_state_link.SendText(kMsgHeartbeat);
@@ -820,8 +820,8 @@ void MainLoopImpl() {
 
   // Reconnect the NetImgui UI socket too — the proxy tears the bridge down
   // whenever its headless-side TCP connection cycles (server restart). A
-  // close code 4001 means another browser holds the driver slot: after a
-  // few retries (a page reload of the driver races its own slot briefly)
+  // close code 4001 means another browser holds the controller slot: after a
+  // few retries (a page reload of the controller races its own slot briefly)
   // this page settles into spectating.
   if (g_ui_link.HasSocket() && !g_app.spectator &&
       !g_state_link.ReloadPending() && g_state_link.ServerCloseCode() == 0 &&
@@ -833,10 +833,10 @@ void MainLoopImpl() {
                uiState == UiLink::ReadyState::kError) {
       g_app.last_ui_retry_frame = g_app.frame_count;
       if (g_ui_link.CloseCode() == 4001 && ++g_app.ui_reject_count >= 3) {
-        LOG(Info, "Driver slot taken; spectating");
+        LOG(Info, "Controller slot taken; spectating");
         SetSpectator(true);
         // Also drops the last received UI frame: a page forced out of the
-        // driver slot must not keep showing a frozen Studio UI.
+        // controller slot must not keep showing a frozen Studio UI.
         g_ui_link.Shutdown();
       } else {
         LOG(Info, "UI WebSocket closed; reconnecting...");
@@ -862,7 +862,7 @@ void MainLoopImpl() {
     return;
   }
 
-  // For the driver, all scene interaction (camera orbit/zoom, perturbation,
+  // For the controller, all scene interaction (camera orbit/zoom, perturbation,
   // picking) is handled by the headless viewer: CaptureAndSendInput()
   // forwards this frame's input over NetImgui, the headless ViewerApp runs
   // the same event handlers as the native viewer, and the resulting
