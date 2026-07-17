@@ -157,6 +157,15 @@ std::string WsUrl(const char* path) {
   return GetWsBaseUrl() + path + "?sid=" + GetSessionId();
 }
 
+// Updates the spectator flag, mirroring it into JS (Module.isSpectator) so
+// the page script can gate driver-only actions like model drag-and-drop.
+// The server enforces the same rule; the mirror only saves a pointless
+// upload and gives immediate feedback.
+void SetSpectator(bool spectator) {
+  g_app.spectator = spectator;
+  EM_ASM({ Module.isSpectator = $0 !== 0; }, spectator ? 1 : 0);
+}
+
 // Returns true if the Filament rendering context is initialized and ready for
 // GPU texture uploads. The Renderer object is created in main() and is always
 // non-null, but the Filament context is only initialized when Renderer::Init()
@@ -166,7 +175,7 @@ bool IsFilamentReady() {
 }
 
 // Applies a parsed state payload to the app. Wired as g_state_link.on_payload;
-// runs only after the identity/reload policy has accepted the payload.
+// runs only after the model-change/reload policy has accepted the payload.
 void ApplyStatePayload(const StatePayloadView& view) {
   mjModel* model = g_app.model_holder->model();
 
@@ -263,7 +272,7 @@ StateLink g_state_link(
       } else if (strcmp(text, kMsgGrant) == 0) {
         // Our turn: the driver slot is reserved for this page.
         LOG(Info, "Control granted; claiming the driver slot");
-        g_app.spectator = false;
+        SetSpectator(false);
         g_app.ui_reject_count = 0;
         g_ui_link.Connect(WsUrl("/ui"));
       }
@@ -577,7 +586,7 @@ void BuildBrowserGui() {
       if (ImGui::Button("Release control", kFullWidth)) {
         // Become a spectator; the server grants the slot down the queue.
         g_ui_link.Shutdown();
-        g_app.spectator = true;
+        SetSpectator(true);
       }
       ImGui::Separator();
       ImGui::Text("Connection: %s", g_ui_link.StatusString());
@@ -714,7 +723,7 @@ void MainLoopImpl() {
       sLastUiWsRetryFrame = sMainFrameCount;
       if (g_ui_link.CloseCode() == 4001 && ++g_app.ui_reject_count >= 3) {
         LOG(Info, "Driver slot taken; spectating");
-        g_app.spectator = true;
+        SetSpectator(true);
         // Also drops the last received UI frame: a page forced out of the
         // driver slot must not keep showing a frozen Studio UI.
         g_ui_link.Shutdown();

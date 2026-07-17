@@ -55,9 +55,18 @@
       // everything (parsed by web_server.py's drop_handler). Folders are
       // walked recursively so models with separate asset files work; the
       // viewer picks the root model file (see web_viewer._pick_drop_root).
+      // Loading a model changes the session for everyone, so only the
+      // driver may drop; the server rejects drops from other pages and the
+      // spectator check below just skips the pointless upload.
       window.addEventListener("dragover", (e) => e.preventDefault());
       window.addEventListener("drop", async (e) => {
         e.preventDefault();
+        if (window.Module && Module.isSpectator) {
+          console.warn(
+            "Model drop ignored: only the controlling page can load models."
+          );
+          return;
+        }
         // Capture entries synchronously: DataTransferItems are invalidated
         // as soon as this handler awaits.
         const items = e.dataTransfer ? [...e.dataTransfer.items] : [];
@@ -96,11 +105,23 @@
           frames.push(frame);
         }
         const proto = location.protocol === "https:" ? "wss://" : "ws://";
-        const ws = new WebSocket(proto + location.host + "/drop");
+        // The session id tells the server which page is dropping; it only
+        // accepts drops from the driver.
+        const sid = (window.Module && Module.sessionId) || "";
+        const ws = new WebSocket(
+          proto + location.host + "/drop?sid=" + encodeURIComponent(sid)
+        );
         ws.binaryType = "arraybuffer";
         ws.onopen = () => {
           for (const frame of frames) ws.send(frame);
           ws.send(new Uint8Array(0)); // End marker; the server closes.
+        };
+        ws.onclose = (ev) => {
+          if (ev.code === 4004) {
+            console.warn(
+              "Model drop rejected: only the controlling page can load models."
+            );
+          }
         };
       });
     </script>

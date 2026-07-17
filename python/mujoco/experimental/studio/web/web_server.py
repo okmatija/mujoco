@@ -116,6 +116,7 @@ _configure_logging()
 WS_CLOSE_DRIVER_TAKEN = 4001  # /ui: another browser holds the driver slot.
 WS_CLOSE_SESSION_FULL = 4002  # /state: the spectator limit is reached.
 WS_CLOSE_INACTIVE = 4003  # /state: hidden tab kicked to free a viewer slot.
+WS_CLOSE_NOT_DRIVER = 4004  # /drop: only the driver may load models.
 
 
 class SessionMessage(enum.StrEnum):
@@ -735,7 +736,14 @@ def _run_server(
       drop_queue as a dict of relative path -> bytes;
       WebViewer.get_drop_file() writes them to a temporary directory for the
       regular drop-loading flow.
+
+      Loading a model changes the session for every connected page, so only
+      the driver may do it; drops from other pages are rejected.
       """
+      if driver_sid is None or _session_id(ws) != driver_sid:
+        logger.info("[Drop] Ignored a model drop from a non-driver page")
+        await ws.close(WS_CLOSE_NOT_DRIVER, "not the driver")
+        return
       files: dict[str, bytes] = {}
       try:
         async for message in ws:
