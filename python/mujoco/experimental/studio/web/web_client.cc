@@ -64,6 +64,14 @@ enum SpectatorCamMode {
   kSpecCamFollow,      // Follow the driver's camera.
 };
 
+// Where the Link window is anchored on the page (Window Position combo).
+enum LinkWindowPos {
+  kLinkPosFree = 0,  // Draggable; keeps its last position.
+  kLinkPosTopLeft,
+  kLinkPosTopMid,
+  kLinkPosTopRight,
+};
+
 struct AppState {
   std::unique_ptr<mujoco::platform::Window> window;
   std::unique_ptr<mujoco::platform::ModelHolder> model_holder;
@@ -89,6 +97,9 @@ struct AppState {
   // Spectator camera (combo order matches SpectatorCamMode).
   int spectator_cam_mode = kSpecCamTumble;
   float spectator_cam_speed = 0.001f;  // WASD speed; accelerates while held.
+
+  // Link window anchor (combo order matches LinkWindowPos).
+  int link_window_pos = kLinkPosTopMid;
 
   // Backend state received from the Python simulation via WebSocket.
   std::vector<mjtNum> backend_state;
@@ -482,9 +493,29 @@ void BuildBrowserGui() {
     ImGui::End();
   }
 
-  // Default to the top center of the canvas; draggable afterwards.
-  ImGui::SetNextWindowPos(ImVec2(ImGui::GetIO().DisplaySize.x * 0.5f, 8.0f),
-                          ImGuiCond_FirstUseEver, ImVec2(0.5f, 0.0f));
+  // Anchor the window per the Window Position combo; Free keeps the last
+  // position and stays draggable. The pivot is chosen per anchor so the
+  // whole window stays on-screen, 10px off the anchoring edges; this
+  // applies to both the collapsed pill and the expanded window (same
+  // ImGui window, so one call covers whichever Begin runs this frame).
+  constexpr float kEdgeMargin = 10.0f;
+  const float canvas_width = ImGui::GetIO().DisplaySize.x;
+  switch (g_app.link_window_pos) {
+    case kLinkPosTopLeft:
+      ImGui::SetNextWindowPos(ImVec2(kEdgeMargin, kEdgeMargin),
+                              ImGuiCond_Always, ImVec2(0.0f, 0.0f));
+      break;
+    case kLinkPosTopMid:
+      ImGui::SetNextWindowPos(ImVec2(canvas_width * 0.5f, kEdgeMargin),
+                              ImGuiCond_Always, ImVec2(0.5f, 0.0f));
+      break;
+    case kLinkPosTopRight:
+      ImGui::SetNextWindowPos(ImVec2(canvas_width - kEdgeMargin, kEdgeMargin),
+                              ImGuiCond_Always, ImVec2(1.0f, 0.0f));
+      break;
+    default:  // kLinkPosFree
+      break;
+  }
 
   const ImVec2 kFullWidth(-FLT_MIN, 0.0f);
   const ImVec4 kSpectatingColor(1.0f, 0.75f, 0.2f, 1.0f);
@@ -531,21 +562,8 @@ void BuildBrowserGui() {
         ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoTitleBar);
 
     if (g_app.spectator) {
+      // Control group.
       centered_banner("SPECTATING", kSpectatingColor);
-      ImGui::Text("Viewers connected: %d", g_app.session_viewers);
-      ImGui::Text("Data Rate (Sim): %" PRIu64 " KiB/s",
-                  static_cast<uint64_t>(g_telemetry.sim_bytes_per_sec / 1024));
-      ImGui::Separator();
-      // TODO(matijak): Use the studio camera-selection UI here in future, so
-      // a spectator can also pick any camera defined in the model.
-      ImGui::TextUnformatted("Camera");
-      ImGui::SetNextItemWidth(-FLT_MIN);
-      int cam_mode = g_app.spectator_cam_mode;
-      if (ImGui::Combo("##spectator_camera", &cam_mode,
-                       "Free: tumble\0Free: wasd\0Follow Controller\0")) {
-        SetSpectatorCameraMode(cam_mode);
-      }
-      ImGui::Separator();
       if (g_app.queue_pos > 0) {
         ImGui::Text("Control queue: you are #%d of %d.", g_app.queue_pos,
                     g_app.queue_len);
@@ -571,10 +589,27 @@ void BuildBrowserGui() {
           g_app.force_confirm = false;
         }
       }
+
+      // Camera group.
+      ImGui::Separator();
+      // TODO(matijak): Use the studio camera-selection UI here in future, so
+      // a spectator can also pick any camera defined in the model.
+      ImGui::TextUnformatted("Camera");
+      ImGui::SetNextItemWidth(-FLT_MIN);
+      int cam_mode = g_app.spectator_cam_mode;
+      if (ImGui::Combo("##spectator_camera", &cam_mode,
+                       "Free: tumble\0Free: wasd\0Follow Controller\0")) {
+        SetSpectatorCameraMode(cam_mode);
+      }
+
+      // Session info group.
+      ImGui::Separator();
+      ImGui::Text("Viewers connected: %d", g_app.session_viewers);
+      ImGui::Text("Data Rate (Sim): %" PRIu64 " KiB/s",
+                  static_cast<uint64_t>(g_telemetry.sim_bytes_per_sec / 1024));
     } else {
+      // Control group.
       centered_banner("CONTROLLING", kControllingColor);
-      ImGui::Text("Spectators: %d",
-                  g_app.session_viewers > 1 ? g_app.session_viewers - 1 : 0);
       if (g_app.queue_len > 0) {
         // Queue callout, matching the pulsing window background.
         const ImVec4 kQueueColor(1.0f, 0.62f, 0.15f, 1.0f);
@@ -583,11 +618,15 @@ void BuildBrowserGui() {
                  g_app.queue_len);
         centered_line(waiting, &kQueueColor);
       }
+      ImGui::Text("Spectators: %d",
+                  g_app.session_viewers > 1 ? g_app.session_viewers - 1 : 0);
       if (ImGui::Button("Release control", kFullWidth)) {
         // Become a spectator; the server grants the slot down the queue.
         g_ui_link.Shutdown();
         SetSpectator(true);
       }
+
+      // Connection info group.
       ImGui::Separator();
       ImGui::Text("Connection: %s", g_ui_link.StatusString());
       ImGui::Text("Remote Frame: %s",
@@ -602,6 +641,13 @@ void BuildBrowserGui() {
           "Data Rate (Sim, total): %" PRIu64 " KiB/s",
           static_cast<uint64_t>(g_telemetry.sim_bytes_per_sec *
                                 std::max(1, g_app.session_viewers) / 1024));
+      if (!g_ui_link.RemoteDrawData()) {
+        ImGui::TextColored(ImVec4(1.0f, 0.0f, 0.0f, 1.0f),
+                           "Waiting for Draw Data...");
+      }
+
+      // Stream settings group.
+      ImGui::Separator();
       bool use_compression = g_ui_link.UseCompression();
       if (ImGui::Checkbox("Compress GUI Stream", &use_compression)) {
         g_ui_link.SetUseCompression(use_compression);
@@ -628,11 +674,15 @@ void BuildBrowserGui() {
       if (ImGui::IsItemActive()) {
         sLastMaxEdit = ImGui::GetTime();
       }
-      if (!g_ui_link.RemoteDrawData()) {
-        ImGui::TextColored(ImVec4(1.0f, 0.0f, 0.0f, 1.0f),
-                           "Waiting for Draw Data...");
-      }
     }
+
+    // Window anchor, common to both roles (see the switch above Begin).
+    ImGui::Separator();
+    ImGui::TextUnformatted("Window Position");
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    ImGui::Combo("##link_window_pos", &g_app.link_window_pos,
+                 "Free\0Top Left\0Top Mid\0Top Right\0");
+
     // Collapse when the mouse leaves the window, with a short grace period.
     // A popup (e.g. the camera combo's dropdown) is a separate window, so
     // moving the mouse into it unhovers this one; keep the window expanded
