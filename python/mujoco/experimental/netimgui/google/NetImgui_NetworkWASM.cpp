@@ -97,7 +97,7 @@ bool Startup() { return emscripten_websocket_is_supported(); }
 
 void Shutdown() {}
 
-SocketInfo* Connect(const char* server_host, uint32_t server_port) {
+SocketInfo* Connect(const char* server_host, uint32_t /*server_port*/) {
   if (!emscripten_websocket_is_supported()) return nullptr;
 
   SocketInfo* socket_info = netImguiNew<SocketInfo>();
@@ -105,31 +105,11 @@ SocketInfo* Connect(const char* server_host, uint32_t server_port) {
   EmscriptenWebSocketCreateAttributes attr;
   emscripten_websocket_init_create_attributes(&attr);
 
-  std::string host(server_host);
-  std::string url;
-  if (host.find("://") != std::string::npos) {
-    // A complete WebSocket URL (e.g. "ws://host:8080/ui") — use it verbatim,
-    // ignoring server_port. This lets the caller reach a path on a shared
-    // port instead of a dedicated port.
-    url = host;
-  } else {
-    // Detect whether the page was loaded over HTTPS (e.g. via corp proxy)
-    // and use the matching WebSocket scheme. Browsers block ws:// from
-    // HTTPS pages.
-    bool is_secure = EM_ASM_INT({
-      // clang-format off
-      return (window.location.protocol === "https:") ? 1 : 0;
-      // clang-format on
-    });
-    url = is_secure ? "wss://" : "ws://";
-    // Bracket IPv6 addresses (contain colons).
-    if (host.find(':') != std::string::npos) {
-      url += "[" + host + "]";
-    } else {
-      url += host;
-    }
-    url += ":" + std::to_string(server_port);
-  }
+  // The web viewer always passes a complete WebSocket URL (e.g.
+  // "ws://host:8080/ui", built from the page origin by WsUrl), so it is used
+  // verbatim and server_port is ignored — a browser reaches the viewer's
+  // paths on the page's own shared port, not a dedicated NetImgui port.
+  const std::string url(server_host);
   attr.url = url.c_str();
   attr.createOnMainThread = EM_TRUE;
   LOG(Info, "Connecting WebSocket to: %s", url.c_str());
