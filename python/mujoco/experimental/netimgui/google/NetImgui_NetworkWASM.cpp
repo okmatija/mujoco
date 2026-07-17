@@ -222,6 +222,19 @@ void DataReceive(SocketInfo* client_socket, PendingCom& pending_rcv) {
     return;
   }
 
+  // The size field comes off the wire; a value smaller than what has already
+  // been read (e.g. a command header claiming < 8 bytes, from a corrupted or
+  // desynced stream) would underflow the subtraction below into a huge
+  // size_t and memcpy past the destination command buffer.
+  if (pending_rcv.pCommand->mSize < pending_rcv.SizeCurrent) {
+    LOG(Error, "DataReceive: wire size %u < %zu bytes already read; stream "
+        "is corrupt",
+        pending_rcv.pCommand->mSize,
+        static_cast<size_t>(pending_rcv.SizeCurrent));
+    pending_rcv.bError = true;
+    return;
+  }
+
   size_t bytes_to_read = pending_rcv.pCommand->mSize - pending_rcv.SizeCurrent;
   if (bytes_to_read == 0) return;
 
