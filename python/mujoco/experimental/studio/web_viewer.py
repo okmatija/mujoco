@@ -35,6 +35,7 @@ The WebViewer streams UI and simulation state to a browser:
 import multiprocessing
 import os
 import queue
+import shutil
 import socket
 import tempfile
 from typing import Any
@@ -255,6 +256,9 @@ class WebViewer(viewer_protocol.Viewer):
     # as a dict of relative path -> bytes; owned by the viewer so it
     # survives server restarts.
     self._drop_queue = multiprocessing.get_context('fork').Queue()
+    # Temp dir holding the most recent drop's files; removed when the next
+    # drop supersedes it (its model is already parsed) and on close.
+    self._drop_dir = None
     self._start_servers()
     _print_url_banner(self._host, self._http_port)
 
@@ -366,6 +370,9 @@ class WebViewer(viewer_protocol.Viewer):
     self._stop_servers()
     self._http_sock.close()
     self._tcp_sock.close()
+    if self._drop_dir is not None:
+      shutil.rmtree(self._drop_dir, ignore_errors=True)
+      self._drop_dir = None
     super().close()
 
   def get_drop_file(self) -> str:
@@ -387,7 +394,12 @@ class WebViewer(viewer_protocol.Viewer):
     # includes/assets from it (ModelHolder::InitFromBuffer already covers
     # the single-buffer XML/MJB/ZIP cases). Needs a buffer-based parser
     # entry point and a viewer drop interface that isn't a file path.
-    drop_dir = tempfile.mkdtemp(prefix='mujoco_drop_')
+    # The previous drop's model has already been parsed, so its temp dir can
+    # go now; keeping only the newest avoids leaking one dir per drop.
+    if self._drop_dir is not None:
+      shutil.rmtree(self._drop_dir, ignore_errors=True)
+    self._drop_dir = tempfile.mkdtemp(prefix='mujoco_drop_')
+    drop_dir = self._drop_dir
     written = []
     for name, payload in files.items():
       rel = name.replace('\\', '/').lstrip('/')
