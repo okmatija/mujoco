@@ -101,7 +101,7 @@ if(EMSCRIPTEN)
         $<TARGET_FILE_DIR:web_client>/web_client.wasm
         $<TARGET_FILE_DIR:web_client>/web_client.data
         ${CMAKE_CURRENT_SOURCE_DIR}/index.html
-        ${CMAKE_CURRENT_SOURCE_DIR}/favicon.ico
+        ${CMAKE_CURRENT_SOURCE_DIR}/favicon.png
         ${WEB_CLIENT_DIST_DIR}
     COMMENT "Staging web viewer artifacts into ${WEB_CLIENT_DIST_DIR}"
   )
