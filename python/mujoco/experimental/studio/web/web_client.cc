@@ -64,12 +64,17 @@ enum SpectatorCamMode {
   kSpecCamFollow,      // Follow the driver's camera.
 };
 
-// Where the Link window is anchored on the page (Window Position combo).
+// Where the Link window is anchored on the page. The window is always
+// draggable; releasing a drag near an anchor snaps to it, anywhere else
+// leaves the window Free at its dropped position.
 enum LinkWindowPos {
-  kLinkPosFree = 0,  // Draggable; keeps its last position.
-  kLinkPosTopLeft,
+  kLinkPosFree = 0,
+  kLinkPosTopLeft,  // The anchors must stay contiguous from here on.
   kLinkPosTopMid,
   kLinkPosTopRight,
+  kLinkPosBottomLeft,
+  kLinkPosBottomMid,
+  kLinkPosBottomRight,
 };
 
 struct AppState {
@@ -98,7 +103,7 @@ struct AppState {
   int spectator_cam_mode = kSpecCamTumble;
   float spectator_cam_speed = 0.001f;  // WASD speed; accelerates while held.
 
-  // Link window anchor (combo order matches LinkWindowPos).
+  // Link window anchor; updated by the drag-snap logic in BuildBrowserGui.
   int link_window_pos = kLinkPosTopMid;
 
   // Backend state received from the Python simulation via WebSocket.
@@ -493,29 +498,63 @@ void BuildBrowserGui() {
     ImGui::End();
   }
 
-  // Anchor the window per the Window Position combo; Free keeps the last
-  // position and stays draggable. The pivot is chosen per anchor so the
-  // whole window stays on-screen, 10px off the anchoring edges; this
-  // applies to both the collapsed pill and the expanded window (same
-  // ImGui window, so one call covers whichever Begin runs this frame).
+  // Anchor points along the canvas edges, each with the pivot that keeps
+  // the whole window on-screen 10px off the anchoring edges. Indexed by
+  // LinkWindowPos - kLinkPosTopLeft. While anchored, the window is re-pinned
+  // every frame (so it follows canvas resizes) for both the collapsed pill
+  // and the expanded window (same ImGui window, so one call covers
+  // whichever Begin runs this frame) — except while it is being dragged.
   constexpr float kEdgeMargin = 10.0f;
-  const float canvas_width = ImGui::GetIO().DisplaySize.x;
-  switch (g_app.link_window_pos) {
-    case kLinkPosTopLeft:
-      ImGui::SetNextWindowPos(ImVec2(kEdgeMargin, kEdgeMargin),
-                              ImGuiCond_Always, ImVec2(0.0f, 0.0f));
-      break;
-    case kLinkPosTopMid:
-      ImGui::SetNextWindowPos(ImVec2(canvas_width * 0.5f, kEdgeMargin),
-                              ImGuiCond_Always, ImVec2(0.5f, 0.0f));
-      break;
-    case kLinkPosTopRight:
-      ImGui::SetNextWindowPos(ImVec2(canvas_width - kEdgeMargin, kEdgeMargin),
-                              ImGuiCond_Always, ImVec2(1.0f, 0.0f));
-      break;
-    default:  // kLinkPosFree
-      break;
+  const ImVec2 canvas = ImGui::GetIO().DisplaySize;
+  const ImVec2 anchor_pos[6] = {
+      {kEdgeMargin, kEdgeMargin},
+      {canvas.x * 0.5f, kEdgeMargin},
+      {canvas.x - kEdgeMargin, kEdgeMargin},
+      {kEdgeMargin, canvas.y - kEdgeMargin},
+      {canvas.x * 0.5f, canvas.y - kEdgeMargin},
+      {canvas.x - kEdgeMargin, canvas.y - kEdgeMargin},
+  };
+  const ImVec2 anchor_pivot[6] = {
+      {0.0f, 0.0f}, {0.5f, 0.0f}, {1.0f, 0.0f},
+      {0.0f, 1.0f}, {0.5f, 1.0f}, {1.0f, 1.0f},
+  };
+
+  static bool s_link_dragging = false;
+  if (g_app.link_window_pos != kLinkPosFree && !s_link_dragging) {
+    const int anchor = g_app.link_window_pos - kLinkPosTopLeft;
+    ImGui::SetNextWindowPos(anchor_pos[anchor], ImGuiCond_Always,
+                            anchor_pivot[anchor]);
   }
+
+  // Tracks a drag of the Link window and snaps on release: if the window
+  // was dropped within max(20% of its size, 300px) of where an anchor
+  // would place it, adopt that anchor; otherwise it floats Free where it
+  // was dropped. Call between Begin and End of whichever form is visible.
+  const auto update_window_snap = [&] {
+    if (ImGui::IsMouseClicked(ImGuiMouseButton_Left) &&
+        ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem)) {
+      s_link_dragging = true;
+    } else if (s_link_dragging && !ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+      s_link_dragging = false;
+      const ImVec2 pos = ImGui::GetWindowPos();
+      const ImVec2 size = ImGui::GetWindowSize();
+      const float threshold =
+          std::max(0.2f * std::max(size.x, size.y), 300.0f);
+      int best = -1;
+      float best_d2 = threshold * threshold;
+      for (int i = 0; i < 6; ++i) {
+        const float dx = pos.x - (anchor_pos[i].x - anchor_pivot[i].x * size.x);
+        const float dy = pos.y - (anchor_pos[i].y - anchor_pivot[i].y * size.y);
+        const float d2 = dx * dx + dy * dy;
+        if (d2 <= best_d2) {
+          best_d2 = d2;
+          best = i;
+        }
+      }
+      g_app.link_window_pos =
+          best >= 0 ? kLinkPosTopLeft + best : kLinkPosFree;
+    }
+  };
 
   const ImVec2 kFullWidth(-FLT_MIN, 0.0f);
   const ImVec4 kSpectatingColor(1.0f, 0.75f, 0.2f, 1.0f);
@@ -551,6 +590,7 @@ void BuildBrowserGui() {
     if (ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem)) {
       g_telemetry.expanded = true;
     }
+    update_window_snap();
     ImGui::End();
 
     ImGui::PopStyleVar(2);
@@ -676,12 +716,7 @@ void BuildBrowserGui() {
       }
     }
 
-    // Window anchor, common to both roles (see the switch above Begin).
-    ImGui::Separator();
-    ImGui::TextUnformatted("Window Position");
-    ImGui::SetNextItemWidth(-FLT_MIN);
-    ImGui::Combo("##link_window_pos", &g_app.link_window_pos,
-                 "Free\0Top Left\0Top Mid\0Top Right\0");
+    update_window_snap();
 
     // Collapse when the mouse leaves the window, with a short grace period.
     // A popup (e.g. the camera combo's dropdown) is a separate window, so
