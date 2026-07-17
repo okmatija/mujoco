@@ -399,6 +399,27 @@ void HandleSpectatorCameraInput() {
 }
 
 void BuildBrowserGui() {
+  // TODO(matijak): Move these centered-text helpers into
+  // platform/ux/imgui_widgets.cc.
+  const auto centered_line = [](const char* text, const ImVec4* color) {
+    ImGui::SetCursorPosX(std::max(
+        0.0f, (ImGui::GetWindowWidth() - ImGui::CalcTextSize(text).x) * 0.5f));
+    if (color != nullptr) {
+      ImGui::TextColored(*color, "%s", text);
+    } else {
+      ImGui::TextUnformatted(text);
+    }
+  };
+  // Large centered banner text (SPECTATING / CONTROLLING / DISCONNECTED).
+  const auto centered_banner = [](const char* text, const ImVec4& color) {
+    ImGui::SetWindowFontScale(1.6f);
+    const float text_width = ImGui::CalcTextSize(text).x;
+    ImGui::SetCursorPosX(
+        std::max(0.0f, (ImGui::GetWindowWidth() - text_width) * 0.5f));
+    ImGui::TextColored(color, "%s", text);
+    ImGui::SetWindowFontScale(1.0f);
+  };
+
   if (const int close_code = g_state_link.ServerCloseCode()) {
     const ImGuiIO& io = ImGui::GetIO();
     ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, 48.0f),
@@ -413,18 +434,6 @@ void BuildBrowserGui() {
     } else if (close_code == 4003) {
       reason = "Disconnected after inactivity.";
     }
-    // TODO(matijak): Move centered-text helpers (this and centered_banner
-    // below) into platform/ux/imgui_widgets.cc.
-    const auto centered_line = [](const char* text, const ImVec4* color) {
-      ImGui::SetCursorPosX(std::max(
-          0.0f,
-          (ImGui::GetWindowWidth() - ImGui::CalcTextSize(text).x) * 0.5f));
-      if (color != nullptr) {
-        ImGui::TextColored(*color, "%s", text);
-      } else {
-        ImGui::TextUnformatted(text);
-      }
-    };
     const ImVec4 amber(1.0f, 0.8f, 0.2f, 1.0f);
     centered_line(reason, &amber);
     centered_line("Retrying; reconnects automatically.", nullptr);
@@ -457,17 +466,19 @@ void BuildBrowserGui() {
       g_telemetry.disconnected_notice_logged = true;
     }
     const ImGuiIO& io = ImGui::GetIO();
-    ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, 48.0f),
-                            ImGuiCond_Always, ImVec2(0.5f, 0.0f));
+    ImGui::SetNextWindowPos(
+        ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f),
+        ImGuiCond_Always, ImVec2(0.5f, 0.5f));
     ImGui::Begin("##disconnected", nullptr,
                  ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
                      ImGuiWindowFlags_NoMove |
                      ImGuiWindowFlags_AlwaysAutoResize);
-    ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f),
-                       "Viewer server is not reachable.");
-    ImGui::TextUnformatted(
-        "The Python script may have stopped. This page reconnects\n"
-        "automatically if the viewer comes back.");
+    centered_banner("DISCONNECTED", ImVec4(1.0f, 0.3f, 0.3f, 1.0f));
+    centered_line("Viewer server is not reachable: the Python script may",
+                  nullptr);
+    centered_line("have stopped. This page reconnects automatically if the",
+                  nullptr);
+    centered_line("viewer comes back.", nullptr);
     ImGui::End();
   }
 
@@ -475,28 +486,12 @@ void BuildBrowserGui() {
   ImGui::SetNextWindowPos(ImVec2(ImGui::GetIO().DisplaySize.x * 0.5f, 8.0f),
                           ImGuiCond_FirstUseEver, ImVec2(0.5f, 0.0f));
 
-  // Small centered banner text helper, and full-width buttons: the window
-  // expands while hovered and collapses when the mouse leaves.
-  const auto centered_banner = [](const char* text, const ImVec4& color) {
-    ImGui::SetWindowFontScale(1.6f);
-    const float text_width = ImGui::CalcTextSize(text).x;
-    ImGui::SetCursorPosX(
-        std::max(0.0f, (ImGui::GetWindowWidth() - text_width) * 0.5f));
-    ImGui::TextColored(color, "%s", text);
-    ImGui::SetWindowFontScale(1.0f);
-  };
   const ImVec2 kFullWidth(-FLT_MIN, 0.0f);
+  const ImVec4 kSpectatingColor(1.0f, 0.75f, 0.2f, 1.0f);
+  const ImVec4 kControllingColor(0.3f, 0.9f, 0.4f, 1.0f);
 
-  // The window title carries the queue size ("###" keeps the window
-  // identity stable while the visible title changes), and the background
-  // pulses toward a dark orange while someone waits for control.
-  char link_title[48];
-  if (!g_app.spectator && g_app.queue_len > 0) {
-    snprintf(link_title, sizeof(link_title), "Link (%d waiting)###Link",
-             g_app.queue_len);
-  } else {
-    snprintf(link_title, sizeof(link_title), "Link###Link");
-  }
+  // While someone waits for control, the window background pulses toward a
+  // dark orange (the queue size itself is shown in the expanded window).
   const bool pulse = !g_app.spectator && g_app.queue_len > 0;
   if (pulse) {
     const float phase =
@@ -514,15 +509,13 @@ void BuildBrowserGui() {
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(6.0f, 6.0f));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowMinSize, ImVec2(16.0f, 16.0f));
 
-    ImGui::Begin(link_title, nullptr,
+    ImGui::Begin("Link", nullptr,
                  ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
                      ImGuiWindowFlags_AlwaysAutoResize);
     if (g_app.spectator) {
-      ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.2f, 1.0f), "SPECTATING");
-    } else if (g_app.queue_len > 0) {
-      ImGui::Text("Link (%d waiting)", g_app.queue_len);
+      ImGui::TextColored(kSpectatingColor, "SPECTATING");
     } else {
-      ImGui::Text("Link");
+      ImGui::TextColored(kControllingColor, "CONTROLLING");
     }
     if (ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem)) {
       g_telemetry.expanded = true;
@@ -532,11 +525,11 @@ void BuildBrowserGui() {
     ImGui::PopStyleVar(2);
   } else {
     ImGui::Begin(
-        link_title, nullptr,
+        "Link", nullptr,
         ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoCollapse);
 
     if (g_app.spectator) {
-      centered_banner("SPECTATING", ImVec4(1.0f, 0.75f, 0.2f, 1.0f));
+      centered_banner("SPECTATING", kSpectatingColor);
       ImGui::Text("Viewers connected: %d", g_app.session_viewers);
       ImGui::Text("Data Rate (Sim): %" PRIu64 " KiB/s",
                   static_cast<uint64_t>(g_telemetry.sim_bytes_per_sec / 1024));
@@ -577,11 +570,16 @@ void BuildBrowserGui() {
         }
       }
     } else {
-      centered_banner("CONTROLLING", ImVec4(0.3f, 0.9f, 0.4f, 1.0f));
+      centered_banner("CONTROLLING", kControllingColor);
       ImGui::Text("Spectators: %d",
                   g_app.session_viewers > 1 ? g_app.session_viewers - 1 : 0);
       if (g_app.queue_len > 0) {
-        ImGui::Text("Waiting for control: %d", g_app.queue_len);
+        // Queue callout, matching the pulsing window background.
+        const ImVec4 kQueueColor(1.0f, 0.62f, 0.15f, 1.0f);
+        char waiting[48];
+        snprintf(waiting, sizeof(waiting), ">> %d waiting for control <<",
+                 g_app.queue_len);
+        centered_line(waiting, &kQueueColor);
       }
       if (ImGui::Button("Release control", kFullWidth)) {
         // Become a spectator; the server grants the slot down the queue.
