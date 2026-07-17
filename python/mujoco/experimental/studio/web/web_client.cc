@@ -527,7 +527,7 @@ void BuildBrowserGui() {
   }
 
   // Tracks a drag of the Link window and snaps on release: if the window
-  // was dropped within max(20% of its size, 300px) of where an anchor
+  // was dropped within max(20% of its size, 100px) of where an anchor
   // would place it, adopt that anchor; otherwise it floats Free where it
   // was dropped. Call between Begin and End of whichever form is visible.
   const auto update_window_snap = [&] {
@@ -539,7 +539,7 @@ void BuildBrowserGui() {
       const ImVec2 pos = ImGui::GetWindowPos();
       const ImVec2 size = ImGui::GetWindowSize();
       const float threshold =
-          std::max(0.2f * std::max(size.x, size.y), 300.0f);
+          std::max(0.2f * std::max(size.x, size.y), 100.0f);
       int best = -1;
       float best_d2 = threshold * threshold;
       for (int i = 0; i < 6; ++i) {
