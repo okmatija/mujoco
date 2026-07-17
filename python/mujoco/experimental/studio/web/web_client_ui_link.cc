@@ -276,29 +276,42 @@ void UiLink::ProcessCmdTexture(CmdTexture* pCmdTexture) {
   uint8_t* pPixels = pCmdTexture->mpTextureData.Get();
   if (!pPixels) return;
 
-  // Detect actual format by data size, not format tag (which can be wrong).
-  uint32_t patchW = pCmdTexture->mWidth;
-  uint32_t patchH = pCmdTexture->mHeight;
-  uint32_t pixelCount = patchW * patchH;
-  uint32_t dataSize = pCmdTexture->mSize - sizeof(CmdTexture);
-  uint32_t expectedRGBA = pixelCount * 4;
-  uint32_t expectedA8 = pixelCount * 1;
+  // All of width/height/size come off the wire, so compute in size_t (no
+  // 32-bit overflow) and verify the command actually carries the pixel
+  // bytes before reading them — a short or corrupt command must not make
+  // the memcpy/expand below read past the command buffer.
+  const uint32_t patchW = pCmdTexture->mWidth;
+  const uint32_t patchH = pCmdTexture->mHeight;
+  const size_t pixelCount = static_cast<size_t>(patchW) * patchH;
+  const size_t dataSize = pCmdTexture->mSize >= sizeof(CmdTexture)
+                              ? pCmdTexture->mSize - sizeof(CmdTexture)
+                              : 0;
+  const size_t expectedRGBA = pixelCount * 4;
 
-  bool isA8 = (pCmdTexture->mFormat == 1) ||
-              (dataSize == expectedA8 && dataSize != expectedRGBA);
+  // Detect actual format by data size, not format tag (which can be wrong).
+  const bool isA8 = (pCmdTexture->mFormat == 1) ||
+                    (dataSize == pixelCount && dataSize != expectedRGBA);
+  const size_t needed = isA8 ? pixelCount : expectedRGBA;
+  if (pixelCount == 0 || dataSize < needed) {
+    LOG(Warning,
+        "ProcessCmdTexture: texID=%lu declares %ux%u but carries only %zu "
+        "bytes; dropping",
+        static_cast<unsigned long>(texID), patchW, patchH, dataSize);
+    return;
+  }
 
   // Convert incoming pixels to RGBA (Filament requires RGBA).
   // For A8 font atlas data, expand each byte to (255, 255, 255, alpha).
   std::vector<uint8_t> rgbaPixels(pixelCount * 4);
   if (isA8) {
-    for (uint32_t p = 0; p < pixelCount; ++p) {
+    for (size_t p = 0; p < pixelCount; ++p) {
       rgbaPixels[p * 4 + 0] = 255;
       rgbaPixels[p * 4 + 1] = 255;
       rgbaPixels[p * 4 + 2] = 255;
       rgbaPixels[p * 4 + 3] = pPixels[p];
     }
   } else {
-    memcpy(rgbaPixels.data(), pPixels, pixelCount * 4);
+    memcpy(rgbaPixels.data(), pPixels, expectedRGBA);
   }
 
   TextureEntry& entry = texture_cpu_[texID];
@@ -318,12 +331,26 @@ void UiLink::ProcessCmdTexture(CmdTexture* pCmdTexture) {
           static_cast<unsigned long>(texID));
       return;
     }
-    uint32_t offX = pCmdTexture->mOffsetX;
-    uint32_t offY = pCmdTexture->mOffsetY;
+    const uint32_t offX = pCmdTexture->mOffsetX;
+    const uint32_t offY = pCmdTexture->mOffsetY;
+    // The patch rectangle is wire-supplied; reject one that would write past
+    // the stored mirror (e.g. dims desynced from a stale entry after a
+    // reconnect) rather than corrupting the heap.
+    if (static_cast<size_t>(offX) + patchW > entry.width ||
+        static_cast<size_t>(offY) + patchH > entry.height) {
+      LOG(Warning,
+          "ProcessCmdTexture: patch %ux%u at (%u,%u) exceeds mirror %ux%u "
+          "for texID=%lu; dropping",
+          patchW, patchH, offX, offY, entry.width, entry.height,
+          static_cast<unsigned long>(texID));
+      return;
+    }
     for (uint32_t row = 0; row < patchH; ++row) {
-      uint32_t dstOffset = ((offY + row) * entry.width + offX) * 4;
-      uint32_t srcOffset = row * patchW * 4;
-      memcpy(&entry.pixels[dstOffset], &rgbaPixels[srcOffset], patchW * 4);
+      size_t dstOffset =
+          (static_cast<size_t>(offY + row) * entry.width + offX) * 4;
+      size_t srcOffset = static_cast<size_t>(row) * patchW * 4;
+      memcpy(&entry.pixels[dstOffset], &rgbaPixels[srcOffset],
+             static_cast<size_t>(patchW) * 4);
     }
   }
 
