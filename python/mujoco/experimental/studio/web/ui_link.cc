@@ -82,10 +82,6 @@ UiLink::ReadyState UiLink::ConnectionState() const {
 
 int UiLink::CloseCode() const { return Network::GetCloseCode(socket_); }
 
-const char* UiLink::StatusString() const {
-  return Network::ReadyStateName(ConnectionState());
-}
-
 void UiLink::ReceiveAndProcessCommands(int frame) {
   if (!socket_) return;
 

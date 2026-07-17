@@ -80,8 +80,6 @@ class UiLink {
   // The WebSocket close code once the socket has closed, else 0 (e.g.
   // 4001 = another browser holds the driver slot).
   int CloseCode() const;
-  // Human-readable ConnectionState(), for the status overlay.
-  const char* StatusString() const;
 
   // Remote clip rects are clamped to this (logical pixels); set each frame
   // before ReceiveAndProcessCommands().

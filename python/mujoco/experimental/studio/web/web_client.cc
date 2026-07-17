@@ -604,6 +604,7 @@ void BuildBrowserGui() {
     if (g_app.spectator) {
       // Control group.
       centered_banner("SPECTATING", kSpectatingColor);
+      ImGui::Text("Viewers connected: %d", g_app.session_viewers);
       if (g_app.queue_pos > 0) {
         ImGui::Text("Control queue: you are #%d of %d.", g_app.queue_pos,
                     g_app.queue_len);
@@ -642,9 +643,8 @@ void BuildBrowserGui() {
         SetSpectatorCameraMode(cam_mode);
       }
 
-      // Session info group.
+      // Data rate group.
       ImGui::Separator();
-      ImGui::Text("Viewers connected: %d", g_app.session_viewers);
       ImGui::Text("Data Rate (Sim): %" PRIu64 " KiB/s",
                   static_cast<uint64_t>(g_telemetry.sim_bytes_per_sec / 1024));
     } else {
@@ -666,11 +666,8 @@ void BuildBrowserGui() {
         SetSpectator(true);
       }
 
-      // Connection info group.
+      // Data rate group.
       ImGui::Separator();
-      ImGui::Text("Connection: %s", g_ui_link.StatusString());
-      ImGui::Text("Remote Frame: %s",
-                  g_ui_link.RemoteDrawData() ? "Received" : "None");
       ImGui::Text("Data Rate (GUI): %" PRIu64 " KiB/s",
                   static_cast<uint64_t>(g_telemetry.gui_bytes_per_sec / 1024));
       ImGui::Text("Data Rate (Sim): %" PRIu64 " KiB/s",
