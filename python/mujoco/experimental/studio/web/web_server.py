@@ -256,6 +256,13 @@ def _session_id(ws: ServerConnection) -> str:
 # NetImgui's CmdVersion handshake packet is always 120 bytes.
 _CMD_VERSION_SIZE = 120
 
+# How long a browser holding the controller slot waits for the headless
+# NetImgui client to (re)connect over loopback before the slot is released.
+# The client reconnects within ~1s in the normal case; this only bounds the
+# pathological one where it never appears (e.g. the headless UI failed to
+# start), so a stuck controller cannot lock every other browser out forever.
+_UI_TCP_WAIT_SEC = 15.0
+
 _CONTENT_TYPES = {
     ".html": "text/html; charset=utf-8",
     ".js": "text/javascript",
@@ -617,10 +624,35 @@ def _run_server(
         tcp_writer = None
         tcp_connected.clear()
       logger.debug("[UiBridge] Waiting for NetImgui TCP connection...")
-      # Loop: the connection can be replaced (and the event cleared) between
-      # the event firing and this task waking up.
-      while tcp_writer is None:
-        await tcp_connected.wait()
+
+      async def wait_for_tcp() -> None:
+        # Loop: the connection can be replaced (and the event cleared)
+        # between the event firing and this task waking up.
+        while tcp_writer is None:
+          await tcp_connected.wait()
+
+      # Wait for the client, but not forever and not blind to the browser: if
+      # the client never appears (bounded by _UI_TCP_WAIT_SEC) or the browser
+      # leaves first, release the controller slot instead of holding it
+      # against every future browser.
+      tcp_task = asyncio.create_task(wait_for_tcp())
+      close_task = asyncio.create_task(ws.wait_closed())
+      done, still_pending = await asyncio.wait(
+          [tcp_task, close_task],
+          timeout=_UI_TCP_WAIT_SEC,
+          return_when=asyncio.FIRST_COMPLETED,
+      )
+      for task in still_pending:
+        task.cancel()
+      if tcp_task not in done or tcp_task.cancelled():
+        logger.debug("[UiBridge] No NetImgui connection; releasing slot")
+        if active_ui_ws is ws:
+          active_ui_ws = None
+          controller_sid = None
+          await grant_next()
+          await broadcast_roster()
+        await ws.close(WS_CLOSE_CONTROLLER_TAKEN, "controller unavailable")
+        return
       my_reader, my_writer = tcp_reader, tcp_writer
 
       try:
