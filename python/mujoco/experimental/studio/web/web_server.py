@@ -687,18 +687,36 @@ def _run_server(
       logger.info(f"[StateWS] Browser connected ({len(state_clients)} total)")
       await broadcast_roster()
 
+      def read_state() -> Optional[tuple[int, bytes]]:
+        # Seqlock read against update_state()'s memmove: an even generation
+        # unchanged across the copy means the buffer held still, so the
+        # payload is a single complete frame. An odd generation (write in
+        # flight) or a changed generation is a torn read; a few retries cover
+        # the microsecond-wide memmove, and skipping the tick is harmless
+        # under latest-wins. Returns the (generation, payload) actually read.
+        for _ in range(8):
+          gen_before = generation.value
+          if gen_before & 1:
+            continue
+          (used,) = struct.unpack("<I", bytes(shm_array[:4]))
+          if used == 0 or used > shm_capacity:
+            return None
+          data = bytes(shm_array[4 : 4 + used])
+          if generation.value == gen_before:
+            return gen_before, data
+        return None
+
       async def send_payloads() -> None:
         last_gen = 0
         while True:
           await asyncio.sleep(1.0 / 60.0)
-          cur_gen = generation.value
-          if cur_gen == last_gen:
+          if generation.value == last_gen:
             continue
-          last_gen = cur_gen
-          (used,) = struct.unpack("<I", bytes(shm_array[:4]))
-          if used == 0 or used > shm_capacity:
+          result = read_state()
+          if result is None:
             continue
-          await ws.send(bytes(shm_array[4 : 4 + used]))
+          last_gen, data = result
+          await ws.send(data)
 
       async def recv_messages() -> None:
         async for message in ws:
@@ -909,12 +927,19 @@ class WebServer:
           f" {self._shm_capacity}; dropping."
       )
       return
+    # Seqlock: bump the generation to odd before writing and back to even
+    # after, so a reader that copies the buffer while this memmove is in
+    # flight can detect the torn read (see send_payloads) and retry. Without
+    # it a reader could splice two frames and ship an invalid physics block.
+    with self._generation.get_lock():
+      self._generation.value += 1
     ctypes.memmove(
         self._shm_array,
         struct.pack("<I", len(payload)) + payload,
         4 + len(payload),
     )
-    self._generation.value += 1
+    with self._generation.get_lock():
+      self._generation.value += 1
 
   def start(self) -> None:
     """Starts the server in a background process."""
