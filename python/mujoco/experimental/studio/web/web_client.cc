@@ -105,7 +105,6 @@ struct AppState {
   mjvPerturb perturb;
   mjvCamera camera;
   mjvOption vis_options;
-  int camera_idx = 0;
 
   // True when another browser holds the controller slot: this page renders the
   // scene from the state broadcast but has no UI stream or input until the
@@ -958,7 +957,7 @@ void SetupScene(const mjModel* m) {
 
   const int model_cam = m->vis.global.cameraid;
   if (model_cam >= 0 && model_cam < m->ncam) {
-    g_app.camera_idx = mujoco::platform::SetCamera(m, &g_app.camera, model_cam);
+    mujoco::platform::SetCamera(m, &g_app.camera, model_cam);
   } else {
     mjv_defaultFreeCamera(m, &g_app.camera);
   }
