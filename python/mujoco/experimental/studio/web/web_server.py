@@ -63,6 +63,81 @@ from websockets.http11 import Request
 from websockets.http11 import Response
 
 
+# Deliberate WebSocket close codes. Codes in the 4xxx range tell the
+# browser not to reconnect (see web_client_state_link.cc / web_client.cc).
+_WS_CLOSE_CONTROLLER_TAKEN = 4001  # /ui: another browser is controlling.
+_WS_CLOSE_SESSION_FULL = 4002  # /state: the spectator limit is reached.
+_WS_CLOSE_INACTIVE = 4003  # /state: hidden tab kicked to free a viewer slot.
+_WS_CLOSE_NOT_CONTROLLER = 4004  # /drop: only the controller may load models.
+
+# Controller-only message carrying the new spectator limit, e.g.
+# "max_spectators=4" (keep in sync: web_client.cc).
+_MAX_SPECTATORS_PREFIX = "max_spectators="
+
+# Upper bound on the runtime-editable spectator limit.
+_MAX_SPECTATOR_HARD_CAP = 32
+
+# A granted control claim must arrive within this window, else the grant
+# moves on down the queue.
+_GRANT_EXPIRY_SEC = 5.0
+
+# A controller whose tab stops running (hidden or closed without a clean
+# disconnect) is released once someone is waiting for control. Detected by
+# silence: a live controller tab sends input packets every frame.
+_CONTROLLER_SILENT_RELEASE_SEC = 90.0
+
+# Spectators are kicked after this much heartbeat silence (their tab is
+# hidden or gone), freeing a viewer slot. Live tabs heartbeat every ~30s.
+_SPECTATOR_SILENT_KICK_SEC = 300.0
+
+# How many browsers may watch in addition to the controller; the controller can
+# change it at runtime (up to _MAX_SPECTATOR_HARD_CAP). The limit is about
+# session behaviour — keeping the crowd and the control-request queue at a
+# manageable size — not about resources: a state payload is a few KB at
+# 60Hz, serialized once and sent per viewer, so even a full session costs
+# only a few Mbit/s of upload. There is deliberately no config or CLI
+# option (spectating exposes nothing that controlling does not).
+_DEFAULT_MAX_SPECTATORS = 8
+
+# Default public port, and how many consecutive ports to try when it is
+# taken (e.g. by another running viewer).
+_DEFAULT_HTTP_PORT = 8080
+_PORT_SCAN_COUNT = 20
+
+# NetImgui's CmdVersion handshake packet is always 120 bytes.
+_CMD_VERSION_SIZE = 120
+
+# How long a browser holding the controller slot waits for the headless
+# NetImgui client to (re)connect over loopback before the slot is released.
+# The client reconnects within ~1s in the normal case; this only bounds the
+# pathological one where it never appears (e.g. the headless UI failed to
+# start), so a stuck controller cannot lock every other browser out forever.
+_UI_TCP_WAIT_SEC = 15.0
+
+# Sent to the page whose control claim the controller slot is reserved for
+# (keep in sync: web_client.cc).
+_GRANT_MESSAGE = "grant"
+
+# Content types for the static files the HTTP handler serves.
+_CONTENT_TYPES = {
+    ".html": "text/html; charset=utf-8",
+    ".js": "text/javascript",
+    ".wasm": "application/wasm",
+    ".data": "application/octet-stream",
+    ".json": "application/json",
+    ".png": "image/png",
+    ".ico": "image/x-icon",
+}
+
+class _SessionMessage(enum.StrEnum):
+  """Text messages browsers send on /state (keep in sync: web_client.cc)."""
+
+  REQUEST_CONTROL = "request_control"
+  LEAVE_QUEUE = "leave_queue"
+  FORCE_CONTROL = "force_control"
+  HEARTBEAT = "heartbeat"
+
+
 class _WebServerFormatter(logging.Formatter):
 
   def format(self, record: logging.LogRecord) -> str:
@@ -127,61 +202,6 @@ def _configure_logging() -> None:
 _configure_logging()
 
 
-# Deliberate WebSocket close codes. Codes in the 4xxx range tell the
-# browser not to reconnect (see web_client_state_link.cc / web_client.cc).
-WS_CLOSE_CONTROLLER_TAKEN = 4001  # /ui: another browser is controlling.
-WS_CLOSE_SESSION_FULL = 4002  # /state: the spectator limit is reached.
-WS_CLOSE_INACTIVE = 4003  # /state: hidden tab kicked to free a viewer slot.
-WS_CLOSE_NOT_CONTROLLER = 4004  # /drop: only the controller may load models.
-
-
-class SessionMessage(enum.StrEnum):
-  """Text messages browsers send on /state (keep in sync: web_client.cc)."""
-
-  REQUEST_CONTROL = "request_control"
-  LEAVE_QUEUE = "leave_queue"
-  FORCE_CONTROL = "force_control"
-  HEARTBEAT = "heartbeat"
-
-
-# Sent to the page whose control claim the controller slot is reserved for
-# (keep in sync: web_client.cc).
-GRANT_MESSAGE = "grant"
-
-# Controller-only message carrying the new spectator limit, e.g.
-# "max_spectators=4" (keep in sync: web_client.cc).
-MAX_SPECTATORS_PREFIX = "max_spectators="
-
-# Upper bound on the runtime-editable spectator limit.
-MAX_SPECTATOR_HARD_CAP = 32
-
-
-# A granted control claim must arrive within this window, else the grant
-# moves on down the queue.
-_GRANT_EXPIRY_SEC = 5.0
-# A controller whose tab stops running (hidden or closed without a clean
-# disconnect) is released once someone is waiting for control. Detected by
-# silence: a live controller tab sends input packets every frame.
-_CONTROLLER_SILENT_RELEASE_SEC = 90.0
-# Spectators are kicked after this much heartbeat silence (their tab is
-# hidden or gone), freeing a viewer slot. Live tabs heartbeat every ~30s.
-_SPECTATOR_SILENT_KICK_SEC = 300.0
-
-# How many browsers may watch in addition to the controller; the controller can
-# change it at runtime (up to MAX_SPECTATOR_HARD_CAP). The limit is about
-# session behaviour — keeping the crowd and the control-request queue at a
-# manageable size — not about resources: a state payload is a few KB at
-# 60Hz, serialized once and sent per viewer, so even a full session costs
-# only a few Mbit/s of upload. There is deliberately no config or CLI
-# option (spectating exposes nothing that controlling does not).
-DEFAULT_MAX_SPECTATORS = 8
-
-# Default public port, and how many consecutive ports to try when it is
-# taken (e.g. by another running viewer).
-DEFAULT_HTTP_PORT = 8080
-_PORT_SCAN_COUNT = 20
-
-
 def bind_public_socket(host: str, port: int = 0) -> socket.socket:
   """Binds (but does not listen on) the public HTTP listening socket.
 
@@ -194,7 +214,7 @@ def bind_public_socket(host: str, port: int = 0) -> socket.socket:
       that accepts both IPv6 and IPv4 connections, falling back to IPv4-only
       when the machine has no IPv6 support.
     port: A specific port, or 0 to take the first free port starting at
-      DEFAULT_HTTP_PORT (so several viewers can run side by side).
+      _DEFAULT_HTTP_PORT (so several viewers can run side by side).
 
   Raises:
     RuntimeError: If the requested port (or every scanned port) is taken.
@@ -207,8 +227,8 @@ def bind_public_socket(host: str, port: int = 0) -> socket.socket:
   family = socket.AF_INET6 if ":" in host else socket.AF_INET
 
   candidates = (
-      [port] if port else range(DEFAULT_HTTP_PORT,
-                                DEFAULT_HTTP_PORT + _PORT_SCAN_COUNT)
+      [port] if port else range(_DEFAULT_HTTP_PORT,
+                                _DEFAULT_HTTP_PORT + _PORT_SCAN_COUNT)
   )
   for candidate in candidates:
     sock = socket.socket(family, socket.SOCK_STREAM)
@@ -227,7 +247,7 @@ def bind_public_socket(host: str, port: int = 0) -> socket.socket:
         "Pass a different --port, or 0 to pick one automatically."
     )
   raise RuntimeError(
-      f"Ports {DEFAULT_HTTP_PORT}-{DEFAULT_HTTP_PORT + _PORT_SCAN_COUNT - 1} "
+      f"Ports {_DEFAULT_HTTP_PORT}-{_DEFAULT_HTTP_PORT + _PORT_SCAN_COUNT - 1} "
       "are all in use — are that many web viewers running?"
   )
 
@@ -251,27 +271,6 @@ def _session_id(ws: ServerConnection) -> str:
     if part.startswith("sid="):
       return part[4:]
   return f"anon-{id(ws)}"
-
-
-# NetImgui's CmdVersion handshake packet is always 120 bytes.
-_CMD_VERSION_SIZE = 120
-
-# How long a browser holding the controller slot waits for the headless
-# NetImgui client to (re)connect over loopback before the slot is released.
-# The client reconnects within ~1s in the normal case; this only bounds the
-# pathological one where it never appears (e.g. the headless UI failed to
-# start), so a stuck controller cannot lock every other browser out forever.
-_UI_TCP_WAIT_SEC = 15.0
-
-_CONTENT_TYPES = {
-    ".html": "text/html; charset=utf-8",
-    ".js": "text/javascript",
-    ".wasm": "application/wasm",
-    ".data": "application/octet-stream",
-    ".json": "application/json",
-    ".png": "image/png",
-    ".ico": "image/x-icon",
-}
 
 
 def _terminate_process(
@@ -438,7 +437,7 @@ def _run_server(
     # asyncio holds only a weak reference, so without this a task can be
     # garbage-collected mid-sleep and never run.
     background_tasks: set[asyncio.Task] = set()
-    max_spectators = DEFAULT_MAX_SPECTATORS
+    max_spectators = _DEFAULT_MAX_SPECTATORS
     # Liveness by absence of traffic: a hidden tab's rendering loop stops,
     # so it cannot report anything — silence is the signal.
     last_heartbeat: dict[str, float] = {}
@@ -481,7 +480,7 @@ def _run_server(
         await grant_next()
         return
       try:
-        await client.send(GRANT_MESSAGE)
+        await client.send(_GRANT_MESSAGE)
       except (ConnectionClosed, ConnectionError):
         pending_grant_sid = None
         await grant_next()
@@ -504,16 +503,16 @@ def _run_server(
       """A control or heartbeat message from one browser (/state text)."""
       nonlocal pending_grant_sid, max_spectators
       last_heartbeat[sid] = loop_time()
-      if text == SessionMessage.REQUEST_CONTROL:
+      if text == _SessionMessage.REQUEST_CONTROL:
         if sid != controller_sid and sid not in control_queue:
           control_queue.append(sid)
           await grant_next()
           await broadcast_roster()
-      elif text == SessionMessage.LEAVE_QUEUE:
+      elif text == _SessionMessage.LEAVE_QUEUE:
         if sid in control_queue:
           control_queue.remove(sid)
           await broadcast_roster()
-      elif text == SessionMessage.FORCE_CONTROL:
+      elif text == _SessionMessage.FORCE_CONTROL:
         if sid != controller_sid:
           logger.info(f"[Session] {sid} forces control")
           if sid in control_queue:
@@ -522,19 +521,19 @@ def _run_server(
           if active_ui_ws is not None:
             # The bridge teardown frees the slot and grant_next honors
             # the pending claim; the ousted page settles into spectating.
-            await active_ui_ws.close(WS_CLOSE_CONTROLLER_TAKEN, "control taken")
+            await active_ui_ws.close(_WS_CLOSE_CONTROLLER_TAKEN, "control taken")
           else:
             await grant_next()
-      elif text == SessionMessage.HEARTBEAT:
+      elif text == _SessionMessage.HEARTBEAT:
         pass  # last_heartbeat is updated for every message.
-      elif text.startswith(MAX_SPECTATORS_PREFIX):
+      elif text.startswith(_MAX_SPECTATORS_PREFIX):
         if sid != controller_sid:
           return  # Only the controller sets the limit.
         try:
-          value = int(text[len(MAX_SPECTATORS_PREFIX):])
+          value = int(text[len(_MAX_SPECTATORS_PREFIX):])
         except ValueError:
           return
-        max_spectators = max(0, min(MAX_SPECTATOR_HARD_CAP, value))
+        max_spectators = max(0, min(_MAX_SPECTATOR_HARD_CAP, value))
         logger.info(f"[Session] Spectator limit set to {max_spectators}")
         # Enforce the new limit immediately, kicking the newest spectators
         # first. A kicked page shows the session-full notice and retries,
@@ -549,7 +548,7 @@ def _run_server(
           if client is not None:
             logger.info(f"[Session] Kicking spectator over the new limit")
             try:
-              await client.close(WS_CLOSE_SESSION_FULL, "session full")
+              await client.close(_WS_CLOSE_SESSION_FULL, "session full")
             except (ConnectionClosed, ConnectionError):
               pass
           excess -= 1
@@ -567,7 +566,7 @@ def _run_server(
             and (control_queue or pending_grant_sid)
         ):
           logger.info("[Session] Releasing control from an inactive controller")
-          await active_ui_ws.close(WS_CLOSE_CONTROLLER_TAKEN, "inactive")
+          await active_ui_ws.close(_WS_CLOSE_CONTROLLER_TAKEN, "inactive")
         for sid, client in list(state_clients.items()):
           if sid == controller_sid:
             continue
@@ -575,7 +574,7 @@ def _run_server(
           if now - seen > _SPECTATOR_SILENT_KICK_SEC:
             logger.info(f"[Session] Kicking inactive spectator {sid}")
             try:
-              await client.close(WS_CLOSE_INACTIVE, "inactive")
+              await client.close(_WS_CLOSE_INACTIVE, "inactive")
             except (ConnectionClosed, ConnectionError):
               pass
 
@@ -605,12 +604,12 @@ def _run_server(
         # One controller at a time. The rejected browser spectates and may retry
         # via its "Take control" button once the controller leaves.
         logger.debug("[UiBridge] Controller slot taken; rejecting new browser")
-        await ws.close(WS_CLOSE_CONTROLLER_TAKEN, "controller slot taken")
+        await ws.close(_WS_CLOSE_CONTROLLER_TAKEN, "controller slot taken")
         return
       sid = _session_id(ws)
       if pending_grant_sid is not None and sid != pending_grant_sid:
         # The slot is reserved for a granted page (queue fairness).
-        await ws.close(WS_CLOSE_CONTROLLER_TAKEN, "controller slot reserved")
+        await ws.close(_WS_CLOSE_CONTROLLER_TAKEN, "controller slot reserved")
         return
       if sid == pending_grant_sid:
         pending_grant_sid = None
@@ -657,7 +656,7 @@ def _run_server(
           controller_sid = None
           await grant_next()
           await broadcast_roster()
-        await ws.close(WS_CLOSE_CONTROLLER_TAKEN, "controller unavailable")
+        await ws.close(_WS_CLOSE_CONTROLLER_TAKEN, "controller unavailable")
         return
       my_reader, my_writer = tcp_reader, tcp_writer
 
@@ -722,7 +721,7 @@ def _run_server(
       # genuinely new sid consumes a slot.
       if sid not in state_clients and len(state_clients) > max_spectators:
         logger.info("[StateWS] Session full; rejecting browser")
-        await ws.close(WS_CLOSE_SESSION_FULL, "session full")
+        await ws.close(_WS_CLOSE_SESSION_FULL, "session full")
         return
       state_clients[sid] = ws
       last_heartbeat[sid] = loop_time()
@@ -821,7 +820,7 @@ def _run_server(
       """
       if controller_sid is None or _session_id(ws) != controller_sid:
         logger.info("[Drop] Ignored a model drop from a non-controller page")
-        await ws.close(WS_CLOSE_NOT_CONTROLLER, "not the controller")
+        await ws.close(_WS_CLOSE_NOT_CONTROLLER, "not the controller")
         return
       files: dict[str, bytes] = {}
       complete = False

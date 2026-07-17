@@ -18,18 +18,17 @@
 //
 // The browser renders with the same call the native viewer makes each frame:
 //
-//   Render(model, data, perturb, camera, vis_options, width, height,
-//          extra_geoms)
+// Render(model, data, perturb, camera, vis_options, width, height, extra_geoms)
 //
 // width/height are the browser's own canvas size. The other arguments come
 // from the Python process, each sent in its cheapest form:
 //
-//   * model       — fetched once over HTTP as /model.mjb; its runtime-mutable
+//   * model       : fetched once over HTTP as /model.mjb; its runtime-mutable
 //                   parts (opt/vis/stat) re-sent in the render state block.
-//   * data        — streamed as the physics state vector (mjSTATE_INTEGRATION);
+//   * data        : streamed as the physics state vector (mjSTATE_INTEGRATION);
 //                   the browser recomputes the rest via mj_setState/mj_forward.
-//   * extra_geoms — optional variable-size kTagExtraGeoms block.
-//   * the rest    — the fixed-size render state block:
+//   * extra_geoms : optional variable-size kTagExtraGeoms block.
+//   * the rest    : the fixed-size render state block:
 //                   [mjvCamera][mjvPerturb][mjvOption][mjOption][mjVisual]
 //                   [mjStatistic][render_flags]
 //

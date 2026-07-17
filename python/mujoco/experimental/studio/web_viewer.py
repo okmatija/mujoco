@@ -55,8 +55,12 @@ import numpy as np
 from mujoco.experimental.dear_imgui import dear_imgui as imgui
 
 
+# File extensions a dropped file may load as a model (see _pick_drop_root).
+_MODEL_EXTENSIONS = ('.xml', '.urdf', '.mjb', '.mjz', '.zip')
+
+
 def _find_assets_dir() -> str:
-  """Locates the Studio assets directory (fonts) inside the mujoco package."""
+  """Locates the Studio assets directory inside the mujoco package."""
   env_dir = os.environ.get('MUJOCO_STUDIO_ASSETS_DIR')
   if env_dir and os.path.isdir(env_dir):
     return env_dir
@@ -70,11 +74,8 @@ def _find_assets_dir() -> str:
 def _lan_ips() -> tuple[str | None, str | None]:
   """Returns this machine's outbound-interface (IPv6, IPv4) addresses.
 
-  Connecting a UDP socket sends no packets; it only asks the kernel which
-  local address would route to the destination. These are the addresses
-  other machines on the same network can reach the viewer at. A None entry
-  means that family has no shareable address (link-local and loopback do
-  not count).
+  These are the addresses other machines on the same network can reach the
+  viewer at. A None entry means that family has no shareable address.
   """
 
   def probe(
@@ -124,9 +125,6 @@ def _print_url_banner(host: str, port: int) -> None:
       '╰' + '─' * (width + 2) + '╯',
   ]
   print('\n'.join(banner), flush=True)
-
-
-_MODEL_EXTENSIONS = ('.xml', '.urdf', '.mjb', '.mjz', '.zip')
 
 
 def _pick_drop_root(paths: list[str]) -> str | None:
@@ -220,9 +218,9 @@ class WebViewer(viewer_protocol.Viewer):
 
     self._host = host
     # Bind both listening sockets up front, in this process: bind conflicts
-    # surface here as one clear error (instead of inside the server child),
-    # the public port stays stable across server restarts, and the loopback
-    # port is OS-assigned so viewer instances can never collide on it.
+    # surface here as one clear error, the public port stays stable across
+    # server restarts, and the loopback port is OS-assigned so viewer instances
+    # can never collide on it.
     requested_port = config.http_port if http_port is None else http_port
     self._http_sock = web_server.bind_public_socket(host, requested_port)
     self._http_port = self._http_sock.getsockname()[1]
@@ -237,19 +235,17 @@ class WebViewer(viewer_protocol.Viewer):
     )
 
     # Point the Python Dear ImGui bindings at the headless context so that
-    # viewer-side handlers (ViewerApp etc.) build their GUI into it. The
-    # ImPlot context must be shared the same way.
+    # viewer-side handlers build their GUI into it. The ImPlot context must be
+    # shared in the same way.
     ctx = self._headless_ui.get_context()
     imgui.SetCurrentContext(ctx)
     ux.set_imgui_context(ctx)
     ux.set_implot_context(self._headless_ui.get_implot_context())
-    # The Python implot bindings hold their own context globals too; share
-    # both pointers or user plotting code (e.g. the implot sample) crashes.
     implot.set_imgui_context(ctx)
     implot.set_implot_context(self._headless_ui.get_implot_context())
 
-    # The single-port server (HTTP + /ui + /state). This is restarted whenever
-    # the model changes.
+    # The single-port server (HTTP + /ui + /state + /drop). This is restarted
+    # whenever the model changes.
     self._web_server: web_server.WebServer | None = None
     self._model_crc32 = 0
     # Files dropped onto the browser page arrive here from the server child

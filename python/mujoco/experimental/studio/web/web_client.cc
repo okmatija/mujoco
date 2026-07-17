@@ -157,7 +157,7 @@ struct AppState {
 AppState g_app;
 
 // Session-channel messages, sent and received as text frames on the state
-// WebSocket. Keep in sync with SessionMessage / GRANT_MESSAGE in
+// WebSocket. Keep in sync with _SessionMessage / _GRANT_MESSAGE in
 // web_server.py.
 constexpr char kMsgRequestControl[] = "request_control";
 constexpr char kMsgLeaveQueue[] = "leave_queue";
