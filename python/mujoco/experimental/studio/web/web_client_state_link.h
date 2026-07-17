@@ -100,6 +100,9 @@ class StateLink {
   void HandleMessage(const uint8_t* data, uint32_t num_bytes);
 
  private:
+  // Detaches callbacks and frees socket_ (if any), resetting to disconnected.
+  void CloseSocket();
+
   static EM_BOOL OnWsMessage(int event_type,
                              const EmscriptenWebSocketMessageEvent* event,
                              void* user_data);

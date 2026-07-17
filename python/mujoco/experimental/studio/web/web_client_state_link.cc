@@ -60,7 +60,6 @@ EM_BOOL StateLink::OnWsClose(int event_type,
                              void* user_data) {
   auto* link = static_cast<StateLink*>(user_data);
   LOG(Info, "State WebSocket closed (code=%d)", event->code);
-  link->socket_ = 0;
   link->open_ = false;
   // Codes 4000-4999 are deliberate server-side closes (e.g. 4002 =
   // session full). These conditions pass, so the GUI shows a notice while
@@ -70,10 +69,29 @@ EM_BOOL StateLink::OnWsClose(int event_type,
     LOG(Info, "Server ended this connection (code=%d); retrying slowly.",
         event->code);
   }
+  // Free the handle; without this, every closed socket (including each
+  // failed reconnect) leaks its handle and callback registrations in
+  // Emscripten's socket table. StateLink (this) is a stable global, so the
+  // user_data of any already-queued event stays valid; detaching the
+  // callbacks first stops them firing on the freed handle.
+  link->CloseSocket();
   return EM_TRUE;
 }
 
+void StateLink::CloseSocket() {
+  if (socket_ <= 0) return;
+  emscripten_websocket_set_onopen_callback(socket_, nullptr, nullptr);
+  emscripten_websocket_set_onmessage_callback(socket_, nullptr, nullptr);
+  emscripten_websocket_set_onerror_callback(socket_, nullptr, nullptr);
+  emscripten_websocket_set_onclose_callback(socket_, nullptr, nullptr);
+  emscripten_websocket_delete(socket_);
+  socket_ = 0;
+  open_ = false;
+}
+
 void StateLink::Connect(const std::string& url) {
+  // Drop any lingering socket first so a reconnect cannot leak the old one.
+  CloseSocket();
   EmscriptenWebSocketCreateAttributes attr;
   emscripten_websocket_init_create_attributes(&attr);
   attr.url = url.c_str();
