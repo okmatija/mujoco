@@ -604,7 +604,8 @@ void BuildBrowserGui() {
     if (g_app.spectator) {
       // Control group.
       centered_banner("SPECTATING", kSpectatingColor);
-      ImGui::Text("Viewers connected: %d", g_app.session_viewers);
+      ImGui::Text("Spectators: %d",
+                  g_app.session_viewers > 1 ? g_app.session_viewers - 1 : 0);
       if (g_app.queue_pos > 0) {
         ImGui::Text("Control queue: you are #%d of %d.", g_app.queue_pos,
                     g_app.queue_len);
@@ -631,6 +632,11 @@ void BuildBrowserGui() {
         }
       }
 
+      // Data rate group.
+      ImGui::Separator();
+      ImGui::Text("Data Rate (Sim): %" PRIu64 " KiB/s",
+                  static_cast<uint64_t>(g_telemetry.sim_bytes_per_sec / 1024));
+
       // Camera group.
       ImGui::Separator();
       // TODO(matijak): Use the studio camera-selection UI here in future, so
@@ -642,11 +648,6 @@ void BuildBrowserGui() {
                        "Free: tumble\0Free: wasd\0Follow Controller\0")) {
         SetSpectatorCameraMode(cam_mode);
       }
-
-      // Data rate group.
-      ImGui::Separator();
-      ImGui::Text("Data Rate (Sim): %" PRIu64 " KiB/s",
-                  static_cast<uint64_t>(g_telemetry.sim_bytes_per_sec / 1024));
     } else {
       // Control group.
       centered_banner("CONTROLLING", kControllingColor);
