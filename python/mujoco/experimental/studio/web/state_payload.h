@@ -12,7 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Serialization of the render state sent to the web viewer browser app.
+// The web viewer's state payload: the wire format of the /state
+// WebSocket, serialized by the Python side (state_payload.cc) and parsed
+// by the browser (web_client_state_link.cc).
 //
 // The browser renders with the same call the native viewer makes each frame:
 //

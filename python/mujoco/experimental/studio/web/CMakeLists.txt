@@ -106,17 +106,18 @@ if(EMSCRIPTEN)
   )
 else()
   # ---------------------------------------------------------------------------
-  # ui_server pybind module (built from the Python bindings build).
+  # headless_ui and state_payload pybind modules (built from the Python
+  # bindings build).
   # ---------------------------------------------------------------------------
   if(WIN32)
-    message(WARNING "The web viewer ui_server module is not yet supported on "
+    message(WARNING "The web viewer modules are not yet supported on "
                     "Windows. Skipping.")
     return()
   endif()
 
   if(NOT TARGET mujoco::dep::implot)
     message(WARNING "mujoco::dep::implot target not found. The web viewer "
-                    "ui_server module will not be built.")
+                    "modules will not be built.")
     return()
   endif()
 
@@ -125,17 +126,23 @@ else()
     return()
   endif()
 
-  mujoco_pybind11_module(ui_server ui_server.cc)
-  target_link_libraries(ui_server PRIVATE
+  mujoco_pybind11_module(headless_ui headless_ui.cc)
+  target_link_libraries(headless_ui PRIVATE
     mujoco
     mujoco::dep::implot
     netimgui
+  )
+
+  mujoco_pybind11_module(state_payload state_payload.cc)
+  target_link_libraries(state_payload PRIVATE
+    mujoco
     structs_header
     structs_wrappers
   )
 
   set(MUJOCO_WEB_VIEWER_TARGETS
-      ui_server
+      headless_ui
+      state_payload
       PARENT_SCOPE
   )
 endif()

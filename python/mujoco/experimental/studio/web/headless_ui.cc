@@ -12,20 +12,17 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// MuJoCo web viewer UI server.
+// The web viewer's headless Studio UI.
 //
-// A Python module to stream a MuJoCo simulation and ImGui UI to the browser.
-//
-// This pybind11 module provides a lightweight UiServer class that:
+// This pybind11 module provides a HeadlessUi class that:
 // 1. Creates a headless ImGui context (no window, no renderer).
 // 2. Connects as a netimgui client, streaming ImGui draw data to a remote
-//    viewer.
+//    viewer (the browser's web_client, bridged through web_server.py).
 // 3. Receives input events from the remote viewer and injects them into
 //    the ImGui context.
 
 #include <imgui.h>
 #include <implot.h>
-#include <mujoco/mujoco.h>
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 
@@ -43,8 +40,6 @@
 
 #include "NetImgui_Api.h"
 #include "google/logging.h"
-#include "state_payload.h"
-#include "structs.h"
 
 namespace py = pybind11;
 
@@ -191,9 +186,9 @@ static void Client_Connect(const char* title, int port) {
   }
 }
 
-class UiServer {
+class HeadlessUi {
  public:
-  UiServer(const std::string& title, int port, const std::string& assets_dir)
+  HeadlessUi(const std::string& title, int port, const std::string& assets_dir)
       : title_(title), port_(port) {
     if (!Client_Startup(context_, assets_dir)) {
       return;
@@ -209,7 +204,7 @@ class UiServer {
          NetImgui::IsConnectionPending() ? "true" : "false");
   }
 
-  ~UiServer() { Client_Shutdown(context_); }
+  ~HeadlessUi() { Client_Shutdown(context_); }
 
   // Makes a NewFrame() call return false instead of blocking. Thread safe.
   void RequestClose() { close_requested_ = true; }
@@ -281,39 +276,6 @@ class UiServer {
     NetImgui::EndFrame();
   }
 
-  // Serialize the complete state WebSocket payload (see state_payload.h):
-  // physics state, render state and extra geoms as tagged blocks.
-  py::bytes SerializeStatePayload(
-      uint32_t model_crc32, int physics_spec, const py::bytes& physics_state,
-      const mujoco::python::MjvCameraWrapper& camera,
-      const mujoco::python::MjvPerturbWrapper& perturb,
-      const mujoco::python::MjvOptionWrapper& vis_options,
-      const mujoco::python::MjModelWrapper& model,
-      const std::vector<uint8_t>& render_flags,
-      const std::vector<mujoco::python::MjvGeomWrapper>& extra_geoms) {
-    std::vector<mjvGeom> geoms;
-    geoms.reserve(extra_geoms.size());
-    for (const mujoco::python::MjvGeomWrapper& geom_wrapper : extra_geoms) {
-      if (geom_wrapper.get()) {
-        geoms.push_back(*geom_wrapper.get());
-      }
-    }
-
-    std::string physics = physics_state;
-    const std::vector<char> buffer = mujoco::studio::SerializeStatePayload(
-        model_crc32, physics_spec, physics.data(), physics.size(),
-        *camera.get(), *perturb.get(), *vis_options.get(), model.get()->opt,
-        model.get()->vis, model.get()->stat, render_flags, geoms.data(),
-        geoms.size());
-    return py::bytes(buffer.data(), buffer.size());
-  }
-
-  // Upper bound of a serialized payload for a model whose physics state is
-  // `physics_bytes` long. Used to size the StateServer's shared memory.
-  static size_t MaxStatePayloadSize(size_t physics_bytes) {
-    return mujoco::studio::MaxStatePayloadSize(physics_bytes);
-  }
-
   // Uploads an RGB/RGBA image to the browser over the NetImgui texture
   // channel so handlers can display it with imgui.Image(). Returns the
   // texture id to use (allocates one when tex_id == 0). This is the UI-link
@@ -379,27 +341,23 @@ class UiServer {
   uintptr_t next_tex_id_ = 0x10000;
 };
 
-PYBIND11_MODULE(ui_server, m, pybind11::mod_gil_not_used()) {
-  py::module_::import("mujoco._structs");
-  m.doc() = "MuJoCo web viewer UI server: NetImgui client and state streaming";
+PYBIND11_MODULE(headless_ui, m, pybind11::mod_gil_not_used()) {
+  m.doc() = "MuJoCo web viewer headless Studio UI, streamed via NetImgui";
 
-  py::class_<UiServer>(m, "UiServer")
+  py::class_<HeadlessUi>(m, "HeadlessUi")
       .def(py::init<const std::string&, int, const std::string&>(),
            py::arg("title"), py::arg("port") = 8888, py::arg("assets_dir") = "")
-      .def("new_frame", &UiServer::NewFrame,
+      .def("new_frame", &HeadlessUi::NewFrame,
            "Starts a headless ImGui frame, returning True once the frame is "
            "active. When a browser is viewing the page (via the URL printed "
            "at startup), this returns at the browser's requested frame rate. "
            "When no browser is viewing, it blocks until one connects. "
            "Returns False only if request_close() interrupts the wait.")
-      .def("request_close", &UiServer::RequestClose,
+      .def("request_close", &HeadlessUi::RequestClose,
            "Makes a blocked (or future) new_frame() call return False. "
            "Safe to call from any thread.")
-      .def("end_frame", &UiServer::EndFrame)
-      .def("get_context", &UiServer::GetContext)
-      .def("get_implot_context", &UiServer::GetImPlotContext)
-      .def("serialize_state_payload", &UiServer::SerializeStatePayload)
-      .def("upload_image", &UiServer::UploadImage)
-      .def_static("max_state_payload_size", &UiServer::MaxStatePayloadSize);
-  m.attr("MAX_EXTRA_GEOMS") = mujoco::studio::kMaxExtraGeoms;
+      .def("end_frame", &HeadlessUi::EndFrame)
+      .def("get_context", &HeadlessUi::GetContext)
+      .def("get_implot_context", &HeadlessUi::GetImPlotContext)
+      .def("upload_image", &HeadlessUi::UploadImage);
 }

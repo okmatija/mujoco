@@ -1,12 +1,26 @@
+# Copyright 2026 DeepMind Technologies Limited
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     https://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """Single-port web server for the MuJoCo web viewer.
 
 This server runs in a child process with one asyncio loop on a single public port:
 
   * Plain HTTP GET     serves static files (index.html, WASM, assets), /model.mjb.
   * WebSocket /ui      serves the bridge to the headless NetImgui client, which
-                       connects over loopback TCP (see ui_server.cc).
+                       connects over loopback TCP (see headless_ui.cc).
   * WebSocket /state   serves the latest-wins state payload broadcast at ~60Hz
-                       (payload format: see render_state.h) as binary frames,
+                       (payload format: see state_payload.h) as binary frames,
                        and session roster updates as text frames.
 
 Because everything is served through one port, a single firewall rule,
@@ -112,7 +126,7 @@ _configure_logging()
 
 
 # Deliberate WebSocket close codes. Codes in the 4xxx range tell the
-# browser not to reconnect (see state_link.cc / web_client.cc).
+# browser not to reconnect (see web_client_state_link.cc / web_client.cc).
 WS_CLOSE_DRIVER_TAKEN = 4001  # /ui: another browser holds the driver slot.
 WS_CLOSE_SESSION_FULL = 4002  # /state: the spectator limit is reached.
 WS_CLOSE_INACTIVE = 4003  # /state: hidden tab kicked to free a viewer slot.
@@ -395,7 +409,7 @@ def _run_server(
     )
 
   async def main_loop() -> None:
-    # The NetImgui client connection (from the headless ui_server, loopback
+    # The NetImgui client connection (from HeadlessUi, loopback
     # TCP). The client retries every second, so after a teardown a fresh
     # connection shows up quickly.
     tcp_reader = None
@@ -874,7 +888,7 @@ class WebServer:
 
     # Shared memory for zero-copy payload transfer to the server process:
     # [u32 length][payload bytes], so payloads can vary in size up to
-    # max_payload_size (see UiServer.max_state_payload_size).
+    # max_payload_size (see state_payload.max_state_payload_size).
     self._shm_capacity = max_payload_size
     self._shm_array = (
         multiprocessing.RawArray(ctypes.c_char, 4 + self._shm_capacity)

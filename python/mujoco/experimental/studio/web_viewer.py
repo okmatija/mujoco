@@ -46,7 +46,8 @@ from mujoco.experimental.studio import endpoints
 from mujoco.experimental.studio import messages
 from mujoco.experimental.studio import ux
 from mujoco.experimental.studio import viewer_protocol
-from mujoco.experimental.studio.web import ui_server
+from mujoco.experimental.studio.web import headless_ui
+from mujoco.experimental.studio.web import state_payload
 from mujoco.experimental.studio.web import web_server
 import numpy as np
 
@@ -228,7 +229,7 @@ class WebViewer(viewer_protocol.Viewer):
     self._ui_tcp_port = self._tcp_sock.getsockname()[1]
 
     # Headless ImGui context streaming UI draw data via NetImgui.
-    self._ui_server = ui_server.UiServer(
+    self._headless_ui = headless_ui.HeadlessUi(
         config.title or 'MuJoCo Web Viewer',
         self._ui_tcp_port,
         _find_assets_dir(),
@@ -237,14 +238,14 @@ class WebViewer(viewer_protocol.Viewer):
     # Point the Python Dear ImGui bindings at the headless context so that
     # viewer-side handlers (ViewerApp etc.) build their GUI into it. The
     # ImPlot context must be shared the same way.
-    ctx = self._ui_server.get_context()
+    ctx = self._headless_ui.get_context()
     imgui.SetCurrentContext(ctx)
     ux.set_imgui_context(ctx)
-    ux.set_implot_context(self._ui_server.get_implot_context())
+    ux.set_implot_context(self._headless_ui.get_implot_context())
     # The Python implot bindings hold their own context globals too; share
     # both pointers or user plotting code (e.g. the implot sample) crashes.
     implot.set_imgui_context(ctx)
-    implot.set_implot_context(self._ui_server.get_implot_context())
+    implot.set_implot_context(self._headless_ui.get_implot_context())
 
     # The single-port server (HTTP + /ui + /state). This is restarted whenever
     # the model changes.
@@ -279,7 +280,7 @@ class WebViewer(viewer_protocol.Viewer):
     self._model_crc32 = zlib.crc32(mjb_data)
 
     _, state_size = self._state_signature_and_size()
-    max_payload = ui_server.UiServer.max_state_payload_size(
+    max_payload = state_payload.max_state_payload_size(
         state_size * np.float64().itemsize
     )
 
@@ -326,7 +327,7 @@ class WebViewer(viewer_protocol.Viewer):
       # Injects browser input (received via NetImgui) into the ImGui context
       # and paces the loop to the browser's desired frame rate. Returns False
       # only when request_close() interrupted the wait.
-      if not self._ui_server.new_frame():
+      if not self._headless_ui.new_frame():
         self.close()
     return super().is_running()
 
@@ -337,7 +338,7 @@ class WebViewer(viewer_protocol.Viewer):
     Ctrl+C shuts the viewer down even when no browser is attached.
     """
     super().request_close()
-    self._ui_server.request_close()
+    self._headless_ui.request_close()
 
   def sync(self) -> None:
     """Streams state to the browser and ends the headless ImGui frame."""
@@ -345,7 +346,7 @@ class WebViewer(viewer_protocol.Viewer):
       sig, state_size = self._state_signature_and_size()
       state = np.empty(state_size, np.float64)
       mujoco.mj_getState(self.model, self.data, state, sig)
-      payload = self._ui_server.serialize_state_payload(
+      payload = state_payload.serialize_state_payload(
           self._model_crc32,
           sig,
           state.tobytes(),
@@ -354,12 +355,12 @@ class WebViewer(viewer_protocol.Viewer):
           self.vis_options,
           self.model,
           list(self.render_flags.flags),
-          self.extra_geoms[: ui_server.MAX_EXTRA_GEOMS],
+          self.extra_geoms[: state_payload.MAX_EXTRA_GEOMS],
       )
       self._web_server.update_state(payload)
 
     # Finish the ImGui frame; NetImgui sends the draw data to the browser.
-    self._ui_server.end_frame()
+    self._headless_ui.end_frame()
 
   def close(self) -> None:
     self._stop_servers()
@@ -412,4 +413,4 @@ class WebViewer(viewer_protocol.Viewer):
     """Uploads an image to the browser over the NetImgui texture channel."""
     if isinstance(img, str):
       img = img.encode('latin-1')
-    return self._ui_server.upload_image(tex_id, img, width, height, bpp)
+    return self._headless_ui.upload_image(tex_id, img, width, height, bpp)

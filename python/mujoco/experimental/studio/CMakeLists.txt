@@ -95,7 +95,8 @@ if(APPLE)
       renderer
       ux
       sim
-      ui_server
+      headless_ui
+      state_payload
       dear_imgui
       implot
   )
