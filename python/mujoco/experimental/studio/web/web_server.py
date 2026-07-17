@@ -818,12 +818,14 @@ def _run_server(
         await ws.close(WS_CLOSE_NOT_CONTROLLER, "not the controller")
         return
       files: dict[str, bytes] = {}
+      complete = False
       try:
         async for message in ws:
           if not isinstance(message, bytes):
             continue
           if not message:
-            break  # End-of-drop marker.
+            complete = True  # End-of-drop marker.
+            break
           if len(message) < 4:
             continue
           (name_len,) = struct.unpack_from("<I", message)
@@ -833,7 +835,17 @@ def _run_server(
           files[name] = message[4 + name_len :]
       except (ConnectionClosed, ConnectionError):
         pass
-      if files and drop_queue is not None:
+      # Only forward a drop that arrived in full. A connection that dies
+      # before the end marker (e.g. a file frame exceeding the websocket
+      # size cap closes it with 1009) leaves a partial file set that would
+      # load as a broken model, so discard it instead.
+      if not complete:
+        if files:
+          logger.info(
+              f"[Drop] Incomplete drop ({len(files)} file(s) before the"
+              " connection closed); discarding."
+          )
+      elif files and drop_queue is not None:
         total = sum(len(data) for data in files.values())
         logger.info(f"[Drop] Received {len(files)} file(s), {total} bytes")
         drop_queue.put(files)
