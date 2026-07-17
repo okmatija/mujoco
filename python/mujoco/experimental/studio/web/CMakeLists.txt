@@ -20,10 +20,10 @@ if(EMSCRIPTEN)
   # ---------------------------------------------------------------------------
   # Browser WASM client (built from the main MuJoCo tree).
   # ---------------------------------------------------------------------------
+  # netimgui always builds under Emscripten; if its target is somehow missing
+  # (a real misconfiguration) the target_link_libraries below fails loudly,
+  # which is what we want.
   add_subdirectory(${NETIMGUI_DIR} ${CMAKE_CURRENT_BINARY_DIR}/netimgui)
-  if(NOT TARGET netimgui)
-    return()
-  endif()
 
   add_executable(web_client web_client.cc web_client_ui_link.cc
                  web_client_state_link.cc)
@@ -50,9 +50,10 @@ if(EMSCRIPTEN)
     -Wl,--whole-archive $<TARGET_FILE:mujoco> -Wl,--no-whole-archive
   )
 
-  # Compile with exception support so the try/catch around MainLoop can
-  # catch throws escaping the RAF callback (emscripten disables EH by
-  # default at compile time; -fexceptions below only covers linking).
+  # Compile with exception support so the try/catch around MainLoop can catch
+  # throws escaping the requestAnimationFrame callback. Emscripten disables
+  # exception handling by default at compile time; the -fexceptions in the
+  # link options below only covers linking.
   target_compile_options(web_client PRIVATE -fexceptions)
 
   # Filament's OpenGL backend requires WebGL2 / full ES3 bindings.
