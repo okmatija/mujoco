@@ -22,6 +22,8 @@ This server runs in a child process with one asyncio loop on a single public por
   * WebSocket /state   serves the latest-wins state payload broadcast at ~60Hz
                        (payload format: see state_payload.h) as binary frames,
                        and session roster updates as text frames.
+  * WebSocket /drop    receives models dragged onto the page (one binary
+                       frame per file, driver only; see drop_handler).
 
 Because everything is served through one port, a single firewall rule,
 port-forward, or HTTPS tunnel exposes the whole viewer. The browser derives its
