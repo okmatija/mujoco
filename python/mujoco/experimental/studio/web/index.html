@@ -109,6 +109,19 @@ limitations under the License.
         }
         for (const entry of entries) await walk(entry, "");
         if (!files.length) return;
+        // The server caps each WebSocket message (see web_server.py's
+        // serve(max_size=...)); a single file above it would be closed with
+        // 1009 mid-upload and the drop discarded. Catch it here with a clear
+        // message instead of a silent failure.
+        const MAX_DROP_FILE_BYTES = 64 * 1024 * 1024;
+        const tooBig = files.find((f) => f.file.size > MAX_DROP_FILE_BYTES);
+        if (tooBig) {
+          console.warn(
+            `Model drop rejected: "${tooBig.path}" is larger than ` +
+              `${MAX_DROP_FILE_BYTES / (1024 * 1024)} MiB.`
+          );
+          return;
+        }
         const frames = [];
         for (const { path, file } of files) {
           const bytes = new Uint8Array(await file.arrayBuffer());
@@ -135,6 +148,10 @@ limitations under the License.
           if (ev.code === 4004) {
             console.warn(
               "Model drop rejected: only the controlling page can load models."
+            );
+          } else if (ev.code === 1009) {
+            console.warn(
+              "Model drop rejected: a file exceeded the server's size limit."
             );
           }
         };
