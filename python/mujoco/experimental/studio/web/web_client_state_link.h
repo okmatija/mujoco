@@ -49,6 +49,16 @@ class StateLink {
 
   void Connect(const std::string& url);
 
+  // Records the CRC32 of the model this page actually loaded (from the
+  // fetched /model.mjb bytes), so the first payload already reveals a model
+  // that changed between the fetch and the first /state frame. Without this
+  // the baseline is adopted from the first payload and such a race is never
+  // detected. Must match zlib.crc32 (web_viewer.py's model_crc32).
+  void SetModelCrc32(uint32_t crc) {
+    model_crc32_ = crc;
+    have_model_crc32_ = true;
+  }
+
   // Sends a session message (control requests, activity reports) to the
   // server as a text frame. Dropped silently while not connected.
   void SendText(const char* text);

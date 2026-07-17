@@ -964,6 +964,20 @@ void SetupScene(const mjModel* m) {
   }
 }
 
+// Standard CRC-32 (ISO-HDLC, poly 0xEDB88320), matching Python's zlib.crc32
+// so the fetched model's checksum can be compared against the crc the Python
+// side stamps into each state payload.
+uint32_t Crc32(const uint8_t* data, size_t len) {
+  uint32_t crc = 0xFFFFFFFFu;
+  for (size_t i = 0; i < len; ++i) {
+    crc ^= data[i];
+    for (int bit = 0; bit < 8; ++bit) {
+      crc = (crc >> 1) ^ (0xEDB88320u & (~(crc & 1u) + 1u));
+    }
+  }
+  return crc ^ 0xFFFFFFFFu;
+}
+
 void OnFetchSuccess(emscripten_fetch_t* fetch) {
   LOG(Info, "Fetched model.mjb, size: %llu", fetch->numBytes);
   g_app.model_holder = mujoco::platform::ModelHolder::FromBuffer(
@@ -977,6 +991,11 @@ void OnFetchSuccess(emscripten_fetch_t* fetch) {
     if (g_app.window) {
       SetupScene(g_app.model_holder->model());
     }
+    // Baseline the state link on the model we just fetched, so a model swap
+    // that raced this fetch is caught by the very first payload.
+    g_state_link.SetModelCrc32(
+        Crc32(reinterpret_cast<const uint8_t*>(fetch->data),
+              static_cast<size_t>(fetch->numBytes)));
     // Connect the state WebSocket to receive simulation state from Python.
     g_state_link.Connect(WsUrl("/state"));
   } else {
