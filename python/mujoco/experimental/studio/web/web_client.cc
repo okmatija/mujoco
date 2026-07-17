@@ -627,7 +627,7 @@ void BuildBrowserGui() {
           g_state_link.SendText(kMsgForceControl);
           g_app.force_confirm = false;
         }
-        if (ImGui::Button("Cancel", kFullWidth)) {
+        if (ImGui::Button("Cancel taking control", kFullWidth)) {
           g_app.force_confirm = false;
         }
       }
