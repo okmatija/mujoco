@@ -1006,9 +1006,28 @@ void OnFetchSuccess(emscripten_fetch_t* fetch) {
   emscripten_fetch_close(fetch);
 }
 
+void StartModelFetch();
+
 void OnFetchError(emscripten_fetch_t* fetch) {
-  LOG(Error, "Failed to fetch model.mjb, status: %d", fetch->status);
+  LOG(Error, "Failed to fetch model.mjb, status: %d; retrying", fetch->status);
   emscripten_fetch_close(fetch);
+  // The most likely cause is the Python side restarting its server after a
+  // model change, so retry rather than leaving the page permanently blank
+  // (nothing else re-triggers the fetch — the state link is only connected
+  // on fetch success).
+  emscripten_async_call([](void*) { StartModelFetch(); }, nullptr, 1000);
+}
+
+void StartModelFetch() {
+  emscripten_fetch_attr_t attr;
+  emscripten_fetch_attr_init(&attr);
+  strcpy(attr.requestMethod, "GET");
+  attr.attributes = EMSCRIPTEN_FETCH_LOAD_TO_MEMORY;
+  attr.onsuccess = OnFetchSuccess;
+  attr.onerror = OnFetchError;
+  // Relative URL — the browser resolves this against the page origin,
+  // so it works regardless of hostname, protocol, or port.
+  emscripten_fetch(&attr, "/model.mjb");
 }
 
 // Loads an asset from the Emscripten virtual filesystem. The Filament assets
@@ -1088,15 +1107,7 @@ int main(int argc, char** argv) {
   // The UI stream is a path on the page's own host and port.
   g_ui_link.Connect(WsUrl("/ui"));
 
-  emscripten_fetch_attr_t attr;
-  emscripten_fetch_attr_init(&attr);
-  strcpy(attr.requestMethod, "GET");
-  attr.attributes = EMSCRIPTEN_FETCH_LOAD_TO_MEMORY;
-  attr.onsuccess = OnFetchSuccess;
-  attr.onerror = OnFetchError;
-  // Relative URL — the browser resolves this against the page origin,
-  // so it works regardless of hostname, protocol, or port.
-  emscripten_fetch(&attr, "/model.mjb");
+  StartModelFetch();
 
   emscripten_set_main_loop(MainLoop, 0, 1);
 
