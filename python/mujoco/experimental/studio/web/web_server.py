@@ -709,11 +709,15 @@ def _run_server(
     # --- /state: latest-wins payload broadcast --------------------------------
 
     async def state_handler(ws: ServerConnection) -> None:
-      if len(state_clients) > max_spectators:  # controller + spectators
+      sid = _session_id(ws)
+      # A page reconnecting after a network blip keeps its sid; its stale
+      # entry (dead socket, not yet cleaned up) must not count against the
+      # limit, since installing the new socket merely replaces it. Only a
+      # genuinely new sid consumes a slot.
+      if sid not in state_clients and len(state_clients) > max_spectators:
         logger.info("[StateWS] Session full; rejecting browser")
         await ws.close(WS_CLOSE_SESSION_FULL, "session full")
         return
-      sid = _session_id(ws)
       state_clients[sid] = ws
       last_heartbeat[sid] = loop_time()
       logger.info(f"[StateWS] Browser connected ({len(state_clients)} total)")
@@ -770,14 +774,17 @@ def _run_server(
       except (ConnectionClosed, ConnectionError):
         pass
       finally:
+        # Only tear down if this socket is still the one registered for sid:
+        # a reconnect may have already replaced it, and that newer connection
+        # now owns the queue and heartbeat entries.
         if state_clients.get(sid) is ws:
           del state_clients[sid]
-        if sid in control_queue:
-          control_queue.remove(sid)
-        last_heartbeat.pop(sid, None)
-        logger.info(
-            f"[StateWS] Browser disconnected ({len(state_clients)} total)")
-        await broadcast_roster()
+          if sid in control_queue:
+            control_queue.remove(sid)
+          last_heartbeat.pop(sid, None)
+          logger.info(
+              f"[StateWS] Browser disconnected ({len(state_clients)} total)")
+          await broadcast_roster()
 
     # --- Dispatch --------------------------------------------------------------
 
