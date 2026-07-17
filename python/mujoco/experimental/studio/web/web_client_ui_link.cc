@@ -117,18 +117,30 @@ void UiLink::ReceiveAndProcessCommands(int frame) {
 
       int sendAttempts = 0;
       while (!pendingSend.IsDone() && !pendingSend.IsError()) {
+        const size_t before = pendingSend.SizeCurrent;
         Network::DataSend(socket_, pendingSend);
         sendAttempts++;
+        if (pendingSend.SizeCurrent == before) {
+          // No progress: the socket already reads OPEN (from emscripten's
+          // ready state) but the send backend is not ready yet, because the
+          // open callback that sets mConnected has not run. DataSend then
+          // returns with neither progress nor error, so this loop would spin
+          // the browser's main thread forever. Stop and retry on a later
+          // frame instead (handshake_sent_ stays false below).
+          break;
+        }
       }
       LOG(Info,
           "CmdVersion send: done=%s, error=%s, attempts=%d, bytesSent=%zu",
           pendingSend.IsDone() ? "true" : "false",
           pendingSend.IsError() ? "true" : "false", sendAttempts,
           static_cast<size_t>(pendingSend.SizeCurrent));
-      handshake_sent_ = true;
-      // Fresh connection: the client may resume delta compression against
-      // a frame from a previous session; ask for an uncompressed keyframe.
-      request_keyframe_ = true;
+      if (pendingSend.IsDone()) {
+        handshake_sent_ = true;
+        // Fresh connection: the client may resume delta compression against
+        // a frame from a previous session; ask for an uncompressed keyframe.
+        request_keyframe_ = true;
+      }
     }
   } else {
     if (handshake_sent_) {
