@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "web_client_ui_link.h"
+#include "web_client_remote_ui.h"
 
 #include <algorithm>
 #include <cstring>
@@ -27,8 +27,8 @@ using namespace NetImgui::Internal;
 namespace {
 
 void log_unmapped_texture(
-    UiLink::ClientTextureID clientTexId, size_t mapSize, uint32_t drawIdx,
-    const std::unordered_map<UiLink::ClientTextureID, uintptr_t>& texMap) {
+    RemoteUi::ClientTextureID clientTexId, size_t mapSize, uint32_t drawIdx,
+    const std::unordered_map<RemoteUi::ClientTextureID, uintptr_t>& texMap) {
   VLOG(1, "DrawFrame: UNMAPPED clientTexId=%lu, mapSize=%zu, draw#=%u",
        static_cast<unsigned long>(clientTexId), mapSize, drawIdx);
   std::string keys_str = "";
@@ -64,7 +64,7 @@ void log_cmd_received(CmdHeader::eCommands cmdType, uint32_t cmdSize,
 
 }  // namespace
 
-void UiLink::Connect(const std::string& url) {
+void RemoteUi::Connect(const std::string& url) {
   if (socket_) {
     Network::Disconnect(socket_);
     socket_ = nullptr;
@@ -76,13 +76,13 @@ void UiLink::Connect(const std::string& url) {
       static_cast<void*>(socket_));
 }
 
-UiLink::ReadyState UiLink::ConnectionState() const {
+RemoteUi::ReadyState RemoteUi::ConnectionState() const {
   return Network::GetReadyState(socket_);
 }
 
-int UiLink::CloseCode() const { return Network::GetCloseCode(socket_); }
+int RemoteUi::CloseCode() const { return Network::GetCloseCode(socket_); }
 
-void UiLink::ReceiveAndProcessCommands(int frame) {
+void RemoteUi::ReceiveAndProcessCommands(int frame) {
   if (!socket_) return;
 
   const ReadyState state = ConnectionState();
@@ -240,7 +240,7 @@ void UiLink::ReceiveAndProcessCommands(int frame) {
   VLOG(2, "Frame %d: processed %d commands", frame, cmdsThisFrame);
 }
 
-void UiLink::FlushPendingTextures() {
+void RemoteUi::FlushPendingTextures() {
   for (auto& [texID, entry] : texture_cpu_) {
     uintptr_t& localTex = texture_map_[texID];
     if (localTex == 0 && !entry.pixels.empty()) {
@@ -254,7 +254,7 @@ void UiLink::FlushPendingTextures() {
   }
 }
 
-void UiLink::ProcessCmdTexture(CmdTexture* pCmdTexture) {
+void RemoteUi::ProcessCmdTexture(CmdTexture* pCmdTexture) {
   if (!pCmdTexture) return;
 
   if (!pCmdTexture->mpTextureData.IsPointer()) {
@@ -382,7 +382,7 @@ void UiLink::ProcessCmdTexture(CmdTexture* pCmdTexture) {
   }
 }
 
-void UiLink::CaptureAndSendInput() {
+void RemoteUi::CaptureAndSendInput() {
   if (!socket_) return;
 
   if (ConnectionState() != ReadyState::kOpen) return;
@@ -534,7 +534,7 @@ void UiLink::CaptureAndSendInput() {
       pending_input_chars_.resize(charRemainCount);
     }
     if (cmdInput.mKeyCharCount > 0) {
-      VLOG(1, "[web_client_ui_link.cc] Queued %u characters to send\n",
+      VLOG(1, "[web_client_remote_ui.cc] Queued %u characters to send\n",
            cmdInput.mKeyCharCount);
     }
   } else {
@@ -554,7 +554,7 @@ void UiLink::CaptureAndSendInput() {
 
 // Keep in sync with ProcessCmdDrawFrame in the vendored
 // netimgui/Code/ServerApp/Source/NetImguiServer_RemoteClient.cpp
-void UiLink::ProcessCmdDrawFrame(CmdDrawFrame* pCmdDrawFrame) {
+void RemoteUi::ProcessCmdDrawFrame(CmdDrawFrame* pCmdDrawFrame) {
   if (!pCmdDrawFrame) return;
 
   // Take ownership to prevent pending_receive_ from deleting it prematurely.
@@ -748,7 +748,7 @@ void UiLink::ProcessCmdDrawFrame(CmdDrawFrame* pCmdDrawFrame) {
   remote_draw_data_ = pDrawData;
 }
 
-void UiLink::Shutdown() {
+void RemoteUi::Shutdown() {
   if (remote_draw_data_) {
     netImguiDelete(remote_draw_data_);
     remote_draw_data_ = nullptr;

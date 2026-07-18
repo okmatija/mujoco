@@ -21,8 +21,8 @@
 // dependencies and can be exercised natively in tests by feeding synthetic
 // CmdDrawFrame/CmdTexture buffers to the ProcessCmd* methods.
 
-#ifndef MUJOCO_PYTHON_EXPERIMENTAL_STUDIO_WEB_WEB_CLIENT_UI_LINK_H_
-#define MUJOCO_PYTHON_EXPERIMENTAL_STUDIO_WEB_WEB_CLIENT_UI_LINK_H_
+#ifndef MUJOCO_PYTHON_EXPERIMENTAL_STUDIO_WEB_WEB_CLIENT_REMOTE_UI_H_
+#define MUJOCO_PYTHON_EXPERIMENTAL_STUDIO_WEB_WEB_CLIENT_REMOTE_UI_H_
 
 #include <imgui.h>
 
@@ -52,7 +52,7 @@ struct NetImguiImDrawData : ImDrawData {
   uint64_t mFrameIndex = 0;
 };
 
-class UiLink {
+class RemoteUi {
  public:
   using SocketInfo = NetImgui::Internal::Network::SocketInfo;
   using ReadyState = NetImgui::Internal::Network::ReadyState;
@@ -71,7 +71,7 @@ class UiLink {
     virtual bool GpuReady() = 0;
   };
 
-  explicit UiLink(Callbacks& callbacks) : callbacks_(callbacks) {}
+  explicit RemoteUi(Callbacks& callbacks) : callbacks_(callbacks) {}
 
   // (Re)connects to the UI WebSocket. Disconnects any existing socket first.
   void Connect(const std::string& url);
@@ -179,4 +179,4 @@ class UiLink {
 
 }  // namespace mujoco::studio
 
-#endif  // MUJOCO_PYTHON_EXPERIMENTAL_STUDIO_WEB_WEB_CLIENT_UI_LINK_H_
+#endif  // MUJOCO_PYTHON_EXPERIMENTAL_STUDIO_WEB_WEB_CLIENT_REMOTE_UI_H_

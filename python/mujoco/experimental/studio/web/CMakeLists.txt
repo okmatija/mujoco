@@ -26,7 +26,7 @@ if(EMSCRIPTEN)
   add_subdirectory(${NETIMGUI_DIR} ${CMAKE_CURRENT_BINARY_DIR}/netimgui)
 
   add_executable(web_client web_client.cc web_client_local_ui.cc
-                 web_client_ui_link.cc web_client_state_link.cc)
+                 web_client_remote_ui.cc web_client_session.cc)
 
   target_include_directories(web_client
     PRIVATE

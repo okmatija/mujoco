@@ -12,14 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// State link: receives simulation state payloads from the Python StateServer
-// over the /state WebSocket and owns the model-change / page-reload /
-// supersede policy. Applying a payload to the app goes through the
-// Callbacks interface, so this file stays free of scene and renderer
-// dependencies.
+// The session: this page's relationship with the Python-side viewer over
+// the /state WebSocket — simulation state payloads in, the session text
+// channel (roster, grants), and the model-change / page-reload / close-code
+// policies. Applying a payload to the app goes through the Callbacks
+// interface, so this file stays free of scene and renderer dependencies.
 
-#ifndef MUJOCO_PYTHON_EXPERIMENTAL_STUDIO_WEB_WEB_CLIENT_STATE_LINK_H_
-#define MUJOCO_PYTHON_EXPERIMENTAL_STUDIO_WEB_WEB_CLIENT_STATE_LINK_H_
+#ifndef MUJOCO_PYTHON_EXPERIMENTAL_STUDIO_WEB_WEB_CLIENT_SESSION_H_
+#define MUJOCO_PYTHON_EXPERIMENTAL_STUDIO_WEB_WEB_CLIENT_SESSION_H_
 
 #include <emscripten/websocket.h>
 
@@ -30,7 +30,7 @@
 
 namespace mujoco::studio {
 
-class StateLink {
+class Session {
  public:
   // The app-facing callbacks of the link; the app implements them once.
   // The interface is the complete list of events the state stream delivers.
@@ -46,7 +46,7 @@ class StateLink {
     virtual void OnSessionMessage(const char* text) = 0;
   };
 
-  explicit StateLink(Callbacks& callbacks) : callbacks_(callbacks) {}
+  explicit Session(Callbacks& callbacks) : callbacks_(callbacks) {}
 
   void Connect(const std::string& url);
 
@@ -137,4 +137,4 @@ class StateLink {
 
 }  // namespace mujoco::studio
 
-#endif  // MUJOCO_PYTHON_EXPERIMENTAL_STUDIO_WEB_WEB_CLIENT_STATE_LINK_H_
+#endif  // MUJOCO_PYTHON_EXPERIMENTAL_STUDIO_WEB_WEB_CLIENT_SESSION_H_

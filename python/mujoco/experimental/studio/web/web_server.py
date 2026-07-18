@@ -64,7 +64,7 @@ from websockets.http11 import Response
 
 
 # Deliberate WebSocket close codes. Codes in the 4xxx range tell the
-# browser not to reconnect (see web_client_state_link.cc / web_client.cc).
+# browser not to reconnect (see web_client_session.cc / web_client.cc).
 _WS_CLOSE_CONTROLLER_TAKEN = 4001  # /ui: another browser is controlling.
 _WS_CLOSE_SESSION_FULL = 4002  # /state: the spectator limit is reached.
 _WS_CLOSE_INACTIVE = 4003  # /state: hidden tab kicked to free a viewer slot.
@@ -124,7 +124,7 @@ _UI_TCP_WAIT_SEC = 15.0
 _GRANT_MESSAGE = "grant"
 
 # Sent by the browser after applying each state payload (keep in sync:
-# web_client_state_link.cc). Flow control for the /state stream: at most one
+# web_client_session.cc). Flow control for the /state stream: at most one
 # payload is in flight per client, so a slow link carries the freshest state
 # it can instead of buffering seconds of stale payloads in the socket.
 _STATE_ACK_MESSAGE = "state_ack"

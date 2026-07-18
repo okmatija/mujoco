@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "web_client_state_link.h"
+#include "web_client_session.h"
 
 #include <emscripten.h>
 
@@ -20,10 +20,10 @@
 
 namespace mujoco::studio {
 
-EM_BOOL StateLink::OnWsMessage(int event_type,
+EM_BOOL Session::OnWsMessage(int event_type,
                                const EmscriptenWebSocketMessageEvent* event,
                                void* user_data) {
-  auto* link = static_cast<StateLink*>(user_data);
+  auto* link = static_cast<Session*>(user_data);
   link->server_close_code_ = 0;  // Accepted; hide the disconnect notice.
   if (event->isText) {
     // Text frames carry session metadata; emscripten null-terminates them.
@@ -41,10 +41,10 @@ EM_BOOL StateLink::OnWsMessage(int event_type,
   return EM_TRUE;
 }
 
-EM_BOOL StateLink::OnWsOpen(int event_type,
+EM_BOOL Session::OnWsOpen(int event_type,
                             const EmscriptenWebSocketOpenEvent* event,
                             void* user_data) {
-  auto* link = static_cast<StateLink*>(user_data);
+  auto* link = static_cast<Session*>(user_data);
   link->open_ = true;
   // server_close_code_ is NOT cleared here: a rejected connection also
   // fires open before the server's closing code arrives. It clears on the
@@ -53,17 +53,17 @@ EM_BOOL StateLink::OnWsOpen(int event_type,
   return EM_TRUE;
 }
 
-EM_BOOL StateLink::OnWsError(int event_type,
+EM_BOOL Session::OnWsError(int event_type,
                              const EmscriptenWebSocketErrorEvent* event,
                              void* user_data) {
   LOG(Error, "State WebSocket error");
   return EM_TRUE;
 }
 
-EM_BOOL StateLink::OnWsClose(int event_type,
+EM_BOOL Session::OnWsClose(int event_type,
                              const EmscriptenWebSocketCloseEvent* event,
                              void* user_data) {
-  auto* link = static_cast<StateLink*>(user_data);
+  auto* link = static_cast<Session*>(user_data);
   LOG(Info, "State WebSocket closed (code=%d)", event->code);
   link->open_ = false;
   // Codes 4000-4999 are deliberate server-side closes (e.g. 4002 =
@@ -76,14 +76,14 @@ EM_BOOL StateLink::OnWsClose(int event_type,
   }
   // Free the handle; without this, every closed socket (including each
   // failed reconnect) leaks its handle and callback registrations in
-  // Emscripten's socket table. StateLink (this) is a stable global, so the
+  // Emscripten's socket table. Session (this) is a stable global, so the
   // user_data of any already-queued event stays valid; detaching the
   // callbacks first stops them firing on the freed handle.
   link->CloseSocket();
   return EM_TRUE;
 }
 
-void StateLink::CloseSocket() {
+void Session::CloseSocket() {
   if (socket_ <= 0) return;
   emscripten_websocket_set_onopen_callback(socket_, nullptr, nullptr);
   emscripten_websocket_set_onmessage_callback(socket_, nullptr, nullptr);
@@ -94,7 +94,7 @@ void StateLink::CloseSocket() {
   open_ = false;
 }
 
-void StateLink::Connect(const std::string& url) {
+void Session::Connect(const std::string& url) {
   // Drop any lingering socket first so a reconnect cannot leak the old one.
   CloseSocket();
   EmscriptenWebSocketCreateAttributes attr;
@@ -115,13 +115,13 @@ void StateLink::Connect(const std::string& url) {
   LOG(Info, "State WebSocket connecting to %s", url.c_str());
 }
 
-void StateLink::SendText(const char* text) {
+void Session::SendText(const char* text) {
   if (socket_ && open_) {
     emscripten_websocket_send_utf8_text(socket_, text);
   }
 }
 
-void StateLink::HandleMessage(const uint8_t* data, uint32_t num_bytes) {
+void Session::HandleMessage(const uint8_t* data, uint32_t num_bytes) {
   last_message_time_ = emscripten_get_now() / 1000.0;
   if (reload_pending_ || !callbacks_.ReadyForPayload()) {
     return;

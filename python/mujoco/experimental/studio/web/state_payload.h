@@ -14,7 +14,7 @@
 
 // The web viewer's state payload: the wire format of the /state
 // WebSocket, serialized by the Python side (state_payload.cc) and parsed
-// by the browser (web_client_state_link.cc).
+// by the browser (web_client_session.cc).
 //
 // The browser renders with the same call the native viewer makes each frame:
 //

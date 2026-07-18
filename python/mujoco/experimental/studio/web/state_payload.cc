@@ -15,7 +15,7 @@
 // Python bindings for the state payload wire format (state_payload.h).
 //
 // WebViewer serializes the /state WebSocket payload with this module each
-// frame; the browser parses it with the same header (web_client_state_link).
+// frame; the browser parses it with the same header (web_client_session).
 
 #include "state_payload.h"
 
