@@ -32,6 +32,12 @@ EM_BOOL StateLink::OnWsMessage(int event_type,
     }
   } else {
     link->HandleMessage(event->data, event->numBytes);
+    // Flow control: the server keeps at most one state payload in flight
+    // and sends the next (freshest) one only after this ack. Without it, a
+    // slow link (e.g. an SSH tunnel to a remote workstation) buffers
+    // seconds of stale payloads in the socket and the whole viewer lags by
+    // that queue. (Keep in sync: _STATE_ACK_MESSAGE in web_server.py.)
+    link->SendText("state_ack");
   }
   return EM_TRUE;
 }

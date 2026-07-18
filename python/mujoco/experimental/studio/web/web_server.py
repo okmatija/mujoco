@@ -123,6 +123,16 @@ _UI_TCP_WAIT_SEC = 15.0
 # (keep in sync: web_client.cc).
 _GRANT_MESSAGE = "grant"
 
+# Sent by the browser after applying each state payload (keep in sync:
+# web_client_state_link.cc). Flow control for the /state stream: at most one
+# payload is in flight per client, so a slow link carries the freshest state
+# it can instead of buffering seconds of stale payloads in the socket.
+_STATE_ACK_MESSAGE = "state_ack"
+
+# A lost ack must not stall the stream forever; after this long the next
+# payload is sent unacked.
+_STATE_ACK_TIMEOUT_SEC = 2.0
+
 # Content types for the static files the HTTP handler serves.
 _CONTENT_TYPES = {
     ".html": "text/html; charset=utf-8",
@@ -791,21 +801,41 @@ def _run_server(
             return gen_before, data
         return None
 
+      # See _STATE_ACK_MESSAGE: one payload in flight at a time, so the
+      # latest-wins read below always ships the freshest state a slow link
+      # can carry (the camera rides this stream, so socket buffering shows
+      # up directly as input latency).
+      payload_acked = asyncio.Event()
+      payload_acked.set()
+
       async def send_payloads() -> None:
         last_gen = 0
         while True:
           await asyncio.sleep(1.0 / 60.0)
           if generation.value == last_gen:
             continue
+          try:
+            await asyncio.wait_for(
+                payload_acked.wait(), timeout=_STATE_ACK_TIMEOUT_SEC
+            )
+          except asyncio.TimeoutError:
+            pass  # Lost ack; send anyway rather than stalling forever.
           result = read_state()
           if result is None:
             continue
           last_gen, data = result
+          payload_acked.clear()
           await ws.send(data)
 
       async def recv_messages() -> None:
         async for message in ws:
           if isinstance(message, str):
+            if message == _STATE_ACK_MESSAGE:
+              # Deliberately does NOT count as liveness: acks keep flowing
+              # from hidden tabs (WebSocket events are not rAF-gated), and
+              # the inactivity policy must still see those tabs as silent.
+              payload_acked.set()
+              continue
             await handle_session_message(sid, message)
 
       try:
