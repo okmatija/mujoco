@@ -12,11 +12,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// The session: this page's relationship with the Python-side viewer over
-// the /state WebSocket — simulation state payloads in, the session text
-// channel (roster, grants), and the model-change / page-reload / close-code
-// policies. Applying a payload to the app goes through the Callbacks
-// interface, so this file stays free of scene and renderer dependencies.
+// The session: this page's relationship with the Python-side viewer.
+//
+// Owns the /state WebSocket (simulation payloads in, control messages out),
+// the session wire protocol (roster, grants, heartbeats, acks), the role
+// state machine (claiming -> controlling / spectating), and the
+// model-change / page-reload / close-code policies. Everything outside the
+// session goes through the Callbacks interface: applying a payload to the
+// scene, and driving the remote UI stream on role transitions. The session
+// also implements SessionActions, so the role window's intents land here
+// directly.
 
 #ifndef MUJOCO_PYTHON_EXPERIMENTAL_STUDIO_WEB_WEB_CLIENT_SESSION_H_
 #define MUJOCO_PYTHON_EXPERIMENTAL_STUDIO_WEB_WEB_CLIENT_SESSION_H_
@@ -30,10 +35,58 @@
 
 namespace mujoco::studio {
 
-class Session {
+// The page's role in the collaborative session. Every page starts by
+// claiming the controller slot; the claim either succeeds (kControlling)
+// or the page settles into spectating. A control grant puts a spectator
+// back into kClaiming while it reconnects to /ui.
+enum class SessionRole {
+  kClaiming = 0,  // /ui claim in flight; the role is not yet resolved.
+  kControlling,   // This page holds the open /ui connection.
+  kSpectating,    // Another page controls; scene + local role window only.
+};
+
+// Read-only snapshot of the session, passed to the local UI each frame.
+// The session fills the role and roster fields (FillView); the byte rates,
+// remote-frame flag and camera mode are the app's.
+struct SessionView {
+  SessionRole role = SessionRole::kClaiming;
+  int viewers = 0;
+  int queue_pos = 0;  // 1-based position in the control queue; 0 = unqueued.
+  int queue_len = 0;
+  int max_spectators = 0;
+  uint64_t gui_bytes_per_sec = 0;
+  uint64_t sim_bytes_per_sec = 0;
+  // False until the first remote Studio UI frame arrived (controller only).
+  bool have_remote_frame = false;
+  int camera_mode = 0;  // A SpectatorCamMode value (see web_client.cc).
+};
+
+// User intent reported by the role window. Session implements this; the
+// interface is the complete list of effects the local UI can cause.
+class SessionActions {
  public:
-  // The app-facing callbacks of the link; the app implements them once.
-  // The interface is the complete list of events the state stream delivers.
+  virtual ~SessionActions() = default;
+  virtual void RequestControl() = 0;
+  virtual void LeaveQueue() = 0;
+  virtual void StealControl() = 0;
+  virtual void ReleaseControl() = 0;
+  virtual void SetCameraMode(int mode) = 0;      // A SpectatorCamMode value.
+  virtual void SetMaxSpectators(int count) = 0;  // Already clamped by the UI.
+};
+
+// The remote UI stream's connection state, reported to the role state
+// machine by the app once per frame (see Session::HandleRemoteUiState).
+enum class RemoteUiState {
+  kNoSocket = 0,   // No connection attempt exists.
+  kConnecting,     // In flight (or closing); the machine waits.
+  kOpen,           // The claim succeeded: this page controls.
+  kClosedOrError,  // Rejected or dropped; the machine retries or settles.
+};
+
+class Session : public SessionActions {
+ public:
+  // Everything the session needs from the rest of the app; the app
+  // implements this once.
   class Callbacks {
    public:
     virtual ~Callbacks() = default;
@@ -41,9 +94,13 @@ class Session {
     virtual bool ReadyForPayload() = 0;
     // Applies a parsed payload to the app (physics + render state + geoms).
     virtual void OnPayload(const StatePayloadView& view) = 0;
-    // Receives session metadata (roster updates etc.), sent by the server
-    // as text frames on the same socket as the binary state payloads.
-    virtual void OnSessionMessage(const char* text) = 0;
+    // Role transitions drive the remote UI stream through these two:
+    // (re)claim the controller slot / drop the stream when settling into
+    // spectating.
+    virtual void ConnectRemoteUi() = 0;
+    virtual void ShutdownRemoteUi() = 0;
+    // The one role-window intent that is not session business.
+    virtual void SetCameraMode(int mode) = 0;
   };
 
   explicit Session(Callbacks& callbacks) : callbacks_(callbacks) {}
@@ -59,10 +116,6 @@ class Session {
     model_crc32_ = crc;
     have_model_crc32_ = true;
   }
-
-  // Sends a session message (control requests, activity reports) to the
-  // server as a text frame. Dropped silently while not connected.
-  void SendText(const char* text);
 
   // True while a connect attempt exists (possibly still in flight); used to
   // pace reconnects. emscripten_websocket_new returns a handle immediately,
@@ -96,13 +149,49 @@ class Session {
   // looks open (a suspended process keeps its sockets established).
   double LastMessageTime() const { return last_message_time_; }
 
+  SessionRole Role() const { return role_; }
+
+  // Fills the role and roster fields of the view; the rest is the app's.
+  void FillView(SessionView* view) const;
+
+  // Periodic session upkeep (the ~30s liveness heartbeat); call once per
+  // frame.
+  void Update();
+
+  // Feeds the role state machine the remote UI stream's connection state;
+  // call once per frame. Owns claim retry pacing, promotion to kControlling
+  // when a claim opens, instant settling when an open stream closes with
+  // 4001 (ousted by Steal Control), and the retries-then-settle rule for
+  // rejected claims.
+  void HandleRemoteUiState(RemoteUiState state, int close_code);
+
   // Parses one WebSocket message and applies the model-change/reload
   // policy; public for tests.
   void HandleMessage(const uint8_t* data, uint32_t num_bytes);
 
+  // SessionActions (the role window reports intent straight into the
+  // session; see the app's RoleWindow::Draw call).
+  void RequestControl() override;
+  void LeaveQueue() override;
+  void StealControl() override;
+  void ReleaseControl() override;
+  void SetCameraMode(int mode) override;
+  void SetMaxSpectators(int count) override;
+
  private:
   // Detaches callbacks and frees socket_ (if any), resetting to disconnected.
   void CloseSocket();
+
+  // Sends a session message (control requests, acks, activity reports) to
+  // the server as a text frame. Dropped silently while not connected.
+  void SendText(const char* text);
+
+  // Updates the role and mirrors it into JS (Module.isSpectator), which
+  // gates controller-only page behavior (model drag-and-drop upload).
+  void SetRole(SessionRole role);
+
+  // Routes a session text frame: roster updates, control grants.
+  void OnSessionText(const char* text);
 
   static EM_BOOL OnWsMessage(int event_type,
                              const EmscriptenWebSocketMessageEvent* event,
@@ -133,6 +222,20 @@ class Session {
 
   uint64_t bytes_accum_ = 0;
   double last_message_time_ = 0;
+
+  // Role state machine + roster (all from the session text channel and
+  // HandleRemoteUiState; see web_server.py for the wire formats).
+  SessionRole role_ = SessionRole::kClaiming;
+  int viewers_ = 0;
+  int queue_pos_ = 0;
+  int queue_len_ = 0;
+  int max_spectators_ = 8;  // Pre-roster default; the roster overrides it.
+  // Consecutive rejected /ui claims; after enough, the page stops claiming
+  // and settles into spectating.
+  int ui_reject_count_ = 0;
+  RemoteUiState remote_ui_state_ = RemoteUiState::kNoSocket;
+  double last_ui_retry_time_ = 0;
+  double last_heartbeat_time_ = 0;
 };
 
 }  // namespace mujoco::studio

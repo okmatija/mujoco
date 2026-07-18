@@ -15,54 +15,17 @@
 // The web viewer's local (browser-drawn) UI: the role window and the
 // DISCONNECTED notices. Deliberately decoupled from the app: it reads a
 // SessionView snapshot and reports user intent through the SessionActions
-// interface, so it depends only on ImGui and can in principle be exercised
-// natively.
+// interface (both defined in web_client_session.h), so drawing depends
+// only on ImGui.
 
 #ifndef MUJOCO_PYTHON_EXPERIMENTAL_STUDIO_WEB_WEB_CLIENT_LOCAL_UI_H_
 #define MUJOCO_PYTHON_EXPERIMENTAL_STUDIO_WEB_WEB_CLIENT_LOCAL_UI_H_
 
 #include <imgui.h>
 
-#include <cstdint>
+#include "web_client_session.h"
 
 namespace mujoco::studio {
-
-// The page's role in the collaborative session. Every page starts by
-// claiming the controller slot; the claim either succeeds (kControlling)
-// or the page settles into spectating. A control grant puts a spectator
-// back into kClaiming while it reconnects to /ui.
-enum class SessionRole {
-  kClaiming = 0,  // /ui claim in flight; the role is not yet resolved.
-  kControlling,   // This page holds the open /ui connection.
-  kSpectating,    // Another page controls; scene + local role window only.
-};
-
-// Read-only snapshot of the session, passed to the UI each frame.
-struct SessionView {
-  SessionRole role = SessionRole::kClaiming;
-  int viewers = 0;
-  int queue_pos = 0;  // 1-based position in the control queue; 0 = unqueued.
-  int queue_len = 0;
-  int max_spectators = 0;
-  uint64_t gui_bytes_per_sec = 0;
-  uint64_t sim_bytes_per_sec = 0;
-  // False until the first remote Studio UI frame arrived (controller only).
-  bool have_remote_frame = false;
-  int camera_mode = 0;  // A SpectatorCamMode value (see web_client.cc).
-};
-
-// User intent reported by the role window; the app implements this once.
-// The interface is the complete list of effects the local UI can cause.
-class SessionActions {
- public:
-  virtual ~SessionActions() = default;
-  virtual void RequestControl() = 0;
-  virtual void LeaveQueue() = 0;
-  virtual void StealControl() = 0;
-  virtual void ReleaseControl() = 0;
-  virtual void SetCameraMode(int mode) = 0;      // A SpectatorCamMode value.
-  virtual void SetMaxSpectators(int count) = 0;  // Already clamped by the UI.
-};
 
 // The screen-centered DISCONNECTED notices: a big red banner over white
 // explanation lines, shown for deliberate server closes (session full,

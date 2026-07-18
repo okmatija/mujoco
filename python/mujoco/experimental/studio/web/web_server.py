@@ -32,7 +32,8 @@ WebSocket URLs from the page origin, so no client configuration is needed.
 One browser at a time controls the interactive session (it owns the /ui
 bridge); later browsers are rejected from /ui with WebSocket close code 4001
 and spectate instead: they receive the state broadcast and render the scene,
-and can take the controller slot once it frees up (see web_client.cc). /state
+and can take the controller slot once it frees up (see
+web_client_session.cc). /state
 connections beyond the spectator limit are closed with code 4002.
 
 Development: Set MUJOCO_WEB_VIEWER_DIST to point to a custom Emscripten build
@@ -64,14 +65,14 @@ from websockets.http11 import Response
 
 
 # Deliberate WebSocket close codes. Codes in the 4xxx range tell the
-# browser not to reconnect (see web_client_session.cc / web_client.cc).
+# browser not to reconnect (see web_client_session.cc).
 _WS_CLOSE_CONTROLLER_TAKEN = 4001  # /ui: another browser is controlling.
 _WS_CLOSE_SESSION_FULL = 4002  # /state: the spectator limit is reached.
 _WS_CLOSE_INACTIVE = 4003  # /state: hidden tab kicked to free a viewer slot.
 _WS_CLOSE_NOT_CONTROLLER = 4004  # /drop: only the controller may load models.
 
 # Controller-only message carrying the new spectator limit, e.g.
-# "max_spectators=4" (keep in sync: web_client.cc).
+# "max_spectators=4" (keep in sync: web_client_session.cc).
 _MAX_SPECTATORS_PREFIX = "max_spectators="
 
 # Upper bound on the runtime-editable spectator limit.
@@ -120,7 +121,7 @@ _CMD_VERSION_SIZE = 120
 _UI_TCP_WAIT_SEC = 15.0
 
 # Sent to the page whose control claim the controller slot is reserved for
-# (keep in sync: web_client.cc).
+# (keep in sync: web_client_session.cc).
 _GRANT_MESSAGE = "grant"
 
 # Sent by the browser after applying each state payload (keep in sync:
@@ -145,7 +146,8 @@ _CONTENT_TYPES = {
 }
 
 class _SessionMessage(enum.StrEnum):
-  """Text messages browsers send on /state (keep in sync: web_client.cc)."""
+  """Text messages browsers send on /state (keep in sync:
+  web_client_session.cc)."""
 
   REQUEST_CONTROL = "request_control"
   LEAVE_QUEUE = "leave_queue"

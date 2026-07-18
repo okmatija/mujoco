@@ -17,9 +17,8 @@
 // context.
 //
 // This file is the Emscripten glue: app/scene state, the main loop, and the
-// wiring between the two links (web_client_remote_ui.h for the streamed Studio
-// UI, web_client_session.h for simulation state) and the Filament
-// renderer.
+// wiring between the session (web_client_session.h), the remote UI stream
+// (web_client_remote_ui.h) and the Filament renderer.
 
 #include <SDL.h>
 #include <SDL_opengl.h>
@@ -53,8 +52,8 @@
 #include "google/logging.h"
 #include "state_payload.h"
 #include "web_client_local_ui.h"
-#include "web_client_session.h"
 #include "web_client_remote_ui.h"
+#include "web_client_session.h"
 
 #if !defined(__EMSCRIPTEN__)
 #error "web_client.cc is only supported for Emscripten builds"
@@ -68,13 +67,13 @@
 extern "C" GLenum __wrap_glGetError(void) { return GL_NO_ERROR; }
 
 using mujoco::studio::DisconnectNotice;
+using mujoco::studio::RemoteUi;
+using mujoco::studio::RemoteUiState;
 using mujoco::studio::RoleWindow;
-using mujoco::studio::SessionActions;
+using mujoco::studio::Session;
 using mujoco::studio::SessionRole;
 using mujoco::studio::SessionView;
-using mujoco::studio::Session;
 using mujoco::studio::StatePayloadView;
-using mujoco::studio::RemoteUi;
 
 // How a spectating page drives its camera. The free modes control the local
 // camera directly; kSpecCamFollow mirrors the controller's camera from the
@@ -92,12 +91,11 @@ struct Telemetry {
   uint64_t sim_bytes_per_sec = 0;
 };
 
-// The app's single implementation of every interface the links and the
-// local UI call back into: one object, a member of App below, wired into
-// both links at construction. Method bodies live near the code they call,
+// The app's single implementation of every interface the session and the
+// remote UI stream call back into: one object, a member of App below, wired
+// into both at construction. Method bodies live near the code they call,
 // after the free functions they use (search for "AppCallbacks::").
-class AppCallbacks final : public SessionActions,
-                           public RemoteUi::Callbacks,
+class AppCallbacks final : public RemoteUi::Callbacks,
                            public Session::Callbacks {
  public:
   // RemoteUi::Callbacks (the renderer-facing side).
@@ -105,18 +103,12 @@ class AppCallbacks final : public SessionActions,
                           uint32_t width, uint32_t height) override;
   bool GpuReady() override;
 
-  // Session::Callbacks (payloads + the session text channel).
+  // Session::Callbacks (payloads in, remote UI stream control out).
   bool ReadyForPayload() override;
   void OnPayload(const StatePayloadView& view) override;
-  void OnSessionMessage(const char* text) override;
-
-  // SessionActions (the role window's intents).
-  void RequestControl() override;
-  void LeaveQueue() override;
-  void StealControl() override;
-  void ReleaseControl() override;
+  void ConnectRemoteUi() override;
+  void ShutdownRemoteUi() override;
   void SetCameraMode(int mode) override;
-  void SetMaxSpectators(int count) override;
 };
 
 struct App {
@@ -127,26 +119,16 @@ struct App {
   mjvCamera camera;
   mjvOption vis_options;
 
-  SessionRole role = SessionRole::kClaiming;
-  int ui_reject_count = 0;
-  // Session roster, from the server's updates on the state channel.
-  int session_viewers = 0;
-  int queue_pos = 0;  // 1-based position in the control queue; 0 = not queued.
-  int queue_len = 0;
-  int max_spectators = 8;  // Runtime limit, from the roster.
-
   // Spectator camera (combo order matches SpectatorCamMode).
   int spectator_cam_mode = kSpecCamTumble;
   float spectator_cam_speed = 0.001f;  // WASD speed; accelerates while held.
 
   Telemetry telemetry;
 
-  // Main loop frame counters (MainLoopImpl): heartbeat pacing and
-  // reconnect pacing for the two WebSockets.
+  // Main loop frame counters (MainLoopImpl): reconnect pacing for the
+  // state WebSocket. (The session paces its own /ui claims by time.)
   int frame_count = 0;
-  int last_heartbeat_frame = 0;
   int last_state_retry_frame = 0;
-  int last_ui_retry_frame = 0;
 
   // Backend state received from the Python simulation via WebSocket.
   std::vector<mjtNum> backend_state;
@@ -156,9 +138,9 @@ struct App {
   // User-injected geoms (Viewer.extra_geoms) received with the state payload.
   std::vector<mjvGeom> extra_geoms;
 
-  // The machinery the app owns: the callbacks object, the two links wired
-  // to it, and the local UI. Declaration order matters — the links bind
-  // callbacks at construction.
+  // The machinery the app owns: the callbacks object, the session and the
+  // remote UI stream wired to it, and the local UI. Declaration order
+  // matters — the session and stream bind callbacks at construction.
   AppCallbacks callbacks;
   RemoteUi remote_ui{callbacks};
   Session session{callbacks};
@@ -166,16 +148,6 @@ struct App {
   RoleWindow role_window;
 };
 App g_app;
-
-// Session-channel messages, sent and received as text frames on the state
-// WebSocket. Keep in sync with _SessionMessage / _GRANT_MESSAGE in
-// web_server.py.
-constexpr char kMsgRequestControl[] = "request_control";
-constexpr char kMsgLeaveQueue[] = "leave_queue";
-constexpr char kMsgForceControl[] = "force_control";
-constexpr char kMsgHeartbeat[] = "heartbeat";
-constexpr char kMsgGrant[] = "grant";
-constexpr char kMsgMaxSpectatorsPrefix[] = "max_spectators=";
 
 // WebSocket base URL matching the page origin, e.g. "ws://host:8080" or
 // "wss://tunnel.example.com" behind an HTTPS tunnel. All viewer WebSockets
@@ -219,20 +191,6 @@ std::string WsUrl(const char* path) {
   return GetWsBaseUrl() + path + "?sid=" + GetSessionId();
 }
 
-// Updates the session role, mirroring it into JS (Module.isSpectator) so
-// the page script can gate controller-only actions like model drag-and-drop
-// (anything not controlling counts as spectating there). The server
-// enforces the same rule; the mirror only saves a pointless upload and
-// gives immediate feedback.
-void SetRole(SessionRole role) {
-  g_app.role = role;
-  // The JS avoids operators that clang-format would reformat into invalid
-  // JavaScript (it once split a `!==` into `!= =`, breaking the build).
-  EM_ASM(
-      { Module.isSpectator = !!$0; },
-      role == SessionRole::kControlling ? 0 : 1);
-}
-
 // Returns true if the Filament rendering context is initialized and ready for
 // GPU texture uploads. The Renderer object is created in main() and is always
 // non-null, but the Filament context is only initialized when Renderer::Init()
@@ -273,7 +231,7 @@ void ApplyStatePayload(const StatePayloadView& view) {
     // Spectators in a free camera mode keep their own local camera; everyone
     // else (the controller, and spectators in Follow Controller) mirrors the
     // controller's camera.
-    if (g_app.role != SessionRole::kSpectating ||
+    if (g_app.session.Role() != SessionRole::kSpectating ||
         g_app.spectator_cam_mode == kSpecCamFollow) {
       memcpy(&g_app.camera, vis_ptr, sizeof(mjvCamera));
     }
@@ -445,72 +403,11 @@ void AppCallbacks::OnPayload(const StatePayloadView& view) {
   ApplyStatePayload(view);
 }
 
-void AppCallbacks::OnSessionMessage(const char* text) {
-  int viewers = 0, queue_pos = 0, queue_len = 0;
-  char role[16] = {0};
-  int max_spectators = 0;
-  if (sscanf(text,
-             "viewers=%d;role=%15[^;];queue_pos=%d;queue_len=%d;"
-             "max_spectators=%d",
-             &viewers, role, &queue_pos, &queue_len, &max_spectators) == 5) {
-    if (viewers != g_app.session_viewers || queue_pos != g_app.queue_pos ||
-        queue_len != g_app.queue_len) {
-      LOG(Info, "Session roster: %s", text);
-    }
-    g_app.session_viewers = viewers;
-    g_app.queue_pos = queue_pos;
-    g_app.queue_len = queue_len;
-    g_app.max_spectators = max_spectators;
-    // The roster is authoritative about this page's role. Settling on it
-    // (rather than after several rejected /ui retries) makes the
-    // SPECTATING banner appear within the first roster (~200ms). Only
-    // while claiming with /ui closed: an in-flight claim must not be
-    // aborted, and an established controller is never demoted here (the
-    // 4001 close path handles that).
-    if (g_app.role == SessionRole::kClaiming &&
-        strcmp(role, "spectator") == 0) {
-      const RemoteUi::ReadyState ui_state = g_app.remote_ui.ConnectionState();
-      if (!g_app.remote_ui.HasSocket() ||
-          ui_state == RemoteUi::ReadyState::kClosed ||
-          ui_state == RemoteUi::ReadyState::kError) {
-        LOG(Info, "Roster says spectator; settling");
-        SetRole(SessionRole::kSpectating);
-        g_app.remote_ui.Shutdown();
-      }
-    }
-  } else if (strcmp(text, kMsgGrant) == 0) {
-    // Our turn: the controller slot is reserved for this page. The role
-    // flips to kControlling when the claim's socket opens.
-    LOG(Info, "Control granted; claiming the controller slot");
-    SetRole(SessionRole::kClaiming);
-    g_app.ui_reject_count = 0;
-    g_app.remote_ui.Connect(WsUrl("/ui"));
-  }
-}
+void AppCallbacks::ConnectRemoteUi() { g_app.remote_ui.Connect(WsUrl("/ui")); }
 
-void AppCallbacks::RequestControl() {
-  g_app.session.SendText(kMsgRequestControl);
-}
-
-void AppCallbacks::LeaveQueue() { g_app.session.SendText(kMsgLeaveQueue); }
-
-void AppCallbacks::StealControl() {
-  g_app.session.SendText(kMsgForceControl);
-}
-
-void AppCallbacks::ReleaseControl() {
-  // Become a spectator; the server grants the slot down the queue.
-  g_app.remote_ui.Shutdown();
-  SetRole(SessionRole::kSpectating);
-}
+void AppCallbacks::ShutdownRemoteUi() { g_app.remote_ui.Shutdown(); }
 
 void AppCallbacks::SetCameraMode(int mode) { SetSpectatorCameraMode(mode); }
-
-void AppCallbacks::SetMaxSpectators(int count) {
-  char msg[48];
-  snprintf(msg, sizeof(msg), "%s%d", kMsgMaxSpectatorsPrefix, count);
-  g_app.session.SendText(msg);
-}
 
 void BuildBrowserGui() {
   // Refresh the byte-rate telemetry the role window shows.
@@ -528,16 +425,14 @@ void BuildBrowserGui() {
                                g_app.session.ReloadPending());
 
   SessionView view;
-  view.role = g_app.role;
-  view.viewers = g_app.session_viewers;
-  view.queue_pos = g_app.queue_pos;
-  view.queue_len = g_app.queue_len;
-  view.max_spectators = g_app.max_spectators;
+  g_app.session.FillView(&view);
   view.gui_bytes_per_sec = g_app.telemetry.gui_bytes_per_sec;
   view.sim_bytes_per_sec = g_app.telemetry.sim_bytes_per_sec;
   view.have_remote_frame = g_app.remote_ui.RemoteDrawData() != nullptr;
   view.camera_mode = g_app.spectator_cam_mode;
-  g_app.role_window.Draw(view, g_app.callbacks);
+  // The session is the SessionActions implementation: the role window's
+  // intents land there directly.
+  g_app.role_window.Draw(view, g_app.session);
 }
 
 //=================================================================================================
@@ -564,13 +459,8 @@ void MainLoop() {
 void MainLoopImpl() {
   g_app.frame_count++;
 
-  // Heartbeat on the session channel. A hidden tab's rendering loop stops,
-  // so the heartbeat stops with it — the server kicks spectators (and
-  // releases a controller with a waiting queue) on silence.
-  if (g_app.frame_count - g_app.last_heartbeat_frame >= 30 * 60) {
-    g_app.last_heartbeat_frame = g_app.frame_count;
-    g_app.session.SendText(kMsgHeartbeat);
-  }
+  // Session upkeep (the liveness heartbeat).
+  g_app.session.Update();
 
   // Reconnect the state WebSocket if it dropped — e.g. the Python side
   // restarted its servers after a model change. Receiving a payload with a
@@ -587,49 +477,33 @@ void MainLoopImpl() {
     g_app.session.Connect(WsUrl("/state"));
   }
 
-  // Reconnect the NetImgui UI socket too — the proxy tears the bridge down
-  // whenever its headless-side TCP connection cycles (server restart). A
-  // close code 4001 means another browser holds the controller slot: after a
-  // few retries (a page reload of the controller races its own slot briefly)
-  // this page settles into spectating.
-  if (g_app.remote_ui.HasSocket() && g_app.role != SessionRole::kSpectating &&
-      !g_app.session.ReloadPending() &&
-      g_app.session.ServerCloseCode() == 0 &&
-      g_app.frame_count - g_app.last_ui_retry_frame > 60) {
-    const RemoteUi::ReadyState uiState = g_app.remote_ui.ConnectionState();
-    if (uiState == RemoteUi::ReadyState::kOpen) {
-      g_app.ui_reject_count = 0;
-      if (g_app.role != SessionRole::kControlling) {
-        SetRole(SessionRole::kControlling);  // The claim succeeded.
-      }
-    } else if (uiState == RemoteUi::ReadyState::kClosed ||
-               uiState == RemoteUi::ReadyState::kError) {
-      g_app.last_ui_retry_frame = g_app.frame_count;
-      // A 4001 close while kControlling means another page took the slot
-      // (Steal Control): settle instantly. A rejected claim (kClaiming)
-      // retries a few times first, because a reloading controller briefly
-      // races its own slot.
-      const bool ousted = g_app.remote_ui.CloseCode() == 4001 &&
-                          g_app.role == SessionRole::kControlling;
-      if (ousted ||
-          (g_app.remote_ui.CloseCode() == 4001 && ++g_app.ui_reject_count >= 3)) {
-        LOG(Info, "Controller slot taken; spectating");
-        SetRole(SessionRole::kSpectating);
-        // Also drops the last received UI frame: a page forced out of the
-        // controller slot must not keep showing a frozen Studio UI.
-        g_app.remote_ui.Shutdown();
-      } else {
-        LOG(Info, "UI WebSocket closed; reconnecting...");
-        g_app.remote_ui.Connect(WsUrl("/ui"));
-      }
+  // Feed the role state machine the remote UI stream's connection state;
+  // the session owns claim retry pacing and role transitions (reconnects
+  // come back through AppCallbacks::ConnectRemoteUi). Reconnects matter
+  // beyond claims: the proxy tears the bridge down whenever its
+  // headless-side TCP connection cycles (server restart).
+  RemoteUiState ui_state = RemoteUiState::kNoSocket;
+  if (g_app.remote_ui.HasSocket()) {
+    switch (g_app.remote_ui.ConnectionState()) {
+      case RemoteUi::ReadyState::kOpen:
+        ui_state = RemoteUiState::kOpen;
+        break;
+      case RemoteUi::ReadyState::kClosed:
+      case RemoteUi::ReadyState::kError:
+        ui_state = RemoteUiState::kClosedOrError;
+        break;
+      default:
+        ui_state = RemoteUiState::kConnecting;
+        break;
     }
   }
+  g_app.session.HandleRemoteUiState(ui_state, g_app.remote_ui.CloseCode());
 
   // Process incoming UI data BEFORE the ImGui frame: textures and draw
   // frames must be ready before we start the local ImGui frame and render.
   if (g_app.window) {
     g_app.remote_ui.SetMaxClip(static_cast<float>(g_app.window->GetWidth()),
-                             static_cast<float>(g_app.window->GetHeight()));
+                               static_cast<float>(g_app.window->GetHeight()));
   }
   g_app.remote_ui.ReceiveAndProcessCommands(g_app.frame_count);
 
@@ -650,7 +524,7 @@ void MainLoopImpl() {
   // ApplyStatePayload). Spectators have no input channel; in a free camera
   // mode they drive their local camera directly.
   g_app.remote_ui.CaptureAndSendInput();
-  if (g_app.role == SessionRole::kSpectating) {
+  if (g_app.session.Role() == SessionRole::kSpectating) {
     HandleSpectatorCameraInput();
   }
 
@@ -670,7 +544,7 @@ void MainLoopImpl() {
   mujoco::studio::NetImguiImDrawData* remoteDrawData =
       g_app.remote_ui.RemoteDrawData();
   if (remoteDrawData && remoteDrawData->Valid &&
-      g_app.role == SessionRole::kControlling) {
+      g_app.session.Role() == SessionRole::kControlling) {
     ImDrawData* localDrawData = ImGui::GetDrawData();
     if (localDrawData) {
       // Save local draw lists.
