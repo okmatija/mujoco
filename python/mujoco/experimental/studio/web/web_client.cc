@@ -604,10 +604,10 @@ void BuildBrowserGui() {
   // browser receives the same sim stream.
   const auto data_rate_lines = [] {
     ImGui::Text(
-        "Data Rate (GUI): %" PRIu64 " KiB/s",
+        "GUI Data Rate: %" PRIu64 " KiB/s",
         static_cast<uint64_t>(g_app.telemetry.gui_bytes_per_sec / 1024));
     ImGui::Text(
-        "Data Rate (Sim): %" PRIu64 " KiB/s",
+        "Sim Data Rate: %" PRIu64 " KiB/s",
         static_cast<uint64_t>(g_app.telemetry.sim_bytes_per_sec / 1024));
     if (g_app.session_viewers > 1) {
       ImGui::SameLine();
@@ -677,8 +677,6 @@ void BuildBrowserGui() {
           g_state_link.SendText(kMsgRequestControl);
         }
       } else {
-        ImGui::Text("Waiting for control #%d/%d in queue", g_app.queue_pos,
-                    g_app.queue_len);
         if (ImGui::Button("Cancel Control Request", kFullWidth)) {
           g_state_link.SendText(kMsgLeaveQueue);
         }
@@ -703,6 +701,10 @@ void BuildBrowserGui() {
       ImGui::Separator();
       // TODO(matijak): Use the studio camera-selection UI here in future, so
       // a spectator can also pick any camera defined in the model.
+      // Sized to its longest option; the default width would stretch the
+      // window past the CONTROLLING layout's size.
+      ImGui::SetNextItemWidth(ImGui::CalcTextSize("Follow Controller").x +
+                              ImGui::GetFrameHeight() * 2.0f);
       int cam_mode = g_app.spectator_cam_mode;
       if (ImGui::Combo("Camera", &cam_mode,
                        "Free: tumble\0Free: wasd\0Follow Controller\0")) {
