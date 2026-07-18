@@ -608,6 +608,10 @@ void BuildBrowserGui() {
         static_cast<uint64_t>(g_app.telemetry.gui_bytes_per_sec / 1024));
     if (g_app.spectator) {
       ImGui::SetItemTooltip("The UI is not streamed to spectators.");
+    } else if (!g_ui_link.RemoteDrawData()) {
+      ImGui::SameLine();
+      ImGui::TextColored(ImVec4(1.0f, 0.0f, 0.0f, 1.0f),
+                         "Waiting for data...");
     }
     ImGui::Text(
         "Sim Data Rate: %" PRIu64 " KiB/s",
@@ -740,10 +744,6 @@ void BuildBrowserGui() {
       // Data rate group.
       ImGui::Separator();
       data_rate_lines();
-      if (!g_ui_link.RemoteDrawData()) {
-        ImGui::TextColored(ImVec4(1.0f, 0.0f, 0.0f, 1.0f),
-                           "Waiting for Draw Data...");
-      }
 
       // Session settings group.
       ImGui::Separator();
