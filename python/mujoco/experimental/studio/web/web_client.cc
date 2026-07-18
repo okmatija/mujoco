@@ -116,8 +116,6 @@ struct AppState {
   int queue_pos = 0;  // 1-based position in the control queue; 0 = not queued.
   int queue_len = 0;
   int max_spectators = 8;  // Runtime limit, from the roster.
-  // Two-step confirmation state for the force-take button.
-  bool force_confirm = false;
 
   // Spectator camera (combo order matches SpectatorCamMode).
   int spectator_cam_mode = kSpecCamTumble;
@@ -188,14 +186,24 @@ std::string GetWsBaseUrl() {
   return url;
 }
 
-// Stable per-page id sent with every WebSocket connect (?sid=...), letting
-// the server tie this page's /ui and /state connections together.
-// (crypto.randomUUID would need a secure context, which plain http on a LAN
-// is not, hence the homegrown id; uniqueness is all that matters here.)
+// Stable per-tab id sent with every WebSocket connect (?sid=...), letting
+// the server tie this page's /ui and /state connections together. It lives
+// in sessionStorage so it survives page reloads: on a model change every
+// page reloads and the server restarts with the controller slot reserved
+// for the previous controller's sid — a reload-stable id is what lets the
+// controller keep control. (crypto.randomUUID would need a secure context,
+// which plain http on a LAN is not, hence the homegrown id. Duplicating a
+// tab copies sessionStorage, so twin tabs share a sid and the server sees
+// them as one viewer — a known cosmetic edge case.)
 std::string GetSessionId() {
   static const std::string sid = emscripten_run_script_string(
-      "Module.sessionId = Module.sessionId || "
-      "(Date.now().toString(36) + Math.random().toString(36).slice(2))");
+      "(function() {"
+      "  Module.sessionId = Module.sessionId ||"
+      "      sessionStorage.getItem('mjwv_sid') ||"
+      "      (Date.now().toString(36) + Math.random().toString(36).slice(2));"
+      "  sessionStorage.setItem('mjwv_sid', Module.sessionId);"
+      "  return Module.sessionId;"
+      "})()");
   return sid;
 }
 
@@ -588,6 +596,27 @@ void BuildBrowserGui() {
   const ImVec2 kFullWidth(-FLT_MIN, 0.0f);
   const ImVec4 kSpectatingColor(1.0f, 0.75f, 0.2f, 1.0f);
   const ImVec4 kControllingColor(0.3f, 0.9f, 0.4f, 1.0f);
+  const ImVec4 kQueueColor(1.0f, 0.62f, 0.15f, 1.0f);
+
+  // Data rates, shown to both roles (spectators receive no GUI stream, so
+  // that line reads 0 for them). With more than one viewer, the number in
+  // parentheses is the host's total outgoing sim bandwidth: every connected
+  // browser receives the same sim stream.
+  const auto data_rate_lines = [] {
+    ImGui::Text(
+        "Data Rate (GUI): %" PRIu64 " KiB/s",
+        static_cast<uint64_t>(g_app.telemetry.gui_bytes_per_sec / 1024));
+    ImGui::Text(
+        "Data Rate (Sim): %" PRIu64 " KiB/s",
+        static_cast<uint64_t>(g_app.telemetry.sim_bytes_per_sec / 1024));
+    if (g_app.session_viewers > 1) {
+      ImGui::SameLine();
+      ImGui::Text("(%" PRIu64 " KiB/s)",
+                  static_cast<uint64_t>(g_app.telemetry.sim_bytes_per_sec *
+                                        g_app.session_viewers / 1024));
+      ImGui::SetItemTooltip("Total sim data sent across all viewers.");
+    }
+  };
 
   // While someone waits for control, the window background pulses toward a
   // dark orange (the queue size itself is shown in the expanded window).
@@ -634,48 +663,48 @@ void BuildBrowserGui() {
     if (g_app.spectator) {
       // Control group.
       centered_banner("SPECTATING", kSpectatingColor);
-      ImGui::Text("Spectators: %d",
-                  g_app.session_viewers > 1 ? g_app.session_viewers - 1 : 0);
       if (g_app.queue_pos > 0) {
-        ImGui::Text("Control queue: you are #%d of %d.", g_app.queue_pos,
+        ImGui::Text("Control Queue: Position %d of %d", g_app.queue_pos,
                     g_app.queue_len);
-        if (ImGui::Button("Leave queue", kFullWidth)) {
-          g_state_link.SendText(kMsgLeaveQueue);
-        }
+      } else if (g_app.queue_len > 0) {
+        ImGui::TextColored(kQueueColor, "Control Queue: %d waiting",
+                           g_app.queue_len);
       } else {
+        ImGui::Text("Control Queue: (empty)");
+      }
+      if (g_app.queue_pos == 0) {
         if (ImGui::Button("Request control", kFullWidth)) {
           g_state_link.SendText(kMsgRequestControl);
         }
-      }
-      // Rude but sometimes necessary; confirm before yanking the wheel.
-      if (!g_app.force_confirm) {
-        if (ImGui::Button("Force take control", kFullWidth)) {
-          g_app.force_confirm = true;
-        }
       } else {
-        if (ImGui::Button("Confirm: take control now", kFullWidth)) {
+        ImGui::Text("Waiting for control #%d/%d in queue", g_app.queue_pos,
+                    g_app.queue_len);
+        if (ImGui::Button("Cancel Control Request", kFullWidth)) {
+          g_state_link.SendText(kMsgLeaveQueue);
+        }
+        ImGui::PushStyleColor(ImGuiCol_Button,
+                              ImVec4(0.65f, 0.15f, 0.15f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered,
+                              ImVec4(0.80f, 0.20f, 0.20f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive,
+                              ImVec4(0.50f, 0.10f, 0.10f, 1.0f));
+        if (ImGui::Button("Force Take Control", kFullWidth)) {
           g_state_link.SendText(kMsgForceControl);
-          g_app.force_confirm = false;
         }
-        if (ImGui::Button("Cancel taking control", kFullWidth)) {
-          g_app.force_confirm = false;
-        }
+        ImGui::PopStyleColor(3);
+        ImGui::SetItemTooltip("Takes control immediately, jumping the queue.");
       }
 
       // Data rate group.
       ImGui::Separator();
-      ImGui::Text(
-          "Data Rate (Sim): %" PRIu64 " KiB/s",
-          static_cast<uint64_t>(g_app.telemetry.sim_bytes_per_sec / 1024));
+      data_rate_lines();
 
       // Camera group.
       ImGui::Separator();
       // TODO(matijak): Use the studio camera-selection UI here in future, so
       // a spectator can also pick any camera defined in the model.
-      ImGui::TextUnformatted("Camera");
-      ImGui::SetNextItemWidth(-FLT_MIN);
       int cam_mode = g_app.spectator_cam_mode;
-      if (ImGui::Combo("##spectator_camera", &cam_mode,
+      if (ImGui::Combo("Camera", &cam_mode,
                        "Free: tumble\0Free: wasd\0Follow Controller\0")) {
         SetSpectatorCameraMode(cam_mode);
       }
@@ -683,15 +712,11 @@ void BuildBrowserGui() {
       // Control group.
       centered_banner("CONTROLLING", kControllingColor);
       if (g_app.queue_len > 0) {
-        // Queue callout, matching the pulsing window background.
-        const ImVec4 kQueueColor(1.0f, 0.62f, 0.15f, 1.0f);
-        char waiting[48];
-        snprintf(waiting, sizeof(waiting), ">> %d waiting for control <<",
-                 g_app.queue_len);
-        centered_line(waiting, &kQueueColor);
+        ImGui::TextColored(kQueueColor, "Control Queue: %d waiting",
+                           g_app.queue_len);
+      } else {
+        ImGui::Text("Control Queue: (empty)");
       }
-      ImGui::Text("Spectators: %d",
-                  g_app.session_viewers > 1 ? g_app.session_viewers - 1 : 0);
       if (ImGui::Button("Release control", kFullWidth)) {
         // Become a spectator; the server grants the slot down the queue.
         g_ui_link.Shutdown();
@@ -700,31 +725,14 @@ void BuildBrowserGui() {
 
       // Data rate group.
       ImGui::Separator();
-      ImGui::Text(
-          "Data Rate (GUI): %" PRIu64 " KiB/s",
-          static_cast<uint64_t>(g_app.telemetry.gui_bytes_per_sec / 1024));
-      ImGui::Text(
-          "Data Rate (Sim): %" PRIu64 " KiB/s",
-          static_cast<uint64_t>(g_app.telemetry.sim_bytes_per_sec / 1024));
-      // Every connected browser receives the same sim stream, so the host's
-      // total outgoing sim bandwidth is one stream per viewer.
-      ImGui::Text(
-          "Data Rate (Sim, total): %" PRIu64 " KiB/s",
-          static_cast<uint64_t>(g_app.telemetry.sim_bytes_per_sec *
-                                std::max(1, g_app.session_viewers) / 1024));
+      data_rate_lines();
       if (!g_ui_link.RemoteDrawData()) {
         ImGui::TextColored(ImVec4(1.0f, 0.0f, 0.0f, 1.0f),
                            "Waiting for Draw Data...");
       }
 
-      // Stream settings group.
+      // Session settings group.
       ImGui::Separator();
-      bool use_compression = g_ui_link.UseCompression();
-      if (ImGui::Checkbox("Compress GUI Stream", &use_compression)) {
-        g_ui_link.SetUseCompression(use_compression);
-        NetImgui::SetCompressionMode(use_compression ? NetImgui::kForceEnable
-                                                     : NetImgui::kForceDisable);
-      }
       // Local edits win for a grace period (the roster round trip takes a
       // few frames and typing takes longer); afterwards the server's value
       // is the truth.
@@ -733,7 +741,7 @@ void BuildBrowserGui() {
         g_app.max_spectators_edit = g_app.max_spectators;
       }
       ImGui::SetNextItemWidth(100.0f);
-      if (ImGui::InputInt("Max spectators", &g_app.max_spectators_edit)) {
+      if (ImGui::InputInt("Max Spectators", &g_app.max_spectators_edit)) {
         g_app.max_spectators_edit_time = ImGui::GetTime();
         g_app.max_spectators_edit =
             std::clamp(g_app.max_spectators_edit, 0, 32);
@@ -1054,8 +1062,10 @@ struct ResourceData {
   std::vector<std::byte> bytes;
 };
 
-// Registers a resource provider so that "filament:" asset requests from the
-// renderer resolve to the preloaded /assets files.
+// Registers resource providers so that "filament:" (renderer materials/IBL)
+// and "font:" (the local ImGui UI fonts) asset requests resolve to the
+// preloaded /assets files. Both prefixes share the same loader — LoadAsset
+// maps either to /assets/<name>.
 // TODO(matijak): Near-identical copies of LoadAsset/ResourceData/registration
 // live in native_viewer.cc, launcher.cc, and emscripten.cc (differing only in
 // asset root and prefixes). Extract a shared helper into mujoco::platform.
@@ -1082,8 +1092,10 @@ static void RegisterAssetProviders() {
     delete static_cast<ResourceData*>(resource->data);
     resource->data = nullptr;
   };
-  resource_provider.prefix = "filament";
-  mjp_registerResourceProvider(&resource_provider);
+  for (const char* prefix : {"filament", "font"}) {
+    resource_provider.prefix = prefix;
+    mjp_registerResourceProvider(&resource_provider);
+  }
 }
 
 int main(int argc, char** argv) {
@@ -1091,7 +1103,10 @@ int main(int argc, char** argv) {
 
   mujoco::platform::Window::Config config;
   config.gfx_mode = mujoco::platform::GraphicsMode::FilamentWebGl;
-  config.load_fonts = false;
+  // Load the Studio UI fonts for the browser's local ImGui (the Link window);
+  // the "font:" resource provider above resolves them from the preloaded
+  // /assets. (The streamed Studio UI carries its own font atlas separately.)
+  config.load_fonts = true;
 
   g_app.window = std::make_unique<mujoco::platform::Window>("MuJoCo Web Viewer",
                                                             1400, 720, config);

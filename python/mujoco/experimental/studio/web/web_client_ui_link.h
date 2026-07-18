@@ -108,9 +108,6 @@ class UiLink {
   // The latest assembled remote draw data, or nullptr before the first frame.
   NetImguiImDrawData* RemoteDrawData() { return remote_draw_data_; }
 
-  bool UseCompression() const { return use_compression_; }
-  void SetUseCompression(bool use) { use_compression_ = use; }
-
   // Returns the bytes received since the last call and resets the counter.
   uint64_t ConsumeByteCount() {
     uint64_t bytes = bytes_accum_;
@@ -167,6 +164,7 @@ class UiLink {
   float mouse_wheel_pos_[2] = {0.0f, 0.0f};
   uint16_t last_screen_size_[2] = {0, 0};
 
+  // Delta-compress the GUI stream (relayed to the client via CmdInput).
   bool use_compression_ = true;
 
   // --- Telemetry. -----------------------------------------------------------
