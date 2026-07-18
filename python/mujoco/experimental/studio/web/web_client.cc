@@ -86,10 +86,10 @@ enum SpectatorCamMode {
 enum class SessionRole {
   kClaiming = 0,  // /ui claim in flight; the role is not yet resolved.
   kControlling,   // This page holds the open /ui connection.
-  kSpectating,    // Another page controls; scene + local Link window only.
+  kSpectating,    // Another page controls; scene + local role window only.
 };
 
-// Byte-rate telemetry shown in the Link window.
+// Byte-rate telemetry shown in the role window.
 struct Telemetry {
   double last_rate_time = 0;
   uint64_t gui_bytes_per_sec = 0;
@@ -542,12 +542,12 @@ class DisconnectNotice {
 };
 DisconnectNotice g_disconnect_notice;
 
-// The Link window: a collapsed role pill that expands on hover into the
+// The role window: a collapsed role pill that expands on hover into the
 // session panel (role banner, control queue, data rates, per-role
 // settings). Owns its presentation state — mode, intro/hover timers, drag
 // and snap anchoring, edit grace — while session data (role, roster,
 // telemetry) is read from g_app and actions go through the links.
-class LinkWindow {
+class RoleWindow {
  public:
   void Draw() {
     ComputeAnchorPositions();
@@ -706,7 +706,7 @@ class LinkWindow {
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(6.0f, 6.0f));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowMinSize, ImVec2(16.0f, 16.0f));
 
-    ImGui::Begin("Link", nullptr,
+    ImGui::Begin("Role", nullptr,
                  ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
                      ImGuiWindowFlags_AlwaysAutoResize);
     if (g_app.role == SessionRole::kSpectating) {
@@ -714,7 +714,7 @@ class LinkWindow {
     } else if (g_app.role == SessionRole::kControlling) {
       ImGui::TextColored(kControllingColor, "CONTROLLING");
     } else {
-      ImGui::Text("Link");
+      ImGui::Text("Role");
     }
     if (ImGui::IsWindowHovered(
             ImGuiHoveredFlags_AllowWhenBlockedByActiveItem)) {
@@ -730,7 +730,7 @@ class LinkWindow {
     // No title bar; the window is still movable by dragging empty space
     // (ImGui's default when ConfigWindowsMoveFromTitleBarOnly is off).
     ImGui::Begin(
-        "Link", nullptr,
+        "Role", nullptr,
         ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoTitleBar);
 
     if (g_app.role == SessionRole::kClaiming) {
@@ -894,10 +894,10 @@ class LinkWindow {
   int max_spectators_edit_ = -1;
   double max_spectators_edit_time_ = -1e9;
 };
-LinkWindow g_link_window;
+RoleWindow g_role_window;
 
 void BuildBrowserGui() {
-  // Refresh the byte-rate telemetry the Link window shows.
+  // Refresh the byte-rate telemetry the role window shows.
   const double now = ImGui::GetTime();
   if (now - g_app.telemetry.last_rate_time >= 1.0) {
     g_app.telemetry.gui_bytes_per_sec = g_ui_link.ConsumeByteCount();
@@ -906,7 +906,7 @@ void BuildBrowserGui() {
   }
 
   g_disconnect_notice.Draw();
-  g_link_window.Draw();
+  g_role_window.Draw();
 }
 
 //=================================================================================================
@@ -1245,7 +1245,7 @@ int main(int argc, char** argv) {
 
   mujoco::platform::Window::Config config;
   config.gfx_mode = mujoco::platform::GraphicsMode::FilamentWebGl;
-  // Load the Studio UI fonts for the browser's local ImGui (the Link window);
+  // Load the Studio UI fonts for the browser's local ImGui (the role window);
   // the "font:" resource provider above resolves them from the preloaded
   // /assets. (The streamed Studio UI carries its own font atlas separately.)
   config.load_fonts = true;
