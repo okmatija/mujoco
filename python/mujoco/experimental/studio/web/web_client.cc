@@ -666,15 +666,18 @@ void BuildBrowserGui() {
     if (g_app.spectator) {
       // Control group.
       centered_banner("SPECTATING", kSpectatingColor);
+      char queue_text[64];
       if (g_app.queue_pos > 0) {
-        ImGui::Text("Control Queue: Position %d of %d", g_app.queue_pos,
-                    g_app.queue_len);
+        snprintf(queue_text, sizeof(queue_text),
+                 "Control Queue: Position %d of %d", g_app.queue_pos,
+                 g_app.queue_len);
       } else if (g_app.queue_len > 0) {
-        ImGui::TextColored(kQueueColor, "Control Queue: %d waiting",
-                           g_app.queue_len);
+        snprintf(queue_text, sizeof(queue_text), "Control Queue: %d waiting",
+                 g_app.queue_len);
       } else {
-        ImGui::Text("Control Queue: (empty)");
+        snprintf(queue_text, sizeof(queue_text), "Control Queue: (empty)");
       }
+      centered_line(queue_text, nullptr);
       if (g_app.queue_pos == 0) {
         if (ImGui::Button("Request control", kFullWidth)) {
           g_state_link.SendText(kMsgRequestControl);
@@ -717,10 +720,12 @@ void BuildBrowserGui() {
       // Control group.
       centered_banner("CONTROLLING", kControllingColor);
       if (g_app.queue_len > 0) {
-        ImGui::TextColored(kQueueColor, "Control Queue: %d waiting",
-                           g_app.queue_len);
+        char queue_text[64];
+        snprintf(queue_text, sizeof(queue_text),
+                 ">> Control Queue: %d waiting <<", g_app.queue_len);
+        centered_line(queue_text, &kQueueColor);
       } else {
-        ImGui::Text("Control Queue: (empty)");
+        centered_line("Control Queue: (empty)", nullptr);
       }
       if (ImGui::Button("Release control", kFullWidth)) {
         // Become a spectator; the server grants the slot down the queue.
