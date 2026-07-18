@@ -683,16 +683,20 @@ void BuildBrowserGui() {
           g_state_link.SendText(kMsgRequestControl);
         }
       } else {
-        if (ImGui::Button("Cancel Control Request", kFullWidth)) {
+        const float half_width = (ImGui::GetContentRegionAvail().x -
+                                  ImGui::GetStyle().ItemSpacing.x) *
+                                 0.5f;
+        if (ImGui::Button("Leave Queue", ImVec2(half_width, 0.0f))) {
           g_state_link.SendText(kMsgLeaveQueue);
         }
+        ImGui::SameLine();
         ImGui::PushStyleColor(ImGuiCol_Button,
                               ImVec4(0.65f, 0.15f, 0.15f, 1.0f));
         ImGui::PushStyleColor(ImGuiCol_ButtonHovered,
                               ImVec4(0.80f, 0.20f, 0.20f, 1.0f));
         ImGui::PushStyleColor(ImGuiCol_ButtonActive,
                               ImVec4(0.50f, 0.10f, 0.10f, 1.0f));
-        if (ImGui::Button("Force Take Control", kFullWidth)) {
+        if (ImGui::Button("Take Control", ImVec2(half_width, 0.0f))) {
           g_state_link.SendText(kMsgForceControl);
         }
         ImGui::PopStyleColor(3);
