@@ -25,8 +25,8 @@ if(EMSCRIPTEN)
   # which is what we want.
   add_subdirectory(${NETIMGUI_DIR} ${CMAKE_CURRENT_BINARY_DIR}/netimgui)
 
-  add_executable(web_client web_client.cc web_client_ui_link.cc
-                 web_client_state_link.cc)
+  add_executable(web_client web_client.cc web_client_local_ui.cc
+                 web_client_ui_link.cc web_client_state_link.cc)
 
   target_include_directories(web_client
     PRIVATE
@@ -79,16 +79,37 @@ if(EMSCRIPTEN)
     -Wl,--wrap=glGetError
   )
 
-  # Bundle the Filament assets (materials, IBL) into web_client.data. They are
-  # exposed at /assets in the Emscripten virtual filesystem, where the
-  # "filament:" resource provider registered in web_client.cc reads them.
+  # Stage the three Studio UI fonts into their own directory so the browser's
+  # local ImGui (the Link window) can load them, matching the native viewer.
+  # They are fetched into _deps by the studio font dependencies; copy them
+  # here (the copy handles the [wght] brackets in the variable font's name).
+  set(WEB_CLIENT_FONTS_DIR ${CMAKE_CURRENT_BINARY_DIR}/web_fonts)
+  add_custom_target(web_client_fonts
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${WEB_CLIENT_FONTS_DIR}
+    COMMAND ${CMAKE_COMMAND} -E copy
+      "${CMAKE_BINARY_DIR}/_deps/atkinson_hyperlegible_next-src/fonts/variable/AtkinsonHyperlegibleNext[wght].ttf"
+      "${WEB_CLIENT_FONTS_DIR}/AtkinsonHyperlegibleNext[wght].ttf"
+    COMMAND ${CMAKE_COMMAND} -E copy
+      ${CMAKE_BINARY_DIR}/_deps/font_awesome-src/fonts/fontawesome-webfont.ttf
+      ${WEB_CLIENT_FONTS_DIR}/fontawesome-webfont.ttf
+    COMMAND ${CMAKE_COMMAND} -E copy
+      "${CMAKE_BINARY_DIR}/_deps/atkinson_hyperlegible_mono-src/fonts/ttf/AtkinsonHyperlegibleMono-Regular.ttf"
+      ${WEB_CLIENT_FONTS_DIR}/AtkinsonHyperlegibleMono-Regular.ttf
+    COMMENT "Staging web viewer UI fonts"
+  )
+
+  # Bundle the Filament assets (materials, IBL) and the UI fonts into
+  # web_client.data. Both are exposed at /assets in the Emscripten virtual
+  # filesystem, where the "filament:" and "font:" resource providers
+  # registered in web_client.cc read them.
   set(WEB_CLIENT_FILAMENT_ASSETS_DIR
       ${CMAKE_BINARY_DIR}/src/render/filament/assets
   )
   target_link_options(web_client PRIVATE
     "SHELL:--preload-file ${WEB_CLIENT_FILAMENT_ASSETS_DIR}@/assets"
+    "SHELL:--preload-file ${WEB_CLIENT_FONTS_DIR}@/assets"
   )
-  add_dependencies(web_client mujoco_filament_assets)
+  add_dependencies(web_client mujoco_filament_assets web_client_fonts)
 
   # Stage the browser artifacts into the source-tree dist/ folder, which
   # web_server.py serves by default (see _find_static_files_dir).
