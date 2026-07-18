@@ -14,8 +14,8 @@
 
 // State link: receives simulation state payloads from the Python StateServer
 // over the /state WebSocket and owns the model-change / page-reload /
-// supersede policy. Applying a payload to the app is delegated to the
-// on_payload callback, so this file stays free of scene and renderer
+// supersede policy. Applying a payload to the app goes through the
+// Callbacks interface, so this file stays free of scene and renderer
 // dependencies.
 
 #ifndef MUJOCO_PYTHON_EXPERIMENTAL_STUDIO_WEB_WEB_CLIENT_STATE_LINK_H_
@@ -24,7 +24,6 @@
 #include <emscripten/websocket.h>
 
 #include <cstdint>
-#include <functional>
 #include <string>
 
 #include "state_payload.h"
@@ -33,19 +32,21 @@ namespace mujoco::studio {
 
 class StateLink {
  public:
-  // Payloads are dropped until this returns true (model loaded).
-  using ReadyFn = std::function<bool()>;
-  // Applies a parsed payload to the app (physics + render state + geoms).
-  using OnPayloadFn = std::function<void(const StatePayloadView&)>;
-  // Receives session metadata (roster updates etc.), sent by the server as
-  // text frames on the same socket as the binary state payloads.
-  using OnSessionMessageFn = std::function<void(const char* text)>;
+  // The app-facing callbacks of the link; the app implements them once.
+  // The interface is the complete list of events the state stream delivers.
+  class Callbacks {
+   public:
+    virtual ~Callbacks() = default;
+    // Payloads are dropped until this returns true (model loaded).
+    virtual bool ReadyForPayload() = 0;
+    // Applies a parsed payload to the app (physics + render state + geoms).
+    virtual void OnPayload(const StatePayloadView& view) = 0;
+    // Receives session metadata (roster updates etc.), sent by the server
+    // as text frames on the same socket as the binary state payloads.
+    virtual void OnSessionMessage(const char* text) = 0;
+  };
 
-  StateLink(ReadyFn ready, OnPayloadFn on_payload,
-            OnSessionMessageFn on_session_message = nullptr)
-      : ready_(std::move(ready)),
-        on_payload_(std::move(on_payload)),
-        on_session_message_(std::move(on_session_message)) {}
+  explicit StateLink(Callbacks& callbacks) : callbacks_(callbacks) {}
 
   void Connect(const std::string& url);
 
@@ -116,9 +117,7 @@ class StateLink {
                            const EmscriptenWebSocketCloseEvent* event,
                            void* user_data);
 
-  ReadyFn ready_;
-  OnPayloadFn on_payload_;
-  OnSessionMessageFn on_session_message_;
+  Callbacks& callbacks_;
 
   EMSCRIPTEN_WEBSOCKET_T socket_ = 0;
   bool open_ = false;

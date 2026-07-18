@@ -28,7 +28,6 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <functional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -58,17 +57,21 @@ class UiLink {
   using SocketInfo = NetImgui::Internal::Network::SocketInfo;
   using ReadyState = NetImgui::Internal::Network::ReadyState;
   using ClientTextureID = NetImgui::Internal::ClientTextureID;
-  // Uploads a full RGBA texture and returns the GPU handle; nullptr pixels
-  // destroy the texture backing `current`.
-  using UploadTextureFn =
-      std::function<uintptr_t(uintptr_t current, const std::byte* rgba,
-                              uint32_t width, uint32_t height)>;
-  // True once the GPU context can accept texture uploads.
-  using GpuReadyFn = std::function<bool()>;
+  // The renderer-facing callbacks of the link; the app implements them once.
+  // The link reaches the GPU only through it, so the protocol logic stays
+  // renderer-agnostic.
+  class Callbacks {
+   public:
+    virtual ~Callbacks() = default;
+    // Uploads a full RGBA texture and returns the GPU handle; nullptr
+    // pixels destroy the texture backing `current`.
+    virtual uintptr_t UploadTexture(uintptr_t current, const std::byte* rgba,
+                                    uint32_t width, uint32_t height) = 0;
+    // True once the GPU context can accept texture uploads.
+    virtual bool GpuReady() = 0;
+  };
 
-  UiLink(UploadTextureFn upload_texture, GpuReadyFn gpu_ready)
-      : upload_texture_(std::move(upload_texture)),
-        gpu_ready_(std::move(gpu_ready)) {}
+  explicit UiLink(Callbacks& callbacks) : callbacks_(callbacks) {}
 
   // (Re)connects to the UI WebSocket. Disconnects any existing socket first.
   void Connect(const std::string& url);
@@ -120,8 +123,7 @@ class UiLink {
   void ProcessCmdTexture(NetImgui::Internal::CmdTexture* cmd);
 
  private:
-  UploadTextureFn upload_texture_;
-  GpuReadyFn gpu_ready_;
+  Callbacks& callbacks_;
 
   float max_clip_[2] = {0.0f, 0.0f};
 

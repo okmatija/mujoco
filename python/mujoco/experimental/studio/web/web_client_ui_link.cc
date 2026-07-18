@@ -244,7 +244,7 @@ void UiLink::FlushPendingTextures() {
   for (auto& [texID, entry] : texture_cpu_) {
     uintptr_t& localTex = texture_map_[texID];
     if (localTex == 0 && !entry.pixels.empty()) {
-      localTex = upload_texture_(
+      localTex = callbacks_.UploadTexture(
           localTex, reinterpret_cast<const std::byte*>(entry.pixels.data()),
           entry.width, entry.height);
       LOG(Info, "FlushPendingTextures: uploaded texID=%lu -> filament=%lu",
@@ -276,9 +276,9 @@ void UiLink::ProcessCmdTexture(CmdTexture* pCmdTexture) {
   uintptr_t& localTex = texture_map_[texID];
 
   if (pCmdTexture->mStatus == CmdTexture::eType::Destroy) {
-    if (localTex != 0 && gpu_ready_()) {
+    if (localTex != 0 && callbacks_.GpuReady()) {
       // Pass nullptr pixels to destroy the GPU texture.
-      upload_texture_(localTex, nullptr, 0, 0);
+      callbacks_.UploadTexture(localTex, nullptr, 0, 0);
     }
     localTex = 0;
     texture_cpu_.erase(texID);
@@ -369,8 +369,8 @@ void UiLink::ProcessCmdTexture(CmdTexture* pCmdTexture) {
   // Upload the full CPU-side texture to the GPU if the context is ready.
   // If it isn't yet (model still loading), the texture stays in texture_cpu_
   // and will be flushed by FlushPendingTextures() later.
-  if (gpu_ready_()) {
-    localTex = upload_texture_(
+  if (callbacks_.GpuReady()) {
+    localTex = callbacks_.UploadTexture(
         localTex, reinterpret_cast<const std::byte*>(entry.pixels.data()),
         entry.width, entry.height);
     VLOG(1, "uploadGuiImage for clientTexID=%lu -> filament=%lu",

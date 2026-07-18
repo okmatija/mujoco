@@ -27,9 +27,8 @@ EM_BOOL StateLink::OnWsMessage(int event_type,
   link->server_close_code_ = 0;  // Accepted; hide the disconnect notice.
   if (event->isText) {
     // Text frames carry session metadata; emscripten null-terminates them.
-    if (link->on_session_message_) {
-      link->on_session_message_(reinterpret_cast<const char*>(event->data));
-    }
+    link->callbacks_.OnSessionMessage(
+        reinterpret_cast<const char*>(event->data));
   } else {
     link->HandleMessage(event->data, event->numBytes);
     // Flow control: the server keeps at most one state payload in flight
@@ -124,7 +123,7 @@ void StateLink::SendText(const char* text) {
 
 void StateLink::HandleMessage(const uint8_t* data, uint32_t num_bytes) {
   last_message_time_ = emscripten_get_now() / 1000.0;
-  if (reload_pending_ || (ready_ && !ready_())) {
+  if (reload_pending_ || !callbacks_.ReadyForPayload()) {
     return;
   }
   bytes_accum_ += num_bytes;
@@ -146,9 +145,7 @@ void StateLink::HandleMessage(const uint8_t* data, uint32_t num_bytes) {
     return;
   }
 
-  if (on_payload_) {
-    on_payload_(view);
-  }
+  callbacks_.OnPayload(view);
 }
 
 }  // namespace mujoco::studio

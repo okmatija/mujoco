@@ -272,61 +272,100 @@ void ApplyStatePayload(const StatePayloadView& view) {
   }
 }
 
-// The two links to the Python side. Their connection-scoped state lives
-// inside the classes; see web_client_ui_link.h and web_client_state_link.h.
-UiLink g_ui_link(
-    [](uintptr_t current, const std::byte* rgba, uint32_t width,
-       uint32_t height) -> uintptr_t {
-      return g_app.renderer->UploadImage(current, rgba, width, height,
-                                         rgba ? 4 : 0);
-    },
-    IsFilamentReady);
-StateLink g_state_link(
-    [] { return g_app.model_holder && g_app.model_holder->ok(); },
-    ApplyStatePayload,
-    [](const char* text) {
-      int viewers = 0, queue_pos = 0, queue_len = 0;
-      char role[16] = {0};
-      int max_spectators = 0;
-      if (sscanf(text,
-                 "viewers=%d;role=%15[^;];queue_pos=%d;queue_len=%d;"
-                 "max_spectators=%d",
-                 &viewers, role, &queue_pos, &queue_len,
-                 &max_spectators) == 5) {
-        if (viewers != g_app.session_viewers || queue_pos != g_app.queue_pos ||
-            queue_len != g_app.queue_len) {
-          LOG(Info, "Session roster: %s", text);
-        }
-        g_app.session_viewers = viewers;
-        g_app.queue_pos = queue_pos;
-        g_app.queue_len = queue_len;
-        g_app.max_spectators = max_spectators;
-        // The roster is authoritative about this page's role. Settling on
-        // it (rather than after several rejected /ui retries) makes the
-        // SPECTATING banner appear within the first roster (~200ms). Only
-        // while claiming with /ui closed: an in-flight claim must not be
-        // aborted, and an established controller is never demoted here
-        // (the 4001 close path handles that).
-        if (g_app.role == SessionRole::kClaiming &&
-            strcmp(role, "spectator") == 0) {
-          const UiLink::ReadyState ui_state = g_ui_link.ConnectionState();
-          if (!g_ui_link.HasSocket() ||
-              ui_state == UiLink::ReadyState::kClosed ||
-              ui_state == UiLink::ReadyState::kError) {
-            LOG(Info, "Roster says spectator; settling");
-            SetRole(SessionRole::kSpectating);
-            g_ui_link.Shutdown();
-          }
-        }
-      } else if (strcmp(text, kMsgGrant) == 0) {
-        // Our turn: the controller slot is reserved for this page. The
-        // role flips to kControlling when the claim's socket opens.
-        LOG(Info, "Control granted; claiming the controller slot");
-        SetRole(SessionRole::kClaiming);
-        g_app.ui_reject_count = 0;
-        g_ui_link.Connect(WsUrl("/ui"));
+// The app's single implementation of every interface the links and the
+// local UI call back into (the pattern set by SessionActions): one object,
+// wired into both links at construction. The links' connection-scoped
+// state lives inside the link classes; see web_client_ui_link.h and
+// web_client_state_link.h.
+void SetSpectatorCameraMode(int mode);
+extern UiLink g_ui_link;
+extern StateLink g_state_link;
+
+class AppCallbacks final : public SessionActions,
+                           public UiLink::Callbacks,
+                           public StateLink::Callbacks {
+ public:
+  // --- UiLink::Callbacks (the renderer-facing side). ----------------------
+
+  uintptr_t UploadTexture(uintptr_t current, const std::byte* rgba,
+                          uint32_t width, uint32_t height) override {
+    return g_app.renderer->UploadImage(current, rgba, width, height,
+                                       rgba ? 4 : 0);
+  }
+  bool GpuReady() override { return IsFilamentReady(); }
+
+  // --- StateLink::Callbacks (payloads + the session text channel). --------
+
+  bool ReadyForPayload() override {
+    return g_app.model_holder && g_app.model_holder->ok();
+  }
+
+  void OnPayload(const StatePayloadView& view) override {
+    ApplyStatePayload(view);
+  }
+
+  void OnSessionMessage(const char* text) override {
+    int viewers = 0, queue_pos = 0, queue_len = 0;
+    char role[16] = {0};
+    int max_spectators = 0;
+    if (sscanf(text,
+               "viewers=%d;role=%15[^;];queue_pos=%d;queue_len=%d;"
+               "max_spectators=%d",
+               &viewers, role, &queue_pos, &queue_len, &max_spectators) == 5) {
+      if (viewers != g_app.session_viewers || queue_pos != g_app.queue_pos ||
+          queue_len != g_app.queue_len) {
+        LOG(Info, "Session roster: %s", text);
       }
-    });
+      g_app.session_viewers = viewers;
+      g_app.queue_pos = queue_pos;
+      g_app.queue_len = queue_len;
+      g_app.max_spectators = max_spectators;
+      // The roster is authoritative about this page's role. Settling on
+      // it (rather than after several rejected /ui retries) makes the
+      // SPECTATING banner appear within the first roster (~200ms). Only
+      // while claiming with /ui closed: an in-flight claim must not be
+      // aborted, and an established controller is never demoted here
+      // (the 4001 close path handles that).
+      if (g_app.role == SessionRole::kClaiming &&
+          strcmp(role, "spectator") == 0) {
+        const UiLink::ReadyState ui_state = g_ui_link.ConnectionState();
+        if (!g_ui_link.HasSocket() || ui_state == UiLink::ReadyState::kClosed ||
+            ui_state == UiLink::ReadyState::kError) {
+          LOG(Info, "Roster says spectator; settling");
+          SetRole(SessionRole::kSpectating);
+          g_ui_link.Shutdown();
+        }
+      }
+    } else if (strcmp(text, kMsgGrant) == 0) {
+      // Our turn: the controller slot is reserved for this page. The
+      // role flips to kControlling when the claim's socket opens.
+      LOG(Info, "Control granted; claiming the controller slot");
+      SetRole(SessionRole::kClaiming);
+      g_app.ui_reject_count = 0;
+      g_ui_link.Connect(WsUrl("/ui"));
+    }
+  }
+
+  // --- SessionActions (the role window's intents). ------------------------
+
+  void RequestControl() override { g_state_link.SendText(kMsgRequestControl); }
+  void LeaveQueue() override { g_state_link.SendText(kMsgLeaveQueue); }
+  void StealControl() override { g_state_link.SendText(kMsgForceControl); }
+  void ReleaseControl() override {
+    // Become a spectator; the server grants the slot down the queue.
+    g_ui_link.Shutdown();
+    SetRole(SessionRole::kSpectating);
+  }
+  void SetCameraMode(int mode) override { SetSpectatorCameraMode(mode); }
+  void SetMaxSpectators(int count) override {
+    char msg[48];
+    snprintf(msg, sizeof(msg), "%s%d", kMsgMaxSpectatorsPrefix, count);
+    g_state_link.SendText(msg);
+  }
+};
+AppCallbacks g_callbacks;
+UiLink g_ui_link(g_callbacks);
+StateLink g_state_link(g_callbacks);
 
 // Switches the spectator camera mode, re-seeding the local camera when
 // entering a free mode so the view starts from the current pose.
@@ -446,26 +485,6 @@ void HandleSpectatorCameraInput() {
   }
 }
 
-// The app's implementation of the role window's action interface: the
-// complete set of side effects the local UI can cause.
-class AppSessionActions final : public SessionActions {
- public:
-  void RequestControl() override { g_state_link.SendText(kMsgRequestControl); }
-  void LeaveQueue() override { g_state_link.SendText(kMsgLeaveQueue); }
-  void StealControl() override { g_state_link.SendText(kMsgForceControl); }
-  void ReleaseControl() override {
-    // Become a spectator; the server grants the slot down the queue.
-    g_ui_link.Shutdown();
-    SetRole(SessionRole::kSpectating);
-  }
-  void SetCameraMode(int mode) override { SetSpectatorCameraMode(mode); }
-  void SetMaxSpectators(int count) override {
-    char msg[48];
-    snprintf(msg, sizeof(msg), "%s%d", kMsgMaxSpectatorsPrefix, count);
-    g_state_link.SendText(msg);
-  }
-};
-AppSessionActions g_session_actions;
 DisconnectNotice g_disconnect_notice;
 RoleWindow g_role_window;
 
@@ -494,7 +513,7 @@ void BuildBrowserGui() {
   view.sim_bytes_per_sec = g_app.telemetry.sim_bytes_per_sec;
   view.have_remote_frame = g_ui_link.RemoteDrawData() != nullptr;
   view.camera_mode = g_app.spectator_cam_mode;
-  g_role_window.Draw(view, g_session_actions);
+  g_role_window.Draw(view, g_callbacks);
 }
 
 //=================================================================================================
