@@ -302,6 +302,7 @@ void RoleWindow::DrawSpectatorContents(const SessionView& view,
     if (ImGui::Button("Leave Queue", ImVec2(half_width, 0.0f))) {
       actions.LeaveQueue();
     }
+    ImGui::SetItemTooltip("Abandons the control request.");
     ImGui::SameLine();
     ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.65f, 0.15f, 0.15f, 1.0f));
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered,
