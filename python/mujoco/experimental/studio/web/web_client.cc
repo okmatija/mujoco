@@ -79,19 +79,6 @@ enum SpectatorCamMode {
   kSpecCamFollow,      // Follow the controller's camera.
 };
 
-// Where the Link window is anchored on the page. The window is always
-// draggable; releasing a drag near an anchor snaps to it, anywhere else
-// leaves the window Free at its dropped position.
-enum LinkWindowPos {
-  kLinkPosFree = 0,
-  kLinkPosTopLeft,  // The anchors must stay contiguous from here on.
-  kLinkPosTopMid,
-  kLinkPosTopRight,
-  kLinkPosBottomLeft,
-  kLinkPosBottomMid,
-  kLinkPosBottomRight,
-};
-
 // The page's role in the collaborative session. Every page starts by
 // claiming the controller slot; the claim either succeeds (kControlling)
 // or the page settles into spectating. A control grant puts a spectator
@@ -100,14 +87,6 @@ enum class SessionRole {
   kClaiming = 0,  // /ui claim in flight; the role is not yet resolved.
   kControlling,   // This page holds the open /ui connection.
   kSpectating,    // Another page controls; scene + local Link window only.
-};
-
-// The Link window's presentation state. Dragging is tracked separately
-// (link_dragging): any of these can be dragged.
-enum class LinkWindowMode {
-  kIntro = 0,  // Expanded on page load, until the timer or the first hover.
-  kExpanded,   // Expanded while hovered (plus a short leave grace).
-  kCollapsed,  // The role pill; expands on hover.
 };
 
 // Byte-rate telemetry shown in the Link window.
@@ -137,22 +116,6 @@ struct AppState {
   int spectator_cam_mode = kSpecCamTumble;
   float spectator_cam_speed = 0.001f;  // WASD speed; accelerates while held.
 
-  // Link window anchor; updated by the drag-snap logic in BuildBrowserGui.
-  int link_window_pos = kLinkPosTopMid;
-  // Link window state. It starts in the intro (expanded for a few seconds
-  // so new users see it exists and learn it expands on hover); the first
-  // hover ends the intro. link_hover_time feeds the collapse grace period.
-  LinkWindowMode link_mode = LinkWindowMode::kIntro;
-  double link_intro_start = 0;
-  double link_hover_time = 0;
-  bool link_dragging = false;
-  // Max spectators edit grace: the local value wins over the roster until
-  // max_spectators_edit_time is old enough (see the InputInt).
-  int max_spectators_edit = -1;
-  double max_spectators_edit_time = -1e9;
-  // True while the server-not-reachable notice is up (log once per outage).
-  bool disconnected_notice_logged = false;
-
   Telemetry telemetry;
 
   // Main loop frame counters (MainLoopImpl): heartbeat pacing and
@@ -181,11 +144,6 @@ constexpr char kMsgForceControl[] = "force_control";
 constexpr char kMsgHeartbeat[] = "heartbeat";
 constexpr char kMsgGrant[] = "grant";
 constexpr char kMsgMaxSpectatorsPrefix[] = "max_spectators=";
-
-// How long the state stream (~60Hz while the Python side is alive) may go
-// silent before the "server not reachable" notice appears. A model-change
-// restart resumes traffic in about a second and should not flash the notice.
-constexpr double kServerSilenceNoticeSec = 3.0;
 
 // WebSocket base URL matching the page origin, e.g. "ws://host:8080" or
 // "wss://tunnel.example.com" behind an HTTPS tunnel. All viewer WebSockets
@@ -491,35 +449,79 @@ void HandleSpectatorCameraInput() {
   }
 }
 
-void BuildBrowserGui() {
-  // TODO(matijak): Move these centered-text helpers into
-  // platform/ux/imgui_widgets.cc.
-  const auto centered_line = [](const char* text, const ImVec4* color) {
-    ImGui::SetCursorPosX(std::max(
-        0.0f, (ImGui::GetWindowWidth() - ImGui::CalcTextSize(text).x) * 0.5f));
-    if (color != nullptr) {
-      ImGui::TextColored(*color, "%s", text);
-    } else {
-      ImGui::TextUnformatted(text);
-    }
-  };
-  // Large centered banner text (SPECTATING / CONTROLLING / DISCONNECTED).
-  const auto centered_banner = [](const char* text, const ImVec4& color) {
-    ImGui::SetWindowFontScale(1.6f);
-    const float text_width = ImGui::CalcTextSize(text).x;
-    ImGui::SetCursorPosX(
-        std::max(0.0f, (ImGui::GetWindowWidth() - text_width) * 0.5f));
-    ImGui::TextColored(color, "%s", text);
-    ImGui::SetWindowFontScale(1.0f);
-  };
+// TODO(matijak): Move these centered-text helpers into
+// platform/ux/imgui_widgets.cc.
+void CenteredLine(const char* text, const ImVec4* color) {
+  ImGui::SetCursorPosX(std::max(
+      0.0f, (ImGui::GetWindowWidth() - ImGui::CalcTextSize(text).x) * 0.5f));
+  if (color != nullptr) {
+    ImGui::TextColored(*color, "%s", text);
+  } else {
+    ImGui::TextUnformatted(text);
+  }
+}
 
-  // Screen-centered DISCONNECTED notice: a big red banner over white
-  // explanation lines. Shared by the deliberate-close and server-silence
-  // notices, which never show at the same time (a close code suppresses the
-  // silence notice).
-  const auto disconnected_notice = [&](const char* window_id,
-                                       std::initializer_list<const char*>
-                                           lines) {
+// Large centered banner text (SPECTATING / CONTROLLING / DISCONNECTED).
+void CenteredBanner(const char* text, const ImVec4& color) {
+  ImGui::SetWindowFontScale(1.6f);
+  const float text_width = ImGui::CalcTextSize(text).x;
+  ImGui::SetCursorPosX(
+      std::max(0.0f, (ImGui::GetWindowWidth() - text_width) * 0.5f));
+  ImGui::TextColored(color, "%s", text);
+  ImGui::SetWindowFontScale(1.0f);
+}
+
+// The screen-centered DISCONNECTED notices: a big red banner over white
+// explanation lines, shown for deliberate server closes (session full,
+// inactivity) and for server silence. The two never show at the same time:
+// a close code suppresses the silence notice.
+class DisconnectNotice {
+ public:
+  void Draw() {
+    if (const int close_code = g_state_link.ServerCloseCode()) {
+      const char* reason = "Disconnected by the viewer.";
+      if (close_code == 4002) {
+        reason = "Session is full: too many viewers connected.";
+      } else if (close_code == 4003) {
+        reason = "Disconnected after inactivity.";
+      }
+      DrawWindow("##disconnected_by_server",
+                 {reason, "Retrying; reconnects automatically."});
+    }
+
+    // The silence notice keys on state-stream staleness rather than socket
+    // state: a killed, suspended (Ctrl+Z), or unreachable server all go
+    // silent, but only a killed one closes its sockets. Clears itself when
+    // traffic resumes. Suppressed before the first payload (initial load),
+    // after a deliberate server-side close (its own notice above), and
+    // during model-swap reloads.
+    const double last_msg = g_state_link.LastMessageTime();
+    const bool link_stale =
+        last_msg > 0 &&
+        emscripten_get_now() / 1000.0 - last_msg > kServerSilenceNoticeSec &&
+        g_state_link.ServerCloseCode() == 0 && !g_state_link.ReloadPending();
+    if (!link_stale) {
+      logged_ = false;
+      return;
+    }
+    if (!logged_) {
+      LOG(Info, "Showing server-not-reachable notice");
+      logged_ = true;
+    }
+    DrawWindow("##disconnected",
+               {"Viewer server is not reachable: the Python script may",
+                "have stopped. This page reconnects automatically if the",
+                "viewer comes back."});
+  }
+
+ private:
+  // How long the state stream (~60Hz while the Python side is alive) may go
+  // silent before the notice appears. A model-change restart resumes
+  // traffic in about a second and should not flash the notice.
+  static constexpr double kServerSilenceNoticeSec = 3.0;
+
+  static void DrawWindow(const char* window_id,
+                         std::initializer_list<const char*> lines) {
     const ImGuiIO& io = ImGui::GetIO();
     ImGui::SetNextWindowPos(
         ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f),
@@ -528,98 +530,122 @@ void BuildBrowserGui() {
                  ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
                      ImGuiWindowFlags_NoMove |
                      ImGuiWindowFlags_AlwaysAutoResize);
-    centered_banner("DISCONNECTED", ImVec4(1.0f, 0.3f, 0.3f, 1.0f));
+    CenteredBanner("DISCONNECTED", ImVec4(1.0f, 0.3f, 0.3f, 1.0f));
     for (const char* line : lines) {
-      centered_line(line, nullptr);
+      CenteredLine(line, nullptr);
     }
     ImGui::End();
+  }
+
+  // True while the server-not-reachable notice is up (log once per outage).
+  bool logged_ = false;
+};
+DisconnectNotice g_disconnect_notice;
+
+// The Link window: a collapsed role pill that expands on hover into the
+// session panel (role banner, control queue, data rates, per-role
+// settings). Owns its presentation state — mode, intro/hover timers, drag
+// and snap anchoring, edit grace — while session data (role, roster,
+// telemetry) is read from g_app and actions go through the links.
+class LinkWindow {
+ public:
+  void Draw() {
+    ComputeAnchorPositions();
+    // While anchored, the window is re-pinned every frame (so it follows
+    // canvas resizes) for both the collapsed pill and the expanded window
+    // (same ImGui window, so one call covers whichever Begin runs this
+    // frame) — except while it is being dragged.
+    if (anchor_ != kAnchorFree && !dragging_) {
+      ImGui::SetNextWindowPos(anchor_pos_[anchor_ - kAnchorTopLeft],
+                              ImGuiCond_Always,
+                              kAnchorPivot[anchor_ - kAnchorTopLeft]);
+    }
+
+    // While someone waits for control, the window background pulses toward
+    // a dark orange (the queue size itself is shown in the expanded form).
+    const bool pulse =
+        g_app.role == SessionRole::kControlling && g_app.queue_len > 0;
+    if (pulse) {
+      const float phase =
+          0.5f + 0.5f * sinf(static_cast<float>(ImGui::GetTime()) * 2.5f);
+      ImVec4 bg = ImGui::GetStyleColorVec4(ImGuiCol_WindowBg);
+      const ImVec4 orange(0.45f, 0.22f, 0.02f, bg.w);
+      const float blend = 0.6f * phase;
+      bg.x += (orange.x - bg.x) * blend;
+      bg.y += (orange.y - bg.y) * blend;
+      bg.z += (orange.z - bg.z) * blend;
+      ImGui::PushStyleColor(ImGuiCol_WindowBg, bg);
+    }
+
+    if (mode_ == Mode::kCollapsed) {
+      DrawCollapsed();
+    } else {
+      DrawExpanded();
+    }
+
+    if (pulse) {
+      ImGui::PopStyleColor();
+    }
+  }
+
+ private:
+  // Presentation state machine: the window starts in the intro (expanded
+  // for a few seconds so new users see it exists and learn it expands on
+  // hover); the first hover ends the intro.
+  enum class Mode {
+    kIntro = 0,  // Expanded on page load, until the timer or first hover.
+    kExpanded,   // Expanded while hovered (plus a short leave grace).
+    kCollapsed,  // The role pill; expands on hover.
   };
 
-  if (const int close_code = g_state_link.ServerCloseCode()) {
-    const char* reason = "Disconnected by the viewer.";
-    if (close_code == 4002) {
-      reason = "Session is full: too many viewers connected.";
-    } else if (close_code == 4003) {
-      reason = "Disconnected after inactivity.";
-    }
-    disconnected_notice("##disconnected_by_server",
-                        {reason, "Retrying; reconnects automatically."});
-  }
-
-  const double now = ImGui::GetTime();
-  if (now - g_app.telemetry.last_rate_time >= 1.0) {
-    g_app.telemetry.gui_bytes_per_sec = g_ui_link.ConsumeByteCount();
-    g_app.telemetry.sim_bytes_per_sec = g_state_link.ConsumeByteCount();
-    g_app.telemetry.last_rate_time = now;
-  }
-
-  // "Server not reachable" notice, keyed on state-stream staleness rather
-  // than socket state: a killed, suspended (Ctrl+Z), or unreachable server
-  // all go silent, but only a killed one closes its sockets. Clears itself
-  // when traffic resumes. Suppressed before the first payload (initial
-  // load), after a deliberate server-side close (its own notice), and
-  // during model-swap reloads.
-  const double last_msg = g_state_link.LastMessageTime();
-  const bool link_stale =
-      last_msg > 0 &&
-      emscripten_get_now() / 1000.0 - last_msg > kServerSilenceNoticeSec &&
-      g_state_link.ServerCloseCode() == 0 && !g_state_link.ReloadPending();
-  if (!link_stale) {
-    g_app.disconnected_notice_logged = false;
-  } else {
-    if (!g_app.disconnected_notice_logged) {
-      LOG(Info, "Showing server-not-reachable notice");
-      g_app.disconnected_notice_logged = true;
-    }
-    disconnected_notice(
-        "##disconnected",
-        {"Viewer server is not reachable: the Python script may",
-         "have stopped. This page reconnects automatically if the",
-         "viewer comes back."});
-  }
-
-  // Anchor points along the canvas edges, each with the pivot that keeps
-  // the whole window on-screen 10px off the anchoring edges. Indexed by
-  // LinkWindowPos - kLinkPosTopLeft. While anchored, the window is re-pinned
-  // every frame (so it follows canvas resizes) for both the collapsed pill
-  // and the expanded window (same ImGui window, so one call covers
-  // whichever Begin runs this frame) — except while it is being dragged.
-  constexpr float kEdgeMargin = 10.0f;
-  const ImVec2 canvas = ImGui::GetIO().DisplaySize;
-  const ImVec2 anchor_pos[6] = {
-      {kEdgeMargin, kEdgeMargin},
-      {canvas.x * 0.5f, kEdgeMargin},
-      {canvas.x - kEdgeMargin, kEdgeMargin},
-      {kEdgeMargin, canvas.y - kEdgeMargin},
-      {canvas.x * 0.5f, canvas.y - kEdgeMargin},
-      {canvas.x - kEdgeMargin, canvas.y - kEdgeMargin},
+  // Where the window is anchored on the page. It is always draggable;
+  // releasing a drag near an anchor snaps to it, anywhere else leaves the
+  // window Free at its dropped position.
+  enum Anchor {
+    kAnchorFree = 0,
+    kAnchorTopLeft,  // The anchors must stay contiguous from here on.
+    kAnchorTopMid,
+    kAnchorTopRight,
+    kAnchorBottomLeft,
+    kAnchorBottomMid,
+    kAnchorBottomRight,
   };
-  const ImVec2 anchor_pivot[6] = {
+
+  static constexpr double kCollapseGraceSec = 0.2;
+  static constexpr double kIntroExpandedSec = 5.0;
+  static constexpr float kEdgeMargin = 10.0f;
+  // Pivots keeping the whole window on-screen kEdgeMargin off the
+  // anchoring edges; indexed by Anchor - kAnchorTopLeft, like anchor_pos_.
+  static constexpr ImVec2 kAnchorPivot[6] = {
       {0.0f, 0.0f}, {0.5f, 0.0f}, {1.0f, 0.0f},
       {0.0f, 1.0f}, {0.5f, 1.0f}, {1.0f, 1.0f},
   };
 
-  if (g_app.link_window_pos != kLinkPosFree && !g_app.link_dragging) {
-    const int anchor = g_app.link_window_pos - kLinkPosTopLeft;
-    ImGui::SetNextWindowPos(anchor_pos[anchor], ImGuiCond_Always,
-                            anchor_pivot[anchor]);
+  void ComputeAnchorPositions() {
+    const ImVec2 canvas = ImGui::GetIO().DisplaySize;
+    anchor_pos_[0] = ImVec2(kEdgeMargin, kEdgeMargin);
+    anchor_pos_[1] = ImVec2(canvas.x * 0.5f, kEdgeMargin);
+    anchor_pos_[2] = ImVec2(canvas.x - kEdgeMargin, kEdgeMargin);
+    anchor_pos_[3] = ImVec2(kEdgeMargin, canvas.y - kEdgeMargin);
+    anchor_pos_[4] = ImVec2(canvas.x * 0.5f, canvas.y - kEdgeMargin);
+    anchor_pos_[5] = ImVec2(canvas.x - kEdgeMargin, canvas.y - kEdgeMargin);
   }
 
-  // Tracks a drag of the Link window and snaps on release: if the window
-  // was dropped within max(20% of its size, 100px) of where an anchor
-  // would place it, adopt that anchor; otherwise it floats Free where it
-  // was dropped. Call between Begin and End of whichever form is visible.
-  const auto update_window_snap = [&] {
+  // Tracks a drag of the window and snaps on release: if the window was
+  // dropped within max(20% of its size, 100px) of where an anchor would
+  // place it, adopt that anchor; otherwise it floats Free where it was
+  // dropped. Call between Begin and End of whichever form is visible.
+  void UpdateSnap() {
     if (ImGui::IsMouseClicked(ImGuiMouseButton_Left) &&
         ImGui::IsWindowHovered(
             ImGuiHoveredFlags_AllowWhenBlockedByActiveItem)) {
-      g_app.link_dragging = true;
-    } else if (g_app.link_dragging &&
-               !ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
-      g_app.link_dragging = false;
+      dragging_ = true;
+    } else if (dragging_ && !ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+      dragging_ = false;
       const ImVec2 pos = ImGui::GetWindowPos();
       const ImVec2 size = ImGui::GetWindowSize();
-      const float threshold = std::max(0.2f * std::max(size.x, size.y), 100.0f);
+      const float threshold =
+          std::max(0.2f * std::max(size.x, size.y), 100.0f);
       int best = -1;
       float best_d2 = threshold * threshold;
       for (int i = 0; i < 6; ++i) {
@@ -627,14 +653,14 @@ void BuildBrowserGui() {
         // clamped to zero on the anchor's off-screen side: a window dropped
         // past an edge or corner (mostly off-screen) still snaps to that
         // anchor instead of being left stranded outside the canvas.
-        float dx = pos.x - (anchor_pos[i].x - anchor_pivot[i].x * size.x);
-        if (anchor_pivot[i].x == 0.0f) {
+        float dx = pos.x - (anchor_pos_[i].x - kAnchorPivot[i].x * size.x);
+        if (kAnchorPivot[i].x == 0.0f) {
           dx = std::max(dx, 0.0f);  // Dropped past the left edge.
-        } else if (anchor_pivot[i].x == 1.0f) {
+        } else if (kAnchorPivot[i].x == 1.0f) {
           dx = std::min(dx, 0.0f);  // Dropped past the right edge.
         }
-        float dy = pos.y - (anchor_pos[i].y - anchor_pivot[i].y * size.y);
-        if (anchor_pivot[i].y == 0.0f) {
+        float dy = pos.y - (anchor_pos_[i].y - kAnchorPivot[i].y * size.y);
+        if (kAnchorPivot[i].y == 0.0f) {
           dy = std::max(dy, 0.0f);  // Dropped past the top edge.
         } else {
           dy = std::min(dy, 0.0f);  // Dropped past the bottom edge.
@@ -645,20 +671,16 @@ void BuildBrowserGui() {
           best = i;
         }
       }
-      g_app.link_window_pos = best >= 0 ? kLinkPosTopLeft + best : kLinkPosFree;
+      anchor_ = best >= 0 ? static_cast<Anchor>(kAnchorTopLeft + best)
+                          : kAnchorFree;
     }
-  };
-
-  const ImVec2 kFullWidth(-FLT_MIN, 0.0f);
-  const ImVec4 kSpectatingColor(1.0f, 0.75f, 0.2f, 1.0f);
-  const ImVec4 kControllingColor(0.3f, 0.9f, 0.4f, 1.0f);
-  const ImVec4 kQueueColor(1.0f, 0.62f, 0.15f, 1.0f);
+  }
 
   // Data rates, shown to both roles (spectators receive no GUI stream, so
   // that line reads 0 for them). With more than one viewer, the number in
-  // parentheses is the host's total outgoing sim bandwidth: every connected
-  // browser receives the same sim stream.
-  const auto data_rate_lines = [] {
+  // parentheses is the host's total outgoing sim bandwidth: every
+  // connected browser receives the same sim stream.
+  static void DataRateLines() {
     ImGui::Text(
         "GUI Data Rate: %" PRIu64 " KiB/s",
         static_cast<uint64_t>(g_app.telemetry.gui_bytes_per_sec / 1024));
@@ -666,8 +688,7 @@ void BuildBrowserGui() {
       ImGui::SetItemTooltip("The UI is not streamed to spectators.");
     } else if (!g_ui_link.RemoteDrawData()) {
       ImGui::SameLine();
-      ImGui::TextColored(ImVec4(1.0f, 0.0f, 0.0f, 1.0f),
-                         "(Waiting...)");
+      ImGui::TextColored(ImVec4(1.0f, 0.0f, 0.0f, 1.0f), "(Waiting...)");
     }
     ImGui::Text(
         "Sim Data Rate: %" PRIu64 " KiB/s",
@@ -679,25 +700,9 @@ void BuildBrowserGui() {
                                         g_app.session_viewers / 1024));
       ImGui::SetItemTooltip("Total sim data sent across all viewers.");
     }
-  };
-
-  // While someone waits for control, the window background pulses toward a
-  // dark orange (the queue size itself is shown in the expanded window).
-  const bool pulse =
-      g_app.role == SessionRole::kControlling && g_app.queue_len > 0;
-  if (pulse) {
-    const float phase =
-        0.5f + 0.5f * sinf(static_cast<float>(ImGui::GetTime()) * 2.5f);
-    ImVec4 bg = ImGui::GetStyleColorVec4(ImGuiCol_WindowBg);
-    const ImVec4 orange(0.45f, 0.22f, 0.02f, bg.w);
-    const float blend = 0.6f * phase;
-    bg.x += (orange.x - bg.x) * blend;
-    bg.y += (orange.y - bg.y) * blend;
-    bg.z += (orange.z - bg.z) * blend;
-    ImGui::PushStyleColor(ImGuiCol_WindowBg, bg);
   }
 
-  if (g_app.link_mode == LinkWindowMode::kCollapsed) {
+  void DrawCollapsed() {
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(6.0f, 6.0f));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowMinSize, ImVec2(16.0f, 16.0f));
 
@@ -713,13 +718,15 @@ void BuildBrowserGui() {
     }
     if (ImGui::IsWindowHovered(
             ImGuiHoveredFlags_AllowWhenBlockedByActiveItem)) {
-      g_app.link_mode = LinkWindowMode::kExpanded;
+      mode_ = Mode::kExpanded;
     }
-    update_window_snap();
+    UpdateSnap();
     ImGui::End();
 
     ImGui::PopStyleVar(2);
-  } else {
+  }
+
+  void DrawExpanded() {
     // No title bar; the window is still movable by dragging empty space
     // (ImGui's default when ConfigWindowsMoveFromTitleBarOnly is off).
     ImGui::Begin(
@@ -729,143 +736,177 @@ void BuildBrowserGui() {
     if (g_app.role == SessionRole::kClaiming) {
       // The first roster or /ui claim outcome resolves this within a few
       // hundred milliseconds of page load.
-      centered_banner("CONNECTING", ImVec4(0.6f, 0.6f, 0.6f, 1.0f));
+      CenteredBanner("CONNECTING", ImVec4(0.6f, 0.6f, 0.6f, 1.0f));
       ImGui::Separator();
-      data_rate_lines();
+      DataRateLines();
     } else if (g_app.role == SessionRole::kSpectating) {
-      // Control group.
-      centered_banner("SPECTATING", kSpectatingColor);
-      char queue_text[64];
-      if (g_app.queue_pos > 0) {
-        snprintf(queue_text, sizeof(queue_text),
-                 "Control Queue: Position %d of %d", g_app.queue_pos,
-                 g_app.queue_len);
-      } else if (g_app.queue_len > 0) {
-        snprintf(queue_text, sizeof(queue_text), "Control Queue: %d waiting",
-                 g_app.queue_len);
-      } else {
-        snprintf(queue_text, sizeof(queue_text), "Control Queue: (empty)");
-      }
-      centered_line(queue_text, nullptr);
-      if (g_app.queue_pos == 0) {
-        if (ImGui::Button("Request control", kFullWidth)) {
-          g_state_link.SendText(kMsgRequestControl);
-        }
-      } else {
-        const float half_width = (ImGui::GetContentRegionAvail().x -
-                                  ImGui::GetStyle().ItemSpacing.x) *
-                                 0.5f;
-        if (ImGui::Button("Leave Queue", ImVec2(half_width, 0.0f))) {
-          g_state_link.SendText(kMsgLeaveQueue);
-        }
-        ImGui::SameLine();
-        ImGui::PushStyleColor(ImGuiCol_Button,
-                              ImVec4(0.65f, 0.15f, 0.15f, 1.0f));
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered,
-                              ImVec4(0.80f, 0.20f, 0.20f, 1.0f));
-        ImGui::PushStyleColor(ImGuiCol_ButtonActive,
-                              ImVec4(0.50f, 0.10f, 0.10f, 1.0f));
-        if (ImGui::Button("Steal Control", ImVec2(half_width, 0.0f))) {
-          g_state_link.SendText(kMsgForceControl);
-        }
-        ImGui::PopStyleColor(3);
-        ImGui::SetItemTooltip("Takes control immediately, jumping the queue.");
-      }
-
-      // Data rate group.
-      ImGui::Separator();
-      data_rate_lines();
-
-      // Camera group.
-      ImGui::Separator();
-      // TODO(matijak): Use the studio camera-selection UI here in future, so
-      // a spectator can also pick any camera defined in the model.
-      // Sized to its longest option; the default width would stretch the
-      // window past the CONTROLLING layout's size.
-      ImGui::SetNextItemWidth(ImGui::CalcTextSize("Follow Controller").x +
-                              ImGui::GetFrameHeight() * 2.0f);
-      int cam_mode = g_app.spectator_cam_mode;
-      if (ImGui::Combo("Camera", &cam_mode,
-                       "Free: tumble\0Free: wasd\0Follow Controller\0")) {
-        SetSpectatorCameraMode(cam_mode);
-      }
+      DrawSpectatorContents();
     } else {
-      // Control group.
-      centered_banner("CONTROLLING", kControllingColor);
-      if (g_app.queue_len > 0) {
-        char queue_text[64];
-        snprintf(queue_text, sizeof(queue_text),
-                 ">> Control Queue: %d waiting <<", g_app.queue_len);
-        centered_line(queue_text, &kQueueColor);
-      } else {
-        centered_line("Control Queue: (empty)", nullptr);
-      }
-      if (ImGui::Button("Release control", kFullWidth)) {
-        // Become a spectator; the server grants the slot down the queue.
-        g_ui_link.Shutdown();
-        SetRole(SessionRole::kSpectating);
-      }
-
-      // Data rate group.
-      ImGui::Separator();
-      data_rate_lines();
-
-      // Session settings group.
-      ImGui::Separator();
-      // Local edits win for a grace period (the roster round trip takes a
-      // few frames and typing takes longer); afterwards the server's value
-      // is the truth.
-      if (g_app.max_spectators_edit < 0 ||
-          ImGui::GetTime() - g_app.max_spectators_edit_time > 1.5) {
-        g_app.max_spectators_edit = g_app.max_spectators;
-      }
-      ImGui::SetNextItemWidth(100.0f);
-      if (ImGui::InputInt("Max Spectators", &g_app.max_spectators_edit)) {
-        g_app.max_spectators_edit_time = ImGui::GetTime();
-        g_app.max_spectators_edit =
-            std::clamp(g_app.max_spectators_edit, 0, 32);
-        char msg[48];
-        snprintf(msg, sizeof(msg), "%s%d", kMsgMaxSpectatorsPrefix,
-                 g_app.max_spectators_edit);
-        g_state_link.SendText(msg);
-      }
-      if (ImGui::IsItemActive()) {
-        g_app.max_spectators_edit_time = ImGui::GetTime();
-      }
+      DrawControllerContents();
     }
 
-    update_window_snap();
+    UpdateSnap();
+    UpdateCollapse();
+    ImGui::End();
+  }
 
-    // Collapse when the mouse leaves the window, with a short grace period.
-    // A popup (e.g. the camera combo's dropdown) is a separate window, so
-    // moving the mouse into it unhovers this one; keep the window expanded
-    // while one of its popups is open, and give brief excursions time to
-    // come back before snapping shut. On page load the window instead stays
-    // expanded for a few seconds (the intro); the first hover ends the
-    // intro, so a quick swipe over the window dismisses it early.
-    constexpr double kCollapseGraceSec = 0.2;
-    constexpr double kIntroExpandedSec = 5.0;
+  void DrawSpectatorContents() {
+    // Control group.
+    CenteredBanner("SPECTATING", kSpectatingColor);
+    char queue_text[64];
+    if (g_app.queue_pos > 0) {
+      snprintf(queue_text, sizeof(queue_text),
+               "Control Queue: Position %d of %d", g_app.queue_pos,
+               g_app.queue_len);
+    } else if (g_app.queue_len > 0) {
+      snprintf(queue_text, sizeof(queue_text), "Control Queue: %d waiting",
+               g_app.queue_len);
+    } else {
+      snprintf(queue_text, sizeof(queue_text), "Control Queue: (empty)");
+    }
+    CenteredLine(queue_text, nullptr);
+    if (g_app.queue_pos == 0) {
+      if (ImGui::Button("Request control", kFullWidth)) {
+        g_state_link.SendText(kMsgRequestControl);
+      }
+    } else {
+      const float half_width = (ImGui::GetContentRegionAvail().x -
+                                ImGui::GetStyle().ItemSpacing.x) *
+                               0.5f;
+      if (ImGui::Button("Leave Queue", ImVec2(half_width, 0.0f))) {
+        g_state_link.SendText(kMsgLeaveQueue);
+      }
+      ImGui::SameLine();
+      ImGui::PushStyleColor(ImGuiCol_Button,
+                            ImVec4(0.65f, 0.15f, 0.15f, 1.0f));
+      ImGui::PushStyleColor(ImGuiCol_ButtonHovered,
+                            ImVec4(0.80f, 0.20f, 0.20f, 1.0f));
+      ImGui::PushStyleColor(ImGuiCol_ButtonActive,
+                            ImVec4(0.50f, 0.10f, 0.10f, 1.0f));
+      if (ImGui::Button("Steal Control", ImVec2(half_width, 0.0f))) {
+        g_state_link.SendText(kMsgForceControl);
+      }
+      ImGui::PopStyleColor(3);
+      ImGui::SetItemTooltip("Takes control immediately, jumping the queue.");
+    }
+
+    // Data rate group.
+    ImGui::Separator();
+    DataRateLines();
+
+    // Camera group.
+    ImGui::Separator();
+    // TODO(matijak): Use the studio camera-selection UI here in future, so
+    // a spectator can also pick any camera defined in the model.
+    // Sized to its longest option; the default width would stretch the
+    // window past the CONTROLLING layout's size.
+    ImGui::SetNextItemWidth(ImGui::CalcTextSize("Follow Controller").x +
+                            ImGui::GetFrameHeight() * 2.0f);
+    int cam_mode = g_app.spectator_cam_mode;
+    if (ImGui::Combo("Camera", &cam_mode,
+                     "Free: tumble\0Free: wasd\0Follow Controller\0")) {
+      SetSpectatorCameraMode(cam_mode);
+    }
+  }
+
+  void DrawControllerContents() {
+    // Control group.
+    CenteredBanner("CONTROLLING", kControllingColor);
+    if (g_app.queue_len > 0) {
+      char queue_text[64];
+      snprintf(queue_text, sizeof(queue_text),
+               ">> Control Queue: %d waiting <<", g_app.queue_len);
+      CenteredLine(queue_text, &kQueueColor);
+    } else {
+      CenteredLine("Control Queue: (empty)", nullptr);
+    }
+    if (ImGui::Button("Release control", kFullWidth)) {
+      // Become a spectator; the server grants the slot down the queue.
+      g_ui_link.Shutdown();
+      SetRole(SessionRole::kSpectating);
+    }
+
+    // Data rate group.
+    ImGui::Separator();
+    DataRateLines();
+
+    // Session settings group.
+    ImGui::Separator();
+    // Local edits win for a grace period (the roster round trip takes a
+    // few frames and typing takes longer); afterwards the server's value
+    // is the truth.
+    if (max_spectators_edit_ < 0 ||
+        ImGui::GetTime() - max_spectators_edit_time_ > 1.5) {
+      max_spectators_edit_ = g_app.max_spectators;
+    }
+    ImGui::SetNextItemWidth(100.0f);
+    if (ImGui::InputInt("Max Spectators", &max_spectators_edit_)) {
+      max_spectators_edit_time_ = ImGui::GetTime();
+      max_spectators_edit_ = std::clamp(max_spectators_edit_, 0, 32);
+      char msg[48];
+      snprintf(msg, sizeof(msg), "%s%d", kMsgMaxSpectatorsPrefix,
+               max_spectators_edit_);
+      g_state_link.SendText(msg);
+    }
+    if (ImGui::IsItemActive()) {
+      max_spectators_edit_time_ = ImGui::GetTime();
+    }
+  }
+
+  // Collapse when the mouse leaves the window, with a short grace period.
+  // A popup (e.g. the camera combo's dropdown) is a separate window, so
+  // moving the mouse into it unhovers this one; keep the window expanded
+  // while one of its popups is open, and give brief excursions time to
+  // come back before snapping shut. On page load the window instead stays
+  // expanded for a few seconds (the intro); the first hover ends the
+  // intro, so a quick swipe over the window dismisses it early.
+  void UpdateCollapse() {
     const bool popup_open = ImGui::IsPopupOpen(
         "", ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel);
     if (popup_open || ImGui::IsWindowHovered(
                           ImGuiHoveredFlags_AllowWhenBlockedByActiveItem)) {
-      g_app.link_mode = LinkWindowMode::kExpanded;  // First hover ends intro.
-      g_app.link_hover_time = ImGui::GetTime();
-    } else if (g_app.link_mode == LinkWindowMode::kIntro) {
-      if (g_app.link_intro_start == 0) {
-        g_app.link_intro_start = ImGui::GetTime();
-      } else if (ImGui::GetTime() - g_app.link_intro_start >
-                 kIntroExpandedSec) {
-        g_app.link_mode = LinkWindowMode::kCollapsed;
+      mode_ = Mode::kExpanded;  // The first hover ends the intro.
+      hover_time_ = ImGui::GetTime();
+    } else if (mode_ == Mode::kIntro) {
+      if (intro_start_ == 0) {
+        intro_start_ = ImGui::GetTime();
+      } else if (ImGui::GetTime() - intro_start_ > kIntroExpandedSec) {
+        mode_ = Mode::kCollapsed;
       }
-    } else if (ImGui::GetTime() - g_app.link_hover_time > kCollapseGraceSec) {
-      g_app.link_mode = LinkWindowMode::kCollapsed;
+    } else if (ImGui::GetTime() - hover_time_ > kCollapseGraceSec) {
+      mode_ = Mode::kCollapsed;
     }
-    ImGui::End();
   }
-  if (pulse) {
-    ImGui::PopStyleColor();
+
+  static inline const ImVec2 kFullWidth = ImVec2(-FLT_MIN, 0.0f);
+  static inline const ImVec4 kSpectatingColor = ImVec4(1.0f, 0.75f, 0.2f, 1.0f);
+  static inline const ImVec4 kControllingColor = ImVec4(0.3f, 0.9f, 0.4f, 1.0f);
+  static inline const ImVec4 kQueueColor = ImVec4(1.0f, 0.62f, 0.15f, 1.0f);
+
+  Mode mode_ = Mode::kIntro;
+  Anchor anchor_ = kAnchorTopMid;
+  ImVec2 anchor_pos_[6];        // Recomputed each frame (canvas resizes).
+  double intro_start_ = 0;      // 0 until the expanded window first draws.
+  double hover_time_ = 0;       // Feeds the collapse grace period.
+  bool dragging_ = false;
+  // Max Spectators edit grace: the local value wins over the roster until
+  // max_spectators_edit_time_ is old enough (see the InputInt).
+  int max_spectators_edit_ = -1;
+  double max_spectators_edit_time_ = -1e9;
+};
+LinkWindow g_link_window;
+
+void BuildBrowserGui() {
+  // Refresh the byte-rate telemetry the Link window shows.
+  const double now = ImGui::GetTime();
+  if (now - g_app.telemetry.last_rate_time >= 1.0) {
+    g_app.telemetry.gui_bytes_per_sec = g_ui_link.ConsumeByteCount();
+    g_app.telemetry.sim_bytes_per_sec = g_state_link.ConsumeByteCount();
+    g_app.telemetry.last_rate_time = now;
   }
+
+  g_disconnect_notice.Draw();
+  g_link_window.Draw();
 }
 
 //=================================================================================================
