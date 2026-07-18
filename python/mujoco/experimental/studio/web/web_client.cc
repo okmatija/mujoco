@@ -585,8 +585,22 @@ void BuildBrowserGui() {
       int best = -1;
       float best_d2 = threshold * threshold;
       for (int i = 0; i < 6; ++i) {
-        const float dx = pos.x - (anchor_pos[i].x - anchor_pivot[i].x * size.x);
-        const float dy = pos.y - (anchor_pos[i].y - anchor_pivot[i].y * size.y);
+        // Per-axis distance to where this anchor would place the window,
+        // clamped to zero on the anchor's off-screen side: a window dropped
+        // past an edge or corner (mostly off-screen) still snaps to that
+        // anchor instead of being left stranded outside the canvas.
+        float dx = pos.x - (anchor_pos[i].x - anchor_pivot[i].x * size.x);
+        if (anchor_pivot[i].x == 0.0f) {
+          dx = std::max(dx, 0.0f);  // Dropped past the left edge.
+        } else if (anchor_pivot[i].x == 1.0f) {
+          dx = std::min(dx, 0.0f);  // Dropped past the right edge.
+        }
+        float dy = pos.y - (anchor_pos[i].y - anchor_pivot[i].y * size.y);
+        if (anchor_pivot[i].y == 0.0f) {
+          dy = std::max(dy, 0.0f);  // Dropped past the top edge.
+        } else {
+          dy = std::min(dy, 0.0f);  // Dropped past the bottom edge.
+        }
         const float d2 = dx * dx + dy * dy;
         if (d2 <= best_d2) {
           best_d2 = d2;
