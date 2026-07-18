@@ -92,6 +92,24 @@ enum LinkWindowPos {
   kLinkPosBottomRight,
 };
 
+// The page's role in the collaborative session. Every page starts by
+// claiming the controller slot; the claim either succeeds (kControlling)
+// or the page settles into spectating. A control grant puts a spectator
+// back into kClaiming while it reconnects to /ui.
+enum class SessionRole {
+  kClaiming = 0,  // /ui claim in flight; the role is not yet resolved.
+  kControlling,   // This page holds the open /ui connection.
+  kSpectating,    // Another page controls; scene + local Link window only.
+};
+
+// The Link window's presentation state. Dragging is tracked separately
+// (link_dragging): any of these can be dragged.
+enum class LinkWindowMode {
+  kIntro = 0,  // Expanded on page load, until the timer or the first hover.
+  kExpanded,   // Expanded while hovered (plus a short leave grace).
+  kCollapsed,  // The role pill; expands on hover.
+};
+
 // Byte-rate telemetry shown in the Link window.
 struct Telemetry {
   double last_rate_time = 0;
@@ -107,17 +125,7 @@ struct AppState {
   mjvCamera camera;
   mjvOption vis_options;
 
-  // True when another browser holds the controller slot: this page renders the
-  // scene from the state broadcast but has no UI stream or input until the
-  // user takes control.
-  bool spectator = false;
-  // False until this page learns whether it controls or spectates; the Link
-  // window shows a neutral CONNECTING banner until then instead of guessing.
-  bool role_known = false;
-  // True once the current /ui connection reached Open: a 4001 close of an
-  // open connection means this page was ousted (e.g. Steal Control) and can
-  // settle into spectating immediately, no retries needed.
-  bool ui_had_opened = false;
+  SessionRole role = SessionRole::kClaiming;
   int ui_reject_count = 0;
   // Session roster, from the server's updates on the state channel.
   int session_viewers = 0;
@@ -131,12 +139,10 @@ struct AppState {
 
   // Link window anchor; updated by the drag-snap logic in BuildBrowserGui.
   int link_window_pos = kLinkPosTopMid;
-  // Link window hover-expand state: expanded form, last hovered time (for
-  // the collapse grace period), and whether a drag started on the window.
-  // The window starts expanded for a few seconds so new users see it exists
-  // (and learn it expands on hover); the first hover ends the intro.
-  bool link_expanded = true;
-  bool link_intro = true;
+  // Link window state. It starts in the intro (expanded for a few seconds
+  // so new users see it exists and learn it expands on hover); the first
+  // hover ends the intro. link_hover_time feeds the collapse grace period.
+  LinkWindowMode link_mode = LinkWindowMode::kIntro;
   double link_intro_start = 0;
   double link_hover_time = 0;
   bool link_dragging = false;
@@ -223,16 +229,17 @@ std::string WsUrl(const char* path) {
   return GetWsBaseUrl() + path + "?sid=" + GetSessionId();
 }
 
-// Updates the spectator flag, mirroring it into JS (Module.isSpectator) so
-// the page script can gate controller-only actions like model drag-and-drop.
-// The server enforces the same rule; the mirror only saves a pointless
-// upload and gives immediate feedback.
-void SetSpectator(bool spectator) {
-  g_app.spectator = spectator;
-  g_app.role_known = true;
+// Updates the session role, mirroring it into JS (Module.isSpectator) so
+// the page script can gate controller-only actions like model drag-and-drop
+// (anything not controlling counts as spectating there). The server
+// enforces the same rule; the mirror only saves a pointless upload and
+// gives immediate feedback.
+void SetRole(SessionRole role) {
+  g_app.role = role;
   // The JS avoids operators that clang-format would reformat into invalid
   // JavaScript (it once split a `!==` into `!= =`, breaking the build).
-  EM_ASM({ Module.isSpectator = !!$0; }, spectator ? 1 : 0);
+  EM_ASM({ Module.isSpectator = !!$0; },
+         role == SessionRole::kControlling ? 0 : 1);
 }
 
 // Returns true if the Filament rendering context is initialized and ready for
@@ -274,7 +281,8 @@ void ApplyStatePayload(const StatePayloadView& view) {
     // Spectators in a free camera mode keep their own local camera; everyone
     // else (the controller, and spectators in Follow Controller) mirrors the
     // controller's camera.
-    if (!g_app.spectator || g_app.spectator_cam_mode == kSpecCamFollow) {
+    if (g_app.role != SessionRole::kSpectating ||
+        g_app.spectator_cam_mode == kSpecCamFollow) {
       memcpy(&g_app.camera, vis_ptr, sizeof(mjvCamera));
     }
     vis_ptr += sizeof(mjvCamera);
@@ -341,21 +349,25 @@ StateLink g_state_link(
         // The roster is authoritative about this page's role. Settling on
         // it (rather than after several rejected /ui retries) makes the
         // SPECTATING banner appear within the first roster (~200ms). Only
-        // while /ui is closed: an in-flight claim must not be aborted.
-        if (!g_app.spectator && strcmp(role, "spectator") == 0) {
+        // while claiming with /ui closed: an in-flight claim must not be
+        // aborted, and an established controller is never demoted here
+        // (the 4001 close path handles that).
+        if (g_app.role == SessionRole::kClaiming &&
+            strcmp(role, "spectator") == 0) {
           const UiLink::ReadyState ui_state = g_ui_link.ConnectionState();
           if (!g_ui_link.HasSocket() ||
               ui_state == UiLink::ReadyState::kClosed ||
               ui_state == UiLink::ReadyState::kError) {
             LOG(Info, "Roster says spectator; settling");
-            SetSpectator(true);
+            SetRole(SessionRole::kSpectating);
             g_ui_link.Shutdown();
           }
         }
       } else if (strcmp(text, kMsgGrant) == 0) {
-        // Our turn: the controller slot is reserved for this page.
+        // Our turn: the controller slot is reserved for this page. The
+        // role flips to kControlling when the claim's socket opens.
         LOG(Info, "Control granted; claiming the controller slot");
-        SetSpectator(false);
+        SetRole(SessionRole::kClaiming);
         g_app.ui_reject_count = 0;
         g_ui_link.Connect(WsUrl("/ui"));
       }
@@ -650,7 +662,7 @@ void BuildBrowserGui() {
     ImGui::Text(
         "GUI Data Rate: %" PRIu64 " KiB/s",
         static_cast<uint64_t>(g_app.telemetry.gui_bytes_per_sec / 1024));
-    if (g_app.spectator) {
+    if (g_app.role == SessionRole::kSpectating) {
       ImGui::SetItemTooltip("The UI is not streamed to spectators.");
     } else if (!g_ui_link.RemoteDrawData()) {
       ImGui::SameLine();
@@ -671,7 +683,8 @@ void BuildBrowserGui() {
 
   // While someone waits for control, the window background pulses toward a
   // dark orange (the queue size itself is shown in the expanded window).
-  const bool pulse = !g_app.spectator && g_app.queue_len > 0;
+  const bool pulse =
+      g_app.role == SessionRole::kControlling && g_app.queue_len > 0;
   if (pulse) {
     const float phase =
         0.5f + 0.5f * sinf(static_cast<float>(ImGui::GetTime()) * 2.5f);
@@ -684,23 +697,23 @@ void BuildBrowserGui() {
     ImGui::PushStyleColor(ImGuiCol_WindowBg, bg);
   }
 
-  if (!g_app.link_expanded) {
+  if (g_app.link_mode == LinkWindowMode::kCollapsed) {
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(6.0f, 6.0f));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowMinSize, ImVec2(16.0f, 16.0f));
 
     ImGui::Begin("Link", nullptr,
                  ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
                      ImGuiWindowFlags_AlwaysAutoResize);
-    if (!g_app.role_known) {
-      ImGui::Text("Link");
-    } else if (g_app.spectator) {
+    if (g_app.role == SessionRole::kSpectating) {
       ImGui::TextColored(kSpectatingColor, "SPECTATING");
-    } else {
+    } else if (g_app.role == SessionRole::kControlling) {
       ImGui::TextColored(kControllingColor, "CONTROLLING");
+    } else {
+      ImGui::Text("Link");
     }
     if (ImGui::IsWindowHovered(
             ImGuiHoveredFlags_AllowWhenBlockedByActiveItem)) {
-      g_app.link_expanded = true;
+      g_app.link_mode = LinkWindowMode::kExpanded;
     }
     update_window_snap();
     ImGui::End();
@@ -713,13 +726,13 @@ void BuildBrowserGui() {
         "Link", nullptr,
         ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoTitleBar);
 
-    if (!g_app.role_known) {
+    if (g_app.role == SessionRole::kClaiming) {
       // The first roster or /ui claim outcome resolves this within a few
       // hundred milliseconds of page load.
       centered_banner("CONNECTING", ImVec4(0.6f, 0.6f, 0.6f, 1.0f));
       ImGui::Separator();
       data_rate_lines();
-    } else if (g_app.spectator) {
+    } else if (g_app.role == SessionRole::kSpectating) {
       // Control group.
       centered_banner("SPECTATING", kSpectatingColor);
       char queue_text[64];
@@ -790,7 +803,7 @@ void BuildBrowserGui() {
       if (ImGui::Button("Release control", kFullWidth)) {
         // Become a spectator; the server grants the slot down the queue.
         g_ui_link.Shutdown();
-        SetSpectator(true);
+        SetRole(SessionRole::kSpectating);
       }
 
       // Data rate group.
@@ -836,18 +849,17 @@ void BuildBrowserGui() {
         "", ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel);
     if (popup_open || ImGui::IsWindowHovered(
                           ImGuiHoveredFlags_AllowWhenBlockedByActiveItem)) {
-      g_app.link_intro = false;
+      g_app.link_mode = LinkWindowMode::kExpanded;  // First hover ends intro.
       g_app.link_hover_time = ImGui::GetTime();
-    } else if (g_app.link_intro) {
+    } else if (g_app.link_mode == LinkWindowMode::kIntro) {
       if (g_app.link_intro_start == 0) {
         g_app.link_intro_start = ImGui::GetTime();
       } else if (ImGui::GetTime() - g_app.link_intro_start >
                  kIntroExpandedSec) {
-        g_app.link_intro = false;
-        g_app.link_expanded = false;
+        g_app.link_mode = LinkWindowMode::kCollapsed;
       }
     } else if (ImGui::GetTime() - g_app.link_hover_time > kCollapseGraceSec) {
-      g_app.link_expanded = false;
+      g_app.link_mode = LinkWindowMode::kCollapsed;
     }
     ImGui::End();
   }
@@ -908,33 +920,33 @@ void MainLoopImpl() {
   // close code 4001 means another browser holds the controller slot: after a
   // few retries (a page reload of the controller races its own slot briefly)
   // this page settles into spectating.
-  if (g_ui_link.HasSocket() && !g_app.spectator &&
+  if (g_ui_link.HasSocket() && g_app.role != SessionRole::kSpectating &&
       !g_state_link.ReloadPending() && g_state_link.ServerCloseCode() == 0 &&
       g_app.frame_count - g_app.last_ui_retry_frame > 60) {
     const UiLink::ReadyState uiState = g_ui_link.ConnectionState();
     if (uiState == UiLink::ReadyState::kOpen) {
       g_app.ui_reject_count = 0;
-      g_app.ui_had_opened = true;
-      g_app.role_known = true;  // Holding the open /ui = controlling.
+      if (g_app.role != SessionRole::kControlling) {
+        SetRole(SessionRole::kControlling);  // The claim succeeded.
+      }
     } else if (uiState == UiLink::ReadyState::kClosed ||
                uiState == UiLink::ReadyState::kError) {
       g_app.last_ui_retry_frame = g_app.frame_count;
-      const bool ousted = g_ui_link.CloseCode() == 4001 && g_app.ui_had_opened;
+      // A 4001 close while kControlling means another page took the slot
+      // (Steal Control): settle instantly. A rejected claim (kClaiming)
+      // retries a few times first, because a reloading controller briefly
+      // races its own slot.
+      const bool ousted = g_ui_link.CloseCode() == 4001 &&
+                          g_app.role == SessionRole::kControlling;
       if (ousted || (g_ui_link.CloseCode() == 4001 &&
                      ++g_app.ui_reject_count >= 3)) {
-        // A 4001 close of a connection that had been open means another
-        // page took the slot (Steal Control): settle instantly. A rejected
-        // claim retries a few times first (a reloading controller briefly
-        // races its own slot).
         LOG(Info, "Controller slot taken; spectating");
-        g_app.ui_had_opened = false;
-        SetSpectator(true);
+        SetRole(SessionRole::kSpectating);
         // Also drops the last received UI frame: a page forced out of the
         // controller slot must not keep showing a frozen Studio UI.
         g_ui_link.Shutdown();
       } else {
         LOG(Info, "UI WebSocket closed; reconnecting...");
-        g_app.ui_had_opened = false;
         g_ui_link.Connect(WsUrl("/ui"));
       }
     }
@@ -965,7 +977,7 @@ void MainLoopImpl() {
   // ApplyStatePayload). Spectators have no input channel; in a free camera
   // mode they drive their local camera directly.
   g_ui_link.CaptureAndSendInput();
-  if (g_app.spectator) {
+  if (g_app.role == SessionRole::kSpectating) {
     HandleSpectatorCameraInput();
   }
 
@@ -984,7 +996,8 @@ void MainLoopImpl() {
   // call to ImGui::NewFrame().
   mujoco::studio::NetImguiImDrawData* remoteDrawData =
       g_ui_link.RemoteDrawData();
-  if (remoteDrawData && remoteDrawData->Valid && !g_app.spectator) {
+  if (remoteDrawData && remoteDrawData->Valid &&
+      g_app.role == SessionRole::kControlling) {
     ImDrawData* localDrawData = ImGui::GetDrawData();
     if (localDrawData) {
       // Save local draw lists.
