@@ -606,6 +606,9 @@ void BuildBrowserGui() {
     ImGui::Text(
         "GUI Data Rate: %" PRIu64 " KiB/s",
         static_cast<uint64_t>(g_app.telemetry.gui_bytes_per_sec / 1024));
+    if (g_app.spectator) {
+      ImGui::SetItemTooltip("The UI is not streamed to spectators.");
+    }
     ImGui::Text(
         "Sim Data Rate: %" PRIu64 " KiB/s",
         static_cast<uint64_t>(g_app.telemetry.sim_bytes_per_sec / 1024));
