@@ -153,6 +153,12 @@ inline void AppendStateBlock(std::vector<char>& buffer, uint32_t tag,
 }
 
 // Serialize the complete state payload sent over the state WebSocket.
+// TODO(matijak): Try shrinking the physics block: float32 (or quantized)
+// values instead of doubles, and/or delta-encoding against the client's
+// last-acked payload — the /state ack (web_server.py) tells the server
+// exactly which snapshot each client last applied, which is the baseline
+// game-style delta compression needs. At 100-humanoid scale the payload is
+// ~181 KB of doubles and dominates slow links.
 inline std::vector<char> SerializeStatePayload(
     uint32_t model_crc32, int32_t physics_spec, const void* physics,
     size_t physics_bytes, const mjvCamera& camera, const mjvPerturb& perturb,
