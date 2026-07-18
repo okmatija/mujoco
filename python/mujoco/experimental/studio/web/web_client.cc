@@ -615,7 +615,7 @@ void BuildBrowserGui() {
     } else if (!g_ui_link.RemoteDrawData()) {
       ImGui::SameLine();
       ImGui::TextColored(ImVec4(1.0f, 0.0f, 0.0f, 1.0f),
-                         "Waiting for data...");
+                         "(Waiting...)");
     }
     ImGui::Text(
         "Sim Data Rate: %" PRIu64 " KiB/s",
