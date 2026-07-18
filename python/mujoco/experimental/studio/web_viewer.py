@@ -252,6 +252,13 @@ class WebViewer(viewer_protocol.Viewer):
     # as a dict of relative path -> bytes; owned by the viewer so it
     # survives server restarts.
     self._drop_queue = multiprocessing.get_context('fork').Queue()
+    # The controlling page's session id, written by the server child. Owned
+    # by the viewer so a fresh server (model change restarts it) can reserve
+    # the controller slot for the same page instead of letting whichever
+    # page reconnects first win it.
+    self._controller_sid = multiprocessing.get_context('fork').Array(
+        'c', 64
+    )
     # Temp dir holding the most recent drop's files; removed when the next
     # drop supersedes it (its model is already parsed) and on close.
     self._drop_dir = None
@@ -290,6 +297,7 @@ class WebViewer(viewer_protocol.Viewer):
         mjb_data=mjb_data,
         max_payload_size=max_payload,
         drop_queue=self._drop_queue,
+        controller_sid_shared=self._controller_sid,
     )
     self._web_server.start()
 

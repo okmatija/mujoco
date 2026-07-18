@@ -81,6 +81,11 @@ _MAX_SPECTATOR_HARD_CAP = 32
 # moves on down the queue.
 _GRANT_EXPIRY_SEC = 5.0
 
+# After a model-change restart, the controller slot stays reserved for the
+# page that was controlling until it has had time to reload and reconnect;
+# unclaimed, the slot then opens to everyone.
+_RESTART_RESERVE_SEC = 10.0
+
 # A controller whose tab stops running (hidden or closed without a clean
 # disconnect) is released once someone is waiting for control. Detected by
 # silence: a live controller tab sends input packets every frame.
@@ -361,6 +366,7 @@ def _run_server(
     shm_capacity: int,
     generation: multiprocessing.sharedctypes.Synchronized,
     drop_queue: Optional[multiprocessing.queues.Queue],
+    controller_sid_shared: Optional[multiprocessing.sharedctypes.SynchronizedString],
 ) -> None:
   """The server process: HTTP + /ui + /state on one port, one event loop."""
 
@@ -443,6 +449,43 @@ def _run_server(
     last_heartbeat: dict[str, float] = {}
     last_controller_input = [0.0]
     loop_time = asyncio.get_event_loop().time
+
+    def remember_controller(sid: str) -> None:
+      """Records the controlling page's sid in viewer-owned shared memory.
+
+      Written on every claim (never cleared: teardown paths must not wipe
+      it) so that the next server, after a model-change restart, can
+      reserve the slot for the page that was controlling.
+      """
+      if controller_sid_shared is not None:
+        controller_sid_shared.value = sid.encode("utf-8", "replace")[:63]
+
+    # Reserve the controller slot for the previous controller across a
+    # restart. Session ids survive page reloads (sessionStorage, see
+    # web_client.cc), so the reloaded controller page claims /ui with the
+    # same sid; other pages are rejected until then via pending_grant_sid.
+    if controller_sid_shared is not None and controller_sid_shared.value:
+      pending_grant_sid = controller_sid_shared.value.decode("utf-8")
+      logger.debug(
+          "[Session] Controller slot reserved for the previous controller"
+      )
+
+      async def expire_restart_reserve(reserved: str) -> None:
+        nonlocal pending_grant_sid
+        # grant_next/broadcast_roster are defined below; by the time this
+        # timer fires they exist.
+        await asyncio.sleep(_RESTART_RESERVE_SEC)
+        if pending_grant_sid == reserved and active_ui_ws is None:
+          logger.debug("[Session] Restart reservation expired; slot open")
+          pending_grant_sid = None
+          await grant_next()
+          await broadcast_roster()
+
+      reserve_task = asyncio.create_task(
+          expire_restart_reserve(pending_grant_sid)
+      )
+      background_tasks.add(reserve_task)
+      reserve_task.add_done_callback(background_tasks.discard)
 
     async def broadcast_roster() -> None:
       """Sends every browser the counts, its role and its queue position."""
@@ -617,6 +660,7 @@ def _run_server(
         control_queue.remove(sid)
       active_ui_ws = ws
       controller_sid = sid
+      remember_controller(sid)
       last_controller_input[0] = loop_time()
       await broadcast_roster()
 
@@ -945,6 +989,9 @@ class WebServer:
       mjb_data: Optional[bytes] = None,
       max_payload_size: int = 0,
       drop_queue: Optional[multiprocessing.queues.Queue] = None,
+      controller_sid_shared: Optional[
+          multiprocessing.sharedctypes.SynchronizedString
+      ] = None,
   ) -> None:
     """Initializes the server around pre-bound listening sockets.
 
@@ -959,6 +1006,10 @@ class WebServer:
     # Owned by the viewer (it outlives server restarts); dropped-file bytes
     # travel from the server child back to the viewer process through it.
     self.drop_queue = drop_queue
+    # Also viewer-owned: the controlling page's session id, so a fresh
+    # server can reserve the controller slot for the page that was
+    # controlling before a model-change restart.
+    self.controller_sid_shared = controller_sid_shared
     self._process = None
     self._lifeline_w = None
 
@@ -1022,6 +1073,7 @@ class WebServer:
             self._shm_capacity,
             self._generation,
             self.drop_queue,
+            self.controller_sid_shared,
         ),
         daemon=True,
     )
