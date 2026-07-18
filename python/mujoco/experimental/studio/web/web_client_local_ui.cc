@@ -33,6 +33,7 @@ const ImVec2 kFullWidth(-FLT_MIN, 0.0f);
 const ImVec4 kSpectatingColor(1.0f, 0.75f, 0.2f, 1.0f);
 const ImVec4 kControllingColor(0.3f, 0.9f, 0.4f, 1.0f);
 const ImVec4 kQueueColor(1.0f, 0.62f, 0.15f, 1.0f);
+const ImVec4 kConnectingColor(0.6f, 0.6f, 0.6f, 1.0f);
 
 // TODO(matijak): Move these centered-text helpers into
 // platform/ux/imgui_widgets.cc.
@@ -241,7 +242,7 @@ void RoleWindow::DrawCollapsed(const SessionView& view) {
   } else if (view.role == SessionRole::kControlling) {
     ImGui::TextColored(kControllingColor, "CONTROLLING");
   } else {
-    ImGui::Text("Role");
+    ImGui::TextColored(kConnectingColor, "CONNECTING");
   }
   if (ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem)) {
     mode_ = Mode::kExpanded;
@@ -262,7 +263,7 @@ void RoleWindow::DrawExpanded(const SessionView& view,
   if (view.role == SessionRole::kClaiming) {
     // The first roster or /ui claim outcome resolves this within a few
     // hundred milliseconds of page load.
-    CenteredBanner("CONNECTING", ImVec4(0.6f, 0.6f, 0.6f, 1.0f));
+    CenteredBanner("CONNECTING", kConnectingColor);
     ImGui::Separator();
     DataRateLines(view);
   } else if (view.role == SessionRole::kSpectating) {
