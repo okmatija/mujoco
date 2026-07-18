@@ -801,7 +801,7 @@ void BuildBrowserGui() {
     // expanded for a few seconds (the intro); the first hover ends the
     // intro, so a quick swipe over the window dismisses it early.
     constexpr double kCollapseGraceSec = 0.2;
-    constexpr double kIntroExpandedSec = 3.0;
+    constexpr double kIntroExpandedSec = 5.0;
     const bool popup_open = ImGui::IsPopupOpen(
         "", ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel);
     if (popup_open || ImGui::IsWindowHovered(
