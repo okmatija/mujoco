@@ -722,7 +722,7 @@ void BuildBrowserGui() {
                               ImVec4(0.80f, 0.20f, 0.20f, 1.0f));
         ImGui::PushStyleColor(ImGuiCol_ButtonActive,
                               ImVec4(0.50f, 0.10f, 0.10f, 1.0f));
-        if (ImGui::Button("Take Control", ImVec2(half_width, 0.0f))) {
+        if (ImGui::Button("Steal Control", ImVec2(half_width, 0.0f))) {
           g_state_link.SendText(kMsgForceControl);
         }
         ImGui::PopStyleColor(3);
