@@ -111,6 +111,13 @@ struct AppState {
   // scene from the state broadcast but has no UI stream or input until the
   // user takes control.
   bool spectator = false;
+  // False until this page learns whether it controls or spectates; the Link
+  // window shows a neutral CONNECTING banner until then instead of guessing.
+  bool role_known = false;
+  // True once the current /ui connection reached Open: a 4001 close of an
+  // open connection means this page was ousted (e.g. Steal Control) and can
+  // settle into spectating immediately, no retries needed.
+  bool ui_had_opened = false;
   int ui_reject_count = 0;
   // Session roster, from the server's updates on the state channel.
   int session_viewers = 0;
@@ -222,6 +229,7 @@ std::string WsUrl(const char* path) {
 // upload and gives immediate feedback.
 void SetSpectator(bool spectator) {
   g_app.spectator = spectator;
+  g_app.role_known = true;
   // The JS avoids operators that clang-format would reformat into invalid
   // JavaScript (it once split a `!==` into `!= =`, breaking the build).
   EM_ASM({ Module.isSpectator = !!$0; }, spectator ? 1 : 0);
@@ -330,6 +338,20 @@ StateLink g_state_link(
         g_app.queue_pos = queue_pos;
         g_app.queue_len = queue_len;
         g_app.max_spectators = max_spectators;
+        // The roster is authoritative about this page's role. Settling on
+        // it (rather than after several rejected /ui retries) makes the
+        // SPECTATING banner appear within the first roster (~200ms). Only
+        // while /ui is closed: an in-flight claim must not be aborted.
+        if (!g_app.spectator && strcmp(role, "spectator") == 0) {
+          const UiLink::ReadyState ui_state = g_ui_link.ConnectionState();
+          if (!g_ui_link.HasSocket() ||
+              ui_state == UiLink::ReadyState::kClosed ||
+              ui_state == UiLink::ReadyState::kError) {
+            LOG(Info, "Roster says spectator; settling");
+            SetSpectator(true);
+            g_ui_link.Shutdown();
+          }
+        }
       } else if (strcmp(text, kMsgGrant) == 0) {
         // Our turn: the controller slot is reserved for this page.
         LOG(Info, "Control granted; claiming the controller slot");
@@ -669,7 +691,9 @@ void BuildBrowserGui() {
     ImGui::Begin("Link", nullptr,
                  ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
                      ImGuiWindowFlags_AlwaysAutoResize);
-    if (g_app.spectator) {
+    if (!g_app.role_known) {
+      ImGui::Text("Link");
+    } else if (g_app.spectator) {
       ImGui::TextColored(kSpectatingColor, "SPECTATING");
     } else {
       ImGui::TextColored(kControllingColor, "CONTROLLING");
@@ -689,7 +713,13 @@ void BuildBrowserGui() {
         "Link", nullptr,
         ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoTitleBar);
 
-    if (g_app.spectator) {
+    if (!g_app.role_known) {
+      // The first roster or /ui claim outcome resolves this within a few
+      // hundred milliseconds of page load.
+      centered_banner("CONNECTING", ImVec4(0.6f, 0.6f, 0.6f, 1.0f));
+      ImGui::Separator();
+      data_rate_lines();
+    } else if (g_app.spectator) {
       // Control group.
       centered_banner("SPECTATING", kSpectatingColor);
       char queue_text[64];
@@ -884,17 +914,27 @@ void MainLoopImpl() {
     const UiLink::ReadyState uiState = g_ui_link.ConnectionState();
     if (uiState == UiLink::ReadyState::kOpen) {
       g_app.ui_reject_count = 0;
+      g_app.ui_had_opened = true;
+      g_app.role_known = true;  // Holding the open /ui = controlling.
     } else if (uiState == UiLink::ReadyState::kClosed ||
                uiState == UiLink::ReadyState::kError) {
       g_app.last_ui_retry_frame = g_app.frame_count;
-      if (g_ui_link.CloseCode() == 4001 && ++g_app.ui_reject_count >= 3) {
+      const bool ousted = g_ui_link.CloseCode() == 4001 && g_app.ui_had_opened;
+      if (ousted || (g_ui_link.CloseCode() == 4001 &&
+                     ++g_app.ui_reject_count >= 3)) {
+        // A 4001 close of a connection that had been open means another
+        // page took the slot (Steal Control): settle instantly. A rejected
+        // claim retries a few times first (a reloading controller briefly
+        // races its own slot).
         LOG(Info, "Controller slot taken; spectating");
+        g_app.ui_had_opened = false;
         SetSpectator(true);
         // Also drops the last received UI frame: a page forced out of the
         // controller slot must not keep showing a frozen Studio UI.
         g_ui_link.Shutdown();
       } else {
         LOG(Info, "UI WebSocket closed; reconnecting...");
+        g_app.ui_had_opened = false;
         g_ui_link.Connect(WsUrl("/ui"));
       }
     }
