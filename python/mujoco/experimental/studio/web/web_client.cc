@@ -38,6 +38,7 @@
 #include <cstddef>
 #include <cstring>
 #include <fstream>
+#include <initializer_list>
 #include <memory>
 #include <span>
 #include <string>
@@ -474,24 +475,37 @@ void BuildBrowserGui() {
     ImGui::SetWindowFontScale(1.0f);
   };
 
-  if (const int close_code = g_state_link.ServerCloseCode()) {
+  // Screen-centered DISCONNECTED notice: a big red banner over white
+  // explanation lines. Shared by the deliberate-close and server-silence
+  // notices, which never show at the same time (a close code suppresses the
+  // silence notice).
+  const auto disconnected_notice = [&](const char* window_id,
+                                       std::initializer_list<const char*>
+                                           lines) {
     const ImGuiIO& io = ImGui::GetIO();
-    ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, 48.0f),
-                            ImGuiCond_Always, ImVec2(0.5f, 0.0f));
-    ImGui::Begin("##disconnected_by_server", nullptr,
+    ImGui::SetNextWindowPos(
+        ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f),
+        ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+    ImGui::Begin(window_id, nullptr,
                  ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
                      ImGuiWindowFlags_NoMove |
                      ImGuiWindowFlags_AlwaysAutoResize);
+    centered_banner("DISCONNECTED", ImVec4(1.0f, 0.3f, 0.3f, 1.0f));
+    for (const char* line : lines) {
+      centered_line(line, nullptr);
+    }
+    ImGui::End();
+  };
+
+  if (const int close_code = g_state_link.ServerCloseCode()) {
     const char* reason = "Disconnected by the viewer.";
     if (close_code == 4002) {
       reason = "Session is full: too many viewers connected.";
     } else if (close_code == 4003) {
       reason = "Disconnected after inactivity.";
     }
-    const ImVec4 amber(1.0f, 0.8f, 0.2f, 1.0f);
-    centered_line(reason, &amber);
-    centered_line("Retrying; reconnects automatically.", nullptr);
-    ImGui::End();
+    disconnected_notice("##disconnected_by_server",
+                        {reason, "Retrying; reconnects automatically."});
   }
 
   const double now = ImGui::GetTime();
@@ -519,21 +533,11 @@ void BuildBrowserGui() {
       LOG(Info, "Showing server-not-reachable notice");
       g_app.disconnected_notice_logged = true;
     }
-    const ImGuiIO& io = ImGui::GetIO();
-    ImGui::SetNextWindowPos(
-        ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f),
-        ImGuiCond_Always, ImVec2(0.5f, 0.5f));
-    ImGui::Begin("##disconnected", nullptr,
-                 ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
-                     ImGuiWindowFlags_NoMove |
-                     ImGuiWindowFlags_AlwaysAutoResize);
-    centered_banner("DISCONNECTED", ImVec4(1.0f, 0.3f, 0.3f, 1.0f));
-    centered_line("Viewer server is not reachable: the Python script may",
-                  nullptr);
-    centered_line("have stopped. This page reconnects automatically if the",
-                  nullptr);
-    centered_line("viewer comes back.", nullptr);
-    ImGui::End();
+    disconnected_notice(
+        "##disconnected",
+        {"Viewer server is not reachable: the Python script may",
+         "have stopped. This page reconnects automatically if the",
+         "viewer comes back."});
   }
 
   // Anchor points along the canvas edges, each with the pivot that keeps
