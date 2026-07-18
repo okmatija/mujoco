@@ -126,7 +126,11 @@ struct AppState {
   int link_window_pos = kLinkPosTopMid;
   // Link window hover-expand state: expanded form, last hovered time (for
   // the collapse grace period), and whether a drag started on the window.
-  bool link_expanded = false;
+  // The window starts expanded for a few seconds so new users see it exists
+  // (and learn it expands on hover); the first hover ends the intro.
+  bool link_expanded = true;
+  bool link_intro = true;
+  double link_intro_start = 0;
   double link_hover_time = 0;
   bool link_dragging = false;
   // Max spectators edit grace: the local value wins over the roster until
@@ -793,13 +797,25 @@ void BuildBrowserGui() {
     // A popup (e.g. the camera combo's dropdown) is a separate window, so
     // moving the mouse into it unhovers this one; keep the window expanded
     // while one of its popups is open, and give brief excursions time to
-    // come back before snapping shut.
+    // come back before snapping shut. On page load the window instead stays
+    // expanded for a few seconds (the intro); the first hover ends the
+    // intro, so a quick swipe over the window dismisses it early.
     constexpr double kCollapseGraceSec = 0.2;
+    constexpr double kIntroExpandedSec = 3.0;
     const bool popup_open = ImGui::IsPopupOpen(
         "", ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel);
     if (popup_open || ImGui::IsWindowHovered(
                           ImGuiHoveredFlags_AllowWhenBlockedByActiveItem)) {
+      g_app.link_intro = false;
       g_app.link_hover_time = ImGui::GetTime();
+    } else if (g_app.link_intro) {
+      if (g_app.link_intro_start == 0) {
+        g_app.link_intro_start = ImGui::GetTime();
+      } else if (ImGui::GetTime() - g_app.link_intro_start >
+                 kIntroExpandedSec) {
+        g_app.link_intro = false;
+        g_app.link_expanded = false;
+      }
     } else if (ImGui::GetTime() - g_app.link_hover_time > kCollapseGraceSec) {
       g_app.link_expanded = false;
     }
