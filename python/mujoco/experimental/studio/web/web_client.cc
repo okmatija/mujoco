@@ -92,7 +92,34 @@ struct Telemetry {
   uint64_t sim_bytes_per_sec = 0;
 };
 
-struct AppState {
+// The app's single implementation of every interface the links and the
+// local UI call back into: one object, a member of App below, wired into
+// both links at construction. Method bodies live near the code they call,
+// after the free functions they use (search for "AppCallbacks::").
+class AppCallbacks final : public SessionActions,
+                           public UiLink::Callbacks,
+                           public StateLink::Callbacks {
+ public:
+  // UiLink::Callbacks (the renderer-facing side).
+  uintptr_t UploadTexture(uintptr_t current, const std::byte* rgba,
+                          uint32_t width, uint32_t height) override;
+  bool GpuReady() override;
+
+  // StateLink::Callbacks (payloads + the session text channel).
+  bool ReadyForPayload() override;
+  void OnPayload(const StatePayloadView& view) override;
+  void OnSessionMessage(const char* text) override;
+
+  // SessionActions (the role window's intents).
+  void RequestControl() override;
+  void LeaveQueue() override;
+  void StealControl() override;
+  void ReleaseControl() override;
+  void SetCameraMode(int mode) override;
+  void SetMaxSpectators(int count) override;
+};
+
+struct App {
   std::unique_ptr<mujoco::platform::Window> window;
   std::unique_ptr<mujoco::platform::ModelHolder> model_holder;
   mujoco::platform::Renderer* renderer = nullptr;
@@ -128,8 +155,17 @@ struct AppState {
 
   // User-injected geoms (Viewer.extra_geoms) received with the state payload.
   std::vector<mjvGeom> extra_geoms;
+
+  // The machinery the app owns: the callbacks object, the two links wired
+  // to it, and the local UI. Declaration order matters — the links bind
+  // callbacks at construction.
+  AppCallbacks callbacks;
+  UiLink ui_link{callbacks};
+  StateLink state_link{callbacks};
+  DisconnectNotice disconnect_notice;
+  RoleWindow role_window;
 };
-AppState g_app;
+App g_app;
 
 // Session-channel messages, sent and received as text frames on the state
 // WebSocket. Keep in sync with _SessionMessage / _GRANT_MESSAGE in
@@ -205,8 +241,9 @@ bool IsFilamentReady() {
   return g_app.renderer && g_app.model_holder && g_app.model_holder->ok();
 }
 
-// Applies a parsed state payload to the app. Wired as g_state_link.on_payload;
-// runs only after the model-change/reload policy has accepted the payload.
+// Applies a parsed state payload to the app. Wired as
+// g_app.state_link.on_payload; runs only after the model-change/reload policy
+// has accepted the payload.
 void ApplyStatePayload(const StatePayloadView& view) {
   mjModel* model = g_app.model_holder->model();
 
@@ -271,101 +308,6 @@ void ApplyStatePayload(const StatePayloadView& view) {
            view.extra_geom_count * sizeof(mjvGeom));
   }
 }
-
-// The app's single implementation of every interface the links and the
-// local UI call back into (the pattern set by SessionActions): one object,
-// wired into both links at construction. The links' connection-scoped
-// state lives inside the link classes; see web_client_ui_link.h and
-// web_client_state_link.h.
-void SetSpectatorCameraMode(int mode);
-extern UiLink g_ui_link;
-extern StateLink g_state_link;
-
-class AppCallbacks final : public SessionActions,
-                           public UiLink::Callbacks,
-                           public StateLink::Callbacks {
- public:
-  // --- UiLink::Callbacks (the renderer-facing side). ----------------------
-
-  uintptr_t UploadTexture(uintptr_t current, const std::byte* rgba,
-                          uint32_t width, uint32_t height) override {
-    return g_app.renderer->UploadImage(current, rgba, width, height,
-                                       rgba ? 4 : 0);
-  }
-  bool GpuReady() override { return IsFilamentReady(); }
-
-  // --- StateLink::Callbacks (payloads + the session text channel). --------
-
-  bool ReadyForPayload() override {
-    return g_app.model_holder && g_app.model_holder->ok();
-  }
-
-  void OnPayload(const StatePayloadView& view) override {
-    ApplyStatePayload(view);
-  }
-
-  void OnSessionMessage(const char* text) override {
-    int viewers = 0, queue_pos = 0, queue_len = 0;
-    char role[16] = {0};
-    int max_spectators = 0;
-    if (sscanf(text,
-               "viewers=%d;role=%15[^;];queue_pos=%d;queue_len=%d;"
-               "max_spectators=%d",
-               &viewers, role, &queue_pos, &queue_len, &max_spectators) == 5) {
-      if (viewers != g_app.session_viewers || queue_pos != g_app.queue_pos ||
-          queue_len != g_app.queue_len) {
-        LOG(Info, "Session roster: %s", text);
-      }
-      g_app.session_viewers = viewers;
-      g_app.queue_pos = queue_pos;
-      g_app.queue_len = queue_len;
-      g_app.max_spectators = max_spectators;
-      // The roster is authoritative about this page's role. Settling on
-      // it (rather than after several rejected /ui retries) makes the
-      // SPECTATING banner appear within the first roster (~200ms). Only
-      // while claiming with /ui closed: an in-flight claim must not be
-      // aborted, and an established controller is never demoted here
-      // (the 4001 close path handles that).
-      if (g_app.role == SessionRole::kClaiming &&
-          strcmp(role, "spectator") == 0) {
-        const UiLink::ReadyState ui_state = g_ui_link.ConnectionState();
-        if (!g_ui_link.HasSocket() || ui_state == UiLink::ReadyState::kClosed ||
-            ui_state == UiLink::ReadyState::kError) {
-          LOG(Info, "Roster says spectator; settling");
-          SetRole(SessionRole::kSpectating);
-          g_ui_link.Shutdown();
-        }
-      }
-    } else if (strcmp(text, kMsgGrant) == 0) {
-      // Our turn: the controller slot is reserved for this page. The
-      // role flips to kControlling when the claim's socket opens.
-      LOG(Info, "Control granted; claiming the controller slot");
-      SetRole(SessionRole::kClaiming);
-      g_app.ui_reject_count = 0;
-      g_ui_link.Connect(WsUrl("/ui"));
-    }
-  }
-
-  // --- SessionActions (the role window's intents). ------------------------
-
-  void RequestControl() override { g_state_link.SendText(kMsgRequestControl); }
-  void LeaveQueue() override { g_state_link.SendText(kMsgLeaveQueue); }
-  void StealControl() override { g_state_link.SendText(kMsgForceControl); }
-  void ReleaseControl() override {
-    // Become a spectator; the server grants the slot down the queue.
-    g_ui_link.Shutdown();
-    SetRole(SessionRole::kSpectating);
-  }
-  void SetCameraMode(int mode) override { SetSpectatorCameraMode(mode); }
-  void SetMaxSpectators(int count) override {
-    char msg[48];
-    snprintf(msg, sizeof(msg), "%s%d", kMsgMaxSpectatorsPrefix, count);
-    g_state_link.SendText(msg);
-  }
-};
-AppCallbacks g_callbacks;
-UiLink g_ui_link(g_callbacks);
-StateLink g_state_link(g_callbacks);
 
 // Switches the spectator camera mode, re-seeding the local camera when
 // entering a free mode so the view starts from the current pose.
@@ -485,23 +427,105 @@ void HandleSpectatorCameraInput() {
   }
 }
 
-DisconnectNotice g_disconnect_notice;
-RoleWindow g_role_window;
+// --- AppCallbacks method bodies (see the class declaration above App). ---
+
+uintptr_t AppCallbacks::UploadTexture(uintptr_t current, const std::byte* rgba,
+                                      uint32_t width, uint32_t height) {
+  return g_app.renderer->UploadImage(current, rgba, width, height,
+                                     rgba ? 4 : 0);
+}
+
+bool AppCallbacks::GpuReady() { return IsFilamentReady(); }
+
+bool AppCallbacks::ReadyForPayload() {
+  return g_app.model_holder && g_app.model_holder->ok();
+}
+
+void AppCallbacks::OnPayload(const StatePayloadView& view) {
+  ApplyStatePayload(view);
+}
+
+void AppCallbacks::OnSessionMessage(const char* text) {
+  int viewers = 0, queue_pos = 0, queue_len = 0;
+  char role[16] = {0};
+  int max_spectators = 0;
+  if (sscanf(text,
+             "viewers=%d;role=%15[^;];queue_pos=%d;queue_len=%d;"
+             "max_spectators=%d",
+             &viewers, role, &queue_pos, &queue_len, &max_spectators) == 5) {
+    if (viewers != g_app.session_viewers || queue_pos != g_app.queue_pos ||
+        queue_len != g_app.queue_len) {
+      LOG(Info, "Session roster: %s", text);
+    }
+    g_app.session_viewers = viewers;
+    g_app.queue_pos = queue_pos;
+    g_app.queue_len = queue_len;
+    g_app.max_spectators = max_spectators;
+    // The roster is authoritative about this page's role. Settling on it
+    // (rather than after several rejected /ui retries) makes the
+    // SPECTATING banner appear within the first roster (~200ms). Only
+    // while claiming with /ui closed: an in-flight claim must not be
+    // aborted, and an established controller is never demoted here (the
+    // 4001 close path handles that).
+    if (g_app.role == SessionRole::kClaiming &&
+        strcmp(role, "spectator") == 0) {
+      const UiLink::ReadyState ui_state = g_app.ui_link.ConnectionState();
+      if (!g_app.ui_link.HasSocket() ||
+          ui_state == UiLink::ReadyState::kClosed ||
+          ui_state == UiLink::ReadyState::kError) {
+        LOG(Info, "Roster says spectator; settling");
+        SetRole(SessionRole::kSpectating);
+        g_app.ui_link.Shutdown();
+      }
+    }
+  } else if (strcmp(text, kMsgGrant) == 0) {
+    // Our turn: the controller slot is reserved for this page. The role
+    // flips to kControlling when the claim's socket opens.
+    LOG(Info, "Control granted; claiming the controller slot");
+    SetRole(SessionRole::kClaiming);
+    g_app.ui_reject_count = 0;
+    g_app.ui_link.Connect(WsUrl("/ui"));
+  }
+}
+
+void AppCallbacks::RequestControl() {
+  g_app.state_link.SendText(kMsgRequestControl);
+}
+
+void AppCallbacks::LeaveQueue() { g_app.state_link.SendText(kMsgLeaveQueue); }
+
+void AppCallbacks::StealControl() {
+  g_app.state_link.SendText(kMsgForceControl);
+}
+
+void AppCallbacks::ReleaseControl() {
+  // Become a spectator; the server grants the slot down the queue.
+  g_app.ui_link.Shutdown();
+  SetRole(SessionRole::kSpectating);
+}
+
+void AppCallbacks::SetCameraMode(int mode) { SetSpectatorCameraMode(mode); }
+
+void AppCallbacks::SetMaxSpectators(int count) {
+  char msg[48];
+  snprintf(msg, sizeof(msg), "%s%d", kMsgMaxSpectatorsPrefix, count);
+  g_app.state_link.SendText(msg);
+}
 
 void BuildBrowserGui() {
   // Refresh the byte-rate telemetry the role window shows.
   const double now = ImGui::GetTime();
   if (now - g_app.telemetry.last_rate_time >= 1.0) {
-    g_app.telemetry.gui_bytes_per_sec = g_ui_link.ConsumeByteCount();
-    g_app.telemetry.sim_bytes_per_sec = g_state_link.ConsumeByteCount();
+    g_app.telemetry.gui_bytes_per_sec = g_app.ui_link.ConsumeByteCount();
+    g_app.telemetry.sim_bytes_per_sec = g_app.state_link.ConsumeByteCount();
     g_app.telemetry.last_rate_time = now;
   }
 
-  const double last_msg = g_state_link.LastMessageTime();
+  const double last_msg = g_app.state_link.LastMessageTime();
   const double stale_sec =
       last_msg > 0 ? emscripten_get_now() / 1000.0 - last_msg : -1.0;
-  g_disconnect_notice.Draw(g_state_link.ServerCloseCode(), stale_sec,
-                           g_state_link.ReloadPending());
+  g_app.disconnect_notice.Draw(g_app.state_link.ServerCloseCode(), stale_sec,
+                               g_app.state_link.ReloadPending());
 
   SessionView view;
   view.role = g_app.role;
@@ -511,9 +535,9 @@ void BuildBrowserGui() {
   view.max_spectators = g_app.max_spectators;
   view.gui_bytes_per_sec = g_app.telemetry.gui_bytes_per_sec;
   view.sim_bytes_per_sec = g_app.telemetry.sim_bytes_per_sec;
-  view.have_remote_frame = g_ui_link.RemoteDrawData() != nullptr;
+  view.have_remote_frame = g_app.ui_link.RemoteDrawData() != nullptr;
   view.camera_mode = g_app.spectator_cam_mode;
-  g_role_window.Draw(view, g_callbacks);
+  g_app.role_window.Draw(view, g_app.callbacks);
 }
 
 //=================================================================================================
@@ -545,7 +569,7 @@ void MainLoopImpl() {
   // releases a controller with a waiting queue) on silence.
   if (g_app.frame_count - g_app.last_heartbeat_frame >= 30 * 60) {
     g_app.last_heartbeat_frame = g_app.frame_count;
-    g_state_link.SendText(kMsgHeartbeat);
+    g_app.state_link.SendText(kMsgHeartbeat);
   }
 
   // Reconnect the state WebSocket if it dropped — e.g. the Python side
@@ -554,13 +578,13 @@ void MainLoopImpl() {
   // Deliberate server closes (session full, inactivity) are transient;
   // retry them too, just at a gentler pace.
   const int state_retry_interval =
-      g_state_link.ServerCloseCode() != 0 ? 300 : 60;
-  if (!g_state_link.HasSocket() && !g_state_link.ReloadPending() &&
+      g_app.state_link.ServerCloseCode() != 0 ? 300 : 60;
+  if (!g_app.state_link.HasSocket() && !g_app.state_link.ReloadPending() &&
       g_app.model_holder && g_app.model_holder->ok() &&
       g_app.frame_count - g_app.last_state_retry_frame > state_retry_interval) {
     g_app.last_state_retry_frame = g_app.frame_count;
     LOG(Info, "State WebSocket down; reconnecting...");
-    g_state_link.Connect(WsUrl("/state"));
+    g_app.state_link.Connect(WsUrl("/state"));
   }
 
   // Reconnect the NetImgui UI socket too — the proxy tears the bridge down
@@ -568,10 +592,11 @@ void MainLoopImpl() {
   // close code 4001 means another browser holds the controller slot: after a
   // few retries (a page reload of the controller races its own slot briefly)
   // this page settles into spectating.
-  if (g_ui_link.HasSocket() && g_app.role != SessionRole::kSpectating &&
-      !g_state_link.ReloadPending() && g_state_link.ServerCloseCode() == 0 &&
+  if (g_app.ui_link.HasSocket() && g_app.role != SessionRole::kSpectating &&
+      !g_app.state_link.ReloadPending() &&
+      g_app.state_link.ServerCloseCode() == 0 &&
       g_app.frame_count - g_app.last_ui_retry_frame > 60) {
-    const UiLink::ReadyState uiState = g_ui_link.ConnectionState();
+    const UiLink::ReadyState uiState = g_app.ui_link.ConnectionState();
     if (uiState == UiLink::ReadyState::kOpen) {
       g_app.ui_reject_count = 0;
       if (g_app.role != SessionRole::kControlling) {
@@ -584,18 +609,18 @@ void MainLoopImpl() {
       // (Steal Control): settle instantly. A rejected claim (kClaiming)
       // retries a few times first, because a reloading controller briefly
       // races its own slot.
-      const bool ousted = g_ui_link.CloseCode() == 4001 &&
+      const bool ousted = g_app.ui_link.CloseCode() == 4001 &&
                           g_app.role == SessionRole::kControlling;
       if (ousted ||
-          (g_ui_link.CloseCode() == 4001 && ++g_app.ui_reject_count >= 3)) {
+          (g_app.ui_link.CloseCode() == 4001 && ++g_app.ui_reject_count >= 3)) {
         LOG(Info, "Controller slot taken; spectating");
         SetRole(SessionRole::kSpectating);
         // Also drops the last received UI frame: a page forced out of the
         // controller slot must not keep showing a frozen Studio UI.
-        g_ui_link.Shutdown();
+        g_app.ui_link.Shutdown();
       } else {
         LOG(Info, "UI WebSocket closed; reconnecting...");
-        g_ui_link.Connect(WsUrl("/ui"));
+        g_app.ui_link.Connect(WsUrl("/ui"));
       }
     }
   }
@@ -603,10 +628,10 @@ void MainLoopImpl() {
   // Process incoming UI data BEFORE the ImGui frame: textures and draw
   // frames must be ready before we start the local ImGui frame and render.
   if (g_app.window) {
-    g_ui_link.SetMaxClip(static_cast<float>(g_app.window->GetWidth()),
-                         static_cast<float>(g_app.window->GetHeight()));
+    g_app.ui_link.SetMaxClip(static_cast<float>(g_app.window->GetWidth()),
+                             static_cast<float>(g_app.window->GetHeight()));
   }
-  g_ui_link.ReceiveAndProcessCommands(g_app.frame_count);
+  g_app.ui_link.ReceiveAndProcessCommands(g_app.frame_count);
 
   // Event loop and ImGui NewFrame via window abstraction.
   mujoco::platform::Window::Status status = g_app.window->NewFrame();
@@ -624,7 +649,7 @@ void MainLoopImpl() {
   // camera/perturb state streams back over the state WebSocket (see
   // ApplyStatePayload). Spectators have no input channel; in a free camera
   // mode they drive their local camera directly.
-  g_ui_link.CaptureAndSendInput();
+  g_app.ui_link.CaptureAndSendInput();
   if (g_app.role == SessionRole::kSpectating) {
     HandleSpectatorCameraInput();
   }
@@ -643,7 +668,7 @@ void MainLoopImpl() {
   // ImGui::GetDrawData() is only valid after ImGui::Render() and until the next
   // call to ImGui::NewFrame().
   mujoco::studio::NetImguiImDrawData* remoteDrawData =
-      g_ui_link.RemoteDrawData();
+      g_app.ui_link.RemoteDrawData();
   if (remoteDrawData && remoteDrawData->Valid &&
       g_app.role == SessionRole::kControlling) {
     ImDrawData* localDrawData = ImGui::GetDrawData();
@@ -706,7 +731,7 @@ void SetupScene(const mjModel* m) {
 
   // Upload any textures (e.g. the font atlas) that were buffered before the
   // Filament context was available.
-  g_ui_link.FlushPendingTextures();
+  g_app.ui_link.FlushPendingTextures();
 
   mjv_defaultPerturb(&g_app.perturb);
   mjv_defaultCamera(&g_app.camera);
@@ -749,11 +774,11 @@ void OnFetchSuccess(emscripten_fetch_t* fetch) {
     }
     // Baseline the state link on the model we just fetched, so a model swap
     // that raced this fetch is caught by the very first payload.
-    g_state_link.SetModelCrc32(
+    g_app.state_link.SetModelCrc32(
         Crc32(reinterpret_cast<const uint8_t*>(fetch->data),
               static_cast<size_t>(fetch->numBytes)));
     // Connect the state WebSocket to receive simulation state from Python.
-    g_state_link.Connect(WsUrl("/state"));
+    g_app.state_link.Connect(WsUrl("/state"));
   } else {
     LOG(Error, "Failed to load model: %s",
         g_app.model_holder ? g_app.model_holder->error().data()
@@ -868,14 +893,14 @@ int main(int argc, char** argv) {
   SDL_StartTextInput();
 
   // The UI stream is a path on the page's own host and port.
-  g_ui_link.Connect(WsUrl("/ui"));
+  g_app.ui_link.Connect(WsUrl("/ui"));
 
   StartModelFetch();
 
   emscripten_set_main_loop(MainLoop, 0, 1);
 
   // Cleanup (reached if emscripten loop exits).
-  g_ui_link.Shutdown();
+  g_app.ui_link.Shutdown();
   NetImgui::Internal::Network::Shutdown();
 
   g_app.window.reset();
