@@ -155,29 +155,37 @@ void Session::SetRole(SessionRole role) {
       role == SessionRole::kControlling ? 0 : 1);
 }
 
-void Session::OnSessionText(const char* text) {
-  int viewers = 0, queue_pos = 0, queue_len = 0;
+bool ParseRoster(const char* text, Roster* roster) {
+  Roster parsed;
   char role[16] = {0};
-  int max_spectators = 0;
   if (sscanf(text,
              "viewers=%d;role=%15[^;];queue_pos=%d;queue_len=%d;"
              "max_spectators=%d",
-             &viewers, role, &queue_pos, &queue_len, &max_spectators) == 5) {
-    if (viewers != viewers_ || queue_pos != queue_pos_ ||
-        queue_len != queue_len_) {
+             &parsed.viewers, role, &parsed.queue_pos, &parsed.queue_len,
+             &parsed.max_spectators) != 5) {
+    return false;
+  }
+  parsed.spectator = strcmp(role, "spectator") == 0;
+  *roster = parsed;
+  return true;
+}
+
+void Session::OnSessionText(const char* text) {
+  Roster roster;
+  if (ParseRoster(text, &roster)) {
+    if (roster.viewers != roster_.viewers ||
+        roster.queue_pos != roster_.queue_pos ||
+        roster.queue_len != roster_.queue_len) {
       LOG(Info, "Session roster: %s", text);
     }
-    viewers_ = viewers;
-    queue_pos_ = queue_pos;
-    queue_len_ = queue_len;
-    max_spectators_ = max_spectators;
+    roster_ = roster;
     // The roster is authoritative about this page's role. Settling on it
     // (rather than after several rejected /ui retries) makes the
     // SPECTATING banner appear within the first roster (~200ms). Only
     // while claiming with /ui closed: an in-flight claim must not be
     // aborted, and an established controller is never demoted here (the
     // 4001 close path handles that).
-    if (role_ == SessionRole::kClaiming && strcmp(role, "spectator") == 0) {
+    if (role_ == SessionRole::kClaiming && roster.spectator) {
       if (remote_ui_state_ == RemoteUiState::kNoSocket ||
           remote_ui_state_ == RemoteUiState::kClosedOrError) {
         LOG(Info, "Roster says spectator; settling");
@@ -201,10 +209,10 @@ void Session::OnSessionText(const char* text) {
 
 void Session::FillView(SessionView* view) const {
   view->role = role_;
-  view->viewers = viewers_;
-  view->queue_pos = queue_pos_;
-  view->queue_len = queue_len_;
-  view->max_spectators = max_spectators_;
+  view->viewers = roster_.viewers;
+  view->queue_pos = roster_.queue_pos;
+  view->queue_len = roster_.queue_len;
+  view->max_spectators = roster_.max_spectators;
 }
 
 void Session::Update() {

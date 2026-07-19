@@ -74,6 +74,25 @@ class SessionActions {
   virtual void SetMaxSpectators(int count) = 0;  // Already clamped by the UI.
 };
 
+// The roster: the server's membership broadcast, sent as a text frame on
+// /state whenever the session changes (a viewer joins or leaves, queues
+// for control, or control moves). It tells this page how many viewers are
+// connected, which role the server currently assigns it, and where it
+// stands in the control queue.
+struct Roster {
+  int viewers = 0;
+  bool spectator = false;  // The server's view: true = not the controller.
+  int queue_pos = 0;  // 1-based position in the control queue; 0 = unqueued.
+  int queue_len = 0;
+  // Runtime spectator limit. Starts at the UI default; every parsed
+  // roster overwrites it.
+  int max_spectators = 8;
+};
+
+// Parses a roster line; returns false when text is not a roster. (Keep
+// in sync: _roster_line in web_server.py.)
+bool ParseRoster(const char* text, Roster* roster);
+
 // The remote UI stream's connection state, reported to the role state
 // machine by the app once per frame (see Session::HandleRemoteUiState).
 enum class RemoteUiState {
@@ -226,10 +245,7 @@ class Session : public SessionActions {
   // Role state machine + roster (all from the session text channel and
   // HandleRemoteUiState; see web_server.py for the wire formats).
   SessionRole role_ = SessionRole::kClaiming;
-  int viewers_ = 0;
-  int queue_pos_ = 0;
-  int queue_len_ = 0;
-  int max_spectators_ = 8;  // Pre-roster default; the roster overrides it.
+  Roster roster_;
   // Consecutive rejected /ui claims; after enough, the page stops claiming
   // and settles into spectating.
   int ui_reject_count_ = 0;

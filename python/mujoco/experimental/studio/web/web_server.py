@@ -155,6 +155,28 @@ class _SessionMessage(enum.StrEnum):
   HEARTBEAT = "heartbeat"
 
 
+def _roster_line(
+    viewers: int,
+    is_controller: bool,
+    queue_pos: int,
+    queue_len: int,
+    max_spectators: int,
+) -> str:
+  """Builds a roster line, the membership broadcast every browser receives.
+
+  The roster is sent as a text frame on /state whenever the session
+  changes (a viewer joins or leaves, queues for control, or control
+  moves). It tells each browser how many viewers are connected, which
+  role the server currently assigns it, and where it stands in the
+  control queue. (Keep in sync: ParseRoster in web_client_session.cc.)
+  """
+  role = "controller" if is_controller else "spectator"
+  return (
+      f"viewers={viewers};role={role};queue_pos={queue_pos};"
+      f"queue_len={queue_len};max_spectators={max_spectators}"
+  )
+
+
 class _WebServerFormatter(logging.Formatter):
 
   def format(self, record: logging.LogRecord) -> str:
@@ -503,15 +525,19 @@ def _run_server(
       """Sends every browser the counts, its role and its queue position."""
       count = len(state_clients)
       for sid, client in list(state_clients.items()):
-        role = "controller" if sid == controller_sid else "spectator"
         try:
           pos = control_queue.index(sid) + 1
         except ValueError:
           pos = 0
         try:
           await client.send(
-              f"viewers={count};role={role};queue_pos={pos};"
-              f"queue_len={len(control_queue)};max_spectators={max_spectators}"
+              _roster_line(
+                  viewers=count,
+                  is_controller=sid == controller_sid,
+                  queue_pos=pos,
+                  queue_len=len(control_queue),
+                  max_spectators=max_spectators,
+              )
           )
         except (ConnectionClosed, ConnectionError):
           pass
