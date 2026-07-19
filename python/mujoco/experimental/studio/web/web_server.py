@@ -11,12 +11,13 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
 """Single-port web server for the MuJoCo web viewer.
 
-This server runs in a child process with one asyncio loop on a single public port:
+This server runs in a child process with one asyncio loop on a single
+public port:
 
-  * Plain HTTP GET     serves static files (index.html, WASM, assets), /model.mjb.
+  * Plain HTTP GET     serves static files (index.html, WASM, assets) and
+                       /model.mjb.
   * WebSocket /ui      serves the bridge to the headless NetImgui client, which
                        connects over loopback TCP (see headless_ui.cc).
   * WebSocket /state   serves the latest-wins state payload broadcast at ~60Hz
@@ -33,8 +34,8 @@ One browser at a time controls the interactive session (it owns the /ui
 bridge); later browsers are rejected from /ui with WebSocket close code 4001
 and spectate instead: they receive the state broadcast and render the scene,
 and can take the controller slot once it frees up (see
-web_client_session.cc). /state
-connections beyond the spectator limit are closed with code 4002.
+web_client_session.cc). /state connections beyond the spectator limit are
+closed with code 4002.
 
 Development: Set MUJOCO_WEB_VIEWER_DIST to point to a custom Emscripten build
 directory to serve a locally-built web_client without reinstalling the package.
@@ -62,7 +63,6 @@ from websockets.datastructures import Headers
 from websockets.exceptions import ConnectionClosed
 from websockets.http11 import Request
 from websockets.http11 import Response
-
 
 # Deliberate WebSocket close codes. Codes in the 4xxx range tell the
 # browser not to reconnect (see web_client_session.cc).
@@ -145,6 +145,7 @@ _CONTENT_TYPES = {
     ".ico": "image/x-icon",
 }
 
+
 class _SessionMessage(enum.StrEnum):
   """Text messages browsers send on /state (keep in sync:
   web_client_session.cc)."""
@@ -171,10 +172,8 @@ def _roster_line(
   control queue. (Keep in sync: ParseRoster in web_client_session.cc.)
   """
   role = "controller" if is_controller else "spectator"
-  return (
-      f"viewers={viewers};role={role};queue_pos={queue_pos};"
-      f"queue_len={queue_len};max_spectators={max_spectators}"
-  )
+  return (f"viewers={viewers};role={role};queue_pos={queue_pos};"
+          f"queue_len={queue_len};max_spectators={max_spectators}")
 
 
 class _WebServerFormatter(logging.Formatter):
@@ -265,10 +264,8 @@ def bind_public_socket(host: str, port: int = 0) -> socket.socket:
       host = "0.0.0.0"
   family = socket.AF_INET6 if ":" in host else socket.AF_INET
 
-  candidates = (
-      [port] if port else range(_DEFAULT_HTTP_PORT,
-                                _DEFAULT_HTTP_PORT + _PORT_SCAN_COUNT)
-  )
+  candidates = ([port] if port else range(
+      _DEFAULT_HTTP_PORT, _DEFAULT_HTTP_PORT + _PORT_SCAN_COUNT))
   for candidate in candidates:
     sock = socket.socket(family, socket.SOCK_STREAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -283,12 +280,10 @@ def bind_public_socket(host: str, port: int = 0) -> socket.socket:
   if port:
     raise RuntimeError(
         f"Port {port} is already in use — is another web viewer running? "
-        "Pass a different --port, or 0 to pick one automatically."
-    )
+        "Pass a different --port, or 0 to pick one automatically.")
   raise RuntimeError(
       f"Ports {_DEFAULT_HTTP_PORT}-{_DEFAULT_HTTP_PORT + _PORT_SCAN_COUNT - 1} "
-      "are all in use — are that many web viewers running?"
-  )
+      "are all in use — are that many web viewers running?")
 
 
 def bind_loopback_socket(port: int = 0) -> socket.socket:
@@ -302,6 +297,7 @@ def bind_loopback_socket(port: int = 0) -> socket.socket:
   sock.bind(("127.0.0.1", port))
   return sock
 
+
 def _session_id(ws: ServerConnection) -> str:
   """The page's session id (?sid=...), tying its /ui and /state together."""
   path = ws.request.path if ws.request else ""
@@ -312,9 +308,8 @@ def _session_id(ws: ServerConnection) -> str:
   return f"anon-{id(ws)}"
 
 
-def _terminate_process(
-    proc: multiprocessing.process.BaseProcess, timeout: float = 2.0
-) -> None:
+def _terminate_process(proc: multiprocessing.process.BaseProcess,
+                       timeout: float = 2.0) -> None:
   """Terminates a server process, escalating to SIGKILL if it hangs.
 
   A wedged child that outlives stop() keeps its sockets alive, which
@@ -349,8 +344,7 @@ def _find_static_files_dir() -> Optional[str]:
     if os.path.isdir(env_dir):
       return env_dir
     logger.warning(
-        f"[Http] MUJOCO_WEB_VIEWER_DIST is not a directory: {env_dir}"
-    )
+        f"[Http] MUJOCO_WEB_VIEWER_DIST is not a directory: {env_dir}")
 
   dist_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dist")
   if os.path.isdir(dist_dir):
@@ -400,7 +394,8 @@ def _run_server(
     shm_capacity: int,
     generation: multiprocessing.sharedctypes.Synchronized,
     drop_queue: Optional[multiprocessing.queues.Queue],
-    controller_sid_shared: Optional[multiprocessing.sharedctypes.SynchronizedString],
+    controller_sid_shared: Optional[
+        multiprocessing.sharedctypes.SynchronizedString],
 ) -> None:
   """The server process: HTTP + /ui + /state on one port, one event loop."""
 
@@ -411,9 +406,8 @@ def _run_server(
 
   static_root = os.path.realpath(static_dir) if static_dir else None
 
-  def _http_headers(
-      content_type: str, content_length: int, cacheable: bool
-  ) -> Headers:
+  def _http_headers(content_type: str, content_length: int,
+                    cacheable: bool) -> Headers:
     headers = Headers()
     headers["Content-Type"] = content_type
     headers["Content-Length"] = str(content_length)
@@ -433,8 +427,7 @@ def _run_server(
         return Response(404, "Not Found", Headers(), b"no model\n")
       # The model changes on hot-swap; never serve a cached copy.
       headers = _http_headers(
-          "application/octet-stream", len(mjb_data), cacheable=False
-      )
+          "application/octet-stream", len(mjb_data), cacheable=False)
       return Response(200, "OK", headers, mjb_data)
 
     if static_root is None:
@@ -450,11 +443,10 @@ def _run_server(
     with open(full, "rb") as f:
       body = f.read()
     content_type = _CONTENT_TYPES.get(
-        os.path.splitext(full)[1], "application/octet-stream"
-    )
-    return Response(
-        200, "OK", _http_headers(content_type, len(body), cacheable=True), body
-    )
+        os.path.splitext(full)[1], "application/octet-stream")
+    return Response(200, "OK",
+                    _http_headers(content_type, len(body), cacheable=True),
+                    body)
 
   async def main_loop() -> None:
     # The NetImgui client connection (from HeadlessUi, loopback
@@ -501,8 +493,7 @@ def _run_server(
     if controller_sid_shared is not None and controller_sid_shared.value:
       pending_grant_sid = controller_sid_shared.value.decode("utf-8")
       logger.debug(
-          "[Session] Controller slot reserved for the previous controller"
-      )
+          "[Session] Controller slot reserved for the previous controller")
 
       async def expire_restart_reserve(reserved: str) -> None:
         nonlocal pending_grant_sid
@@ -516,8 +507,7 @@ def _run_server(
           await broadcast_roster()
 
       reserve_task = asyncio.create_task(
-          expire_restart_reserve(pending_grant_sid)
-      )
+          expire_restart_reserve(pending_grant_sid))
       background_tasks.add(reserve_task)
       reserve_task.add_done_callback(background_tasks.discard)
 
@@ -537,8 +527,7 @@ def _run_server(
                   queue_pos=pos,
                   queue_len=len(control_queue),
                   max_spectators=max_spectators,
-              )
-          )
+              ))
         except (ConnectionClosed, ConnectionError):
           pass
 
@@ -602,7 +591,8 @@ def _run_server(
           if active_ui_ws is not None:
             # The bridge teardown frees the slot and grant_next honors
             # the pending claim; the ousted page settles into spectating.
-            await active_ui_ws.close(_WS_CLOSE_CONTROLLER_TAKEN, "control taken")
+            await active_ui_ws.close(_WS_CLOSE_CONTROLLER_TAKEN,
+                                     "control taken")
           else:
             await grant_next()
       elif text == _SessionMessage.HEARTBEAT:
@@ -640,12 +630,9 @@ def _run_server(
       while True:
         await asyncio.sleep(5.0)
         now = loop_time()
-        if (
-            active_ui_ws is not None
-            and last_controller_input[0] > 0
-            and now - last_controller_input[0] > _CONTROLLER_SILENT_RELEASE_SEC
-            and (control_queue or pending_grant_sid)
-        ):
+        if (active_ui_ws is not None and last_controller_input[0] > 0 and
+            now - last_controller_input[0] > _CONTROLLER_SILENT_RELEASE_SEC and
+            (control_queue or pending_grant_sid)):
           logger.info("[Session] Releasing control from an inactive controller")
           await active_ui_ws.close(_WS_CLOSE_CONTROLLER_TAKEN, "inactive")
         for sid, client in list(state_clients.items()):
@@ -659,9 +646,8 @@ def _run_server(
             except (ConnectionClosed, ConnectionError):
               pass
 
-    async def handle_tcp_client(
-        reader: asyncio.StreamReader, writer: asyncio.StreamWriter
-    ) -> None:
+    async def handle_tcp_client(reader: asyncio.StreamReader,
+                                writer: asyncio.StreamWriter) -> None:
       nonlocal tcp_reader, tcp_writer
       if tcp_writer is not None:
         logger.debug("[UiBridge] Replacing previous NetImgui TCP connection")
@@ -824,7 +810,7 @@ def _run_server(
           (used,) = struct.unpack("<I", bytes(shm_array[:4]))
           if used == 0 or used > shm_capacity:
             return None
-          data = bytes(shm_array[4 : 4 + used])
+          data = bytes(shm_array[4:4 + used])
           if generation.value == gen_before:
             return gen_before, data
         return None
@@ -844,8 +830,7 @@ def _run_server(
             continue
           try:
             await asyncio.wait_for(
-                payload_acked.wait(), timeout=_STATE_ACK_TIMEOUT_SEC
-            )
+                payload_acked.wait(), timeout=_STATE_ACK_TIMEOUT_SEC)
           except asyncio.TimeoutError:
             pass  # Lost ack; send anyway rather than stalling forever.
           result = read_state()
@@ -893,11 +878,10 @@ def _run_server(
               f"[StateWS] Browser disconnected ({len(state_clients)} total)")
           await broadcast_roster()
 
-    # --- Dispatch --------------------------------------------------------------
+    # --- Dispatch ----------------------------------------------------------
 
-    def process_request(
-        connection: ServerConnection, request: Request
-    ) -> Optional[Response]:
+    def process_request(connection: ServerConnection,
+                        request: Request) -> Optional[Response]:
       del connection
       path = request.path.split("?")[0]
       if path in ("/ui", "/state", "/drop"):
@@ -938,8 +922,8 @@ def _run_server(
           (name_len,) = struct.unpack_from("<I", message)
           if 4 + name_len > len(message):
             continue
-          name = message[4 : 4 + name_len].decode("utf-8", "replace")
-          files[name] = message[4 + name_len :]
+          name = message[4:4 + name_len].decode("utf-8", "replace")
+          files[name] = message[4 + name_len:]
       except (ConnectionClosed, ConnectionError):
         pass
       # Only forward a drop that arrived in full. A connection that dies
@@ -948,10 +932,8 @@ def _run_server(
       # load as a broken model, so discard it instead.
       if not complete:
         if files:
-          logger.info(
-              f"[Drop] Incomplete drop ({len(files)} file(s) before the"
-              " connection closed); discarding."
-          )
+          logger.info(f"[Drop] Incomplete drop ({len(files)} file(s) before the"
+                      " connection closed); discarding.")
       elif files and drop_queue is not None:
         total = sum(len(data) for data in files.values())
         logger.info(f"[Drop] Received {len(files)} file(s), {total} bytes")
@@ -1009,8 +991,7 @@ def _run_server(
     tcp_port = tcp_sock.getsockname()[1]
     logger.debug(
         f"[Http] Serving on http://{http_host}:{http_port} "
-        f"(/, /model.mjb, /ui, /state; NetImgui TCP on 127.0.0.1:{tcp_port})"
-    )
+        f"(/, /model.mjb, /ui, /state; NetImgui TCP on 127.0.0.1:{tcp_port})")
 
     # Not `async with`: on Python >= 3.12 waiting for close would block on
     # open connections, so cancellation (SIGTERM from WebServer.stop) could
@@ -1048,8 +1029,7 @@ class WebServer:
       max_payload_size: int = 0,
       drop_queue: Optional[multiprocessing.queues.Queue] = None,
       controller_sid_shared: Optional[
-          multiprocessing.sharedctypes.SynchronizedString
-      ] = None,
+          multiprocessing.sharedctypes.SynchronizedString] = None,
   ) -> None:
     """Initializes the server around pre-bound listening sockets.
 
@@ -1077,9 +1057,7 @@ class WebServer:
     self._shm_capacity = max_payload_size
     self._shm_array = (
         multiprocessing.RawArray(ctypes.c_char, 4 + self._shm_capacity)
-        if self._shm_capacity > 0
-        else None
-    )
+        if self._shm_capacity > 0 else None)
     self._generation = multiprocessing.Value("Q", 0)  # uint64 counter
 
   def update_state(self, payload: bytes) -> None:
@@ -1087,10 +1065,8 @@ class WebServer:
     if self._shm_array is None:
       return
     if len(payload) > self._shm_capacity:
-      logger.error(
-          f"[StateWS] Payload of {len(payload)} bytes exceeds capacity"
-          f" {self._shm_capacity}; dropping."
-      )
+      logger.error(f"[StateWS] Payload of {len(payload)} bytes exceeds capacity"
+                   f" {self._shm_capacity}; dropping.")
       return
     # Seqlock: bump the generation to odd before writing and back to even
     # after, so a reader that copies the buffer while this memmove is in

@@ -54,7 +54,6 @@ import numpy as np
 
 from mujoco.experimental.dear_imgui import dear_imgui as imgui
 
-
 # File extensions a dropped file may load as a model (see _pick_drop_root).
 _MODEL_EXTENSIONS = ('.xml', '.urdf', '.mjb', '.mjz', '.zip')
 
@@ -78,9 +77,7 @@ def _lan_ips() -> tuple[str | None, str | None]:
   viewer at. A None entry means that family has no shareable address.
   """
 
-  def probe(
-      family: socket.AddressFamily, dest: tuple[str, int]
-  ) -> str | None:
+  def probe(family: socket.AddressFamily, dest: tuple[str, int]) -> str | None:
     try:
       with socket.socket(family, socket.SOCK_DGRAM) as s:
         s.connect(dest)
@@ -106,12 +103,10 @@ def _print_url_banner(host: str, port: int) -> None:
     # an explicit "(unavailable)" beats a silently missing row. IPv6
     # literals must be bracketed in URLs.
     ipv6, ipv4 = _lan_ips()
-    rows.append(
-        ('network (IPv6)', f'http://[{ipv6}]:{port}' if ipv6 else
-         '(unavailable)'))
-    rows.append(
-        ('network (IPv4)', f'http://{ipv4}:{port}' if ipv4 else
-         '(unavailable)'))
+    rows.append(('network (IPv6)',
+                 f'http://[{ipv6}]:{port}' if ipv6 else '(unavailable)'))
+    rows.append(('network (IPv4)',
+                 f'http://{ipv4}:{port}' if ipv4 else '(unavailable)'))
 
   label_width = max(len(label) for label, _ in rows)
   lines = ['MuJoCo Web Viewer running at:', '']
@@ -256,9 +251,7 @@ class WebViewer(viewer_protocol.Viewer):
     # by the viewer so a fresh server (model change restarts it) can reserve
     # the controller slot for the same page instead of letting whichever
     # page reconnects first win it.
-    self._controller_sid = multiprocessing.get_context('fork').Array(
-        'c', 64
-    )
+    self._controller_sid = multiprocessing.get_context('fork').Array('c', 64)
     # Temp dir holding the most recent drop's files; removed when the next
     # drop supersedes it (its model is already parsed) and on close.
     self._drop_dir = None
@@ -287,9 +280,8 @@ class WebViewer(viewer_protocol.Viewer):
     self._model_crc32 = zlib.crc32(mjb_data)
 
     _, state_size = self._state_signature_and_size()
-    max_payload = state_payload.max_state_payload_size(
-        state_size * np.float64().itemsize
-    )
+    max_payload = state_payload.max_state_payload_size(state_size *
+                                                       np.float64().itemsize)
 
     self._web_server = web_server.WebServer(
         http_sock=self._http_sock,
@@ -363,7 +355,7 @@ class WebViewer(viewer_protocol.Viewer):
           self.vis_options,
           self.model,
           list(self.render_flags.flags),
-          self.extra_geoms[: state_payload.MAX_EXTRA_GEOMS],
+          self.extra_geoms[:state_payload.MAX_EXTRA_GEOMS],
       )
       self._web_server.update_state(payload)
 
@@ -418,14 +410,15 @@ class WebViewer(viewer_protocol.Viewer):
       written.append(rel)
     root = _pick_drop_root(written)
     if root is None:
-      print('Dropped file(s) contain no loadable model '
-            f'({", ".join(_MODEL_EXTENSIONS)}).', flush=True)
+      print(
+          'Dropped file(s) contain no loadable model '
+          f'({", ".join(_MODEL_EXTENSIONS)}).',
+          flush=True)
       return ''
     return os.path.join(drop_dir, *root.split('/'))
 
-  def upload_image(
-      self, tex_id: int, img: str | bytes, width: int, height: int, bpp: int
-  ) -> int:
+  def upload_image(self, tex_id: int, img: str | bytes, width: int, height: int,
+                   bpp: int) -> int:
     """Uploads an image to the browser over the NetImgui texture channel."""
     if isinstance(img, str):
       img = img.encode('latin-1')
