@@ -192,14 +192,9 @@ void Session::OnSessionText(const char* text) {
     SetRole(SessionRole::kClaiming);
     ui_reject_count_ = 0;
     callbacks_.ConnectRemoteUi();
-    // Mark the claim in flight NOW, not at the next frame's
-    // HandleRemoteUiState. The server broadcasts a roster right after the
-    // grant — still listing this page as a spectator, since it becomes the
-    // controller only when the claim attaches — and both texts arrive
-    // before the next frame refreshes remote_ui_state_. With the stale
-    // value the settle rule above would shut down the claim it is supposed
-    // to protect, and control transfer would only ever succeed when a
-    // frame boundary happened to land between the two messages.
+    // Mark the claim in flight now: the roster broadcast right after the
+    // grant arrives before the next frame refreshes remote_ui_state_, and
+    // the settle rule above must not shut down the fresh claim.
     remote_ui_state_ = RemoteUiState::kConnecting;
   }
 }
@@ -254,9 +249,7 @@ void Session::HandleRemoteUiState(RemoteUiState state, int close_code) {
     } else {
       LOG(Info, "UI WebSocket closed; reconnecting...");
       callbacks_.ConnectRemoteUi();
-      // Same guard as the grant path: a roster arriving before the next
-      // frame must see this retry as in flight, not as closed.
-      remote_ui_state_ = RemoteUiState::kConnecting;
+      remote_ui_state_ = RemoteUiState::kConnecting;  // As on the grant path.
     }
   }
 }
