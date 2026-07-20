@@ -434,19 +434,23 @@ void RemoteUi::CaptureAndSendInput() {
   cmdInput.mCompressionUse = use_compression_;
   cmdInput.mCompressionSkip = request_keyframe_;
 
-  // Send mouse position and wheel only when the local UI is not capturing.
+  // Always send the absolute accumulated wheel counters. NetImgui derives
+  // scroll as (current - previous), so parking these at 0 while the local
+  // UI captures would reset the baseline: the remote side would then read a
+  // huge delta on the next real frame (wild zoom on expand, a jump back on
+  // collapse). A constant value keeps the delta at zero.
+  cmdInput.mMouseWheelVert = mouse_wheel_pos_[0];
+  cmdInput.mMouseWheelHoriz = mouse_wheel_pos_[1];
+
+  // Send the mouse position only when the local UI is not capturing.
   if (!localWantsMouse) {
     cmdInput.mMousePos[0] = static_cast<int16_t>(io.MousePos.x);
     cmdInput.mMousePos[1] = static_cast<int16_t>(io.MousePos.y);
-    cmdInput.mMouseWheelVert = mouse_wheel_pos_[0];
-    cmdInput.mMouseWheelHoriz = mouse_wheel_pos_[1];
   } else {
     // Park the mouse off-screen so the remote side doesn't think we're
     // hovering over anything.
     cmdInput.mMousePos[0] = -1;
     cmdInput.mMousePos[1] = -1;
-    cmdInput.mMouseWheelVert = 0;
-    cmdInput.mMouseWheelHoriz = 0;
   }
 
   // Mouse button inputs. This static_assert detects when a Dear ImGui update

@@ -386,7 +386,12 @@ void RoleWindow::DrawControllerContents(const SessionView& view,
 void RoleWindow::UpdateCollapse() {
   const bool popup_open = ImGui::IsPopupOpen(
       "", ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel);
-  if (popup_open ||
+  // Keep the window expanded while it is being dragged or holds focus, not
+  // only while hovered: collapsing mid-drag resizes the window out from
+  // under the mouse, drops ImGui's capture, and leaks the drag to the
+  // camera (or aborts a slider edit).
+  if (popup_open || dragging_ ||
+      ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) ||
       ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem)) {
     mode_ = Mode::kExpanded;  // The first hover ends the intro.
     hover_time_ = ImGui::GetTime();
