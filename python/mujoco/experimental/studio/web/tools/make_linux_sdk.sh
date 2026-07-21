@@ -15,7 +15,7 @@
 
 # Assembles a MuJoCo SDK directory that the Python bindings build can consume
 # to build the Studio extension modules (parser, native_viewer_cc, ux, sim,
-# web/ui_server, ...) on Linux.
+# web/headless_ui, ...) on Linux.
 #
 # The Python build (python/mujoco/CMakeLists.txt) expects, under MUJOCO_PATH:
 #   lib/libmujoco.so.*          — the main library (cmake --install)

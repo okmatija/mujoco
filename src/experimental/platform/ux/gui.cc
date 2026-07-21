@@ -36,14 +36,32 @@
 namespace mujoco::platform {
 namespace {
 struct SpeedStatus {
-  bool misaligned;
+  bool misaligned;  // Whether to surface the measured speed (hysteretic).
   float measured;
 };
 
+// Reports whether the measured step speed has drifted from the desired speed
+// enough for the toolbar to surface it, plus the measured value itself.
+//
+// Hysteresis: a raw threshold flips at exactly the 10% band edge, and
+// measurement noise straddling it would toggle the preview text (and with it
+// the combo width) every few frames — a toolbar-wide layout flicker. Require
+// the state to leave a wider band before switching back: become misaligned
+// past 12%, return to aligned only under 8%, and follow an extreme deviation
+// (>20%) immediately.
 static SpeedStatus IsSpeedMisaligned(const StepControl& step_control) {
   const float desired = step_control.GetSpeed();
   const float measured = step_control.GetSpeedMeasured();
-  return {std::abs(measured - desired) > 0.1f * desired, measured};
+  const float deviation = std::abs(measured - desired);
+
+  static bool misaligned = false;
+  const bool misaligned_now = deviation > 0.1f * desired;
+  misaligned = misaligned ? (deviation > 0.08f * desired)
+                          : (deviation > 0.12f * desired);
+  if (misaligned_now != misaligned && deviation > 0.2f * desired) {
+    misaligned = misaligned_now;  // far outside both bands: follow immediately
+  }
+  return {misaligned, measured};
 }
 }  // namespace
 
@@ -530,20 +548,7 @@ void StepControlGui(StepControl* step_control, int& speed_index) {
                                  5.f * ImGui::GetStyle().FontScaleDpi,
                              ImGui::GetStyle().FramePadding.y));
 
-  const auto [misaligned_now, measured] = IsSpeedMisaligned(*step_control);
-
-  // Hysteresis: IsSpeedMisaligned flips at exactly the 10% band edge, and
-  // measurement noise straddling it would toggle the preview text (and with
-  // it the combo width) every few frames — a toolbar-wide layout flicker.
-  // Require the state to leave a wider band before switching back.
-  static bool misaligned = false;
-  const float desired = step_control->GetSpeed();
-  const float deviation = std::abs(measured - desired);
-  misaligned = misaligned ? (deviation > 0.08f * desired)
-                          : (deviation > 0.12f * desired);
-  if (misaligned_now != misaligned && deviation > 0.2f * desired) {
-    misaligned = misaligned_now;  // far outside both bands: follow immediately
-  }
+  const auto [misaligned, measured] = IsSpeedMisaligned(*step_control);
 
   char speed_preview[64];
   if (misaligned) {
