@@ -21,6 +21,7 @@ to use these classes.
 from typing import Any
 
 import mujoco
+from mujoco.experimental.implot import implot
 from mujoco.experimental.studio import endpoints
 from mujoco.experimental.studio import native_viewer_cc as _viewer
 from mujoco.experimental.studio import ux

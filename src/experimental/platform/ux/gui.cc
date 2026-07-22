@@ -36,7 +36,7 @@
 namespace mujoco::platform {
 namespace {
 struct SpeedStatus {
-  bool misaligned;
+  bool misaligned;  // Whether to surface the measured speed (hysteretic).
   float measured;
 };
 
