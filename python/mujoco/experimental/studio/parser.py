@@ -14,15 +14,14 @@
 """Loads and compiles MuJoCo models with the platform parser.
 
 The heavy lifting happens in the ``parser_cc`` extension module, which
-returns the compiled model as MJB bytes. The bytes are wrapped back into
-MjModel/MjData here through mujoco's own bindings, so all python-visible
-objects come from one extension module (see parser.cc for why that matters).
+returns the compiled model as a raw pointer. The pointer is wrapped into an
+MjModel here through mujoco's own bindings (``MjModel._from_model_ptr``), so
+the python wrapper is built in mujoco's core module rather than in the studio
+extension (see parser.cc for why that matters).
 """
 
 import mujoco
 from mujoco.experimental.studio import parser_cc
-
-_MJB_KEY = 'model.mjb'
 
 
 def parse(filepath: str) -> mujoco.MjData:
@@ -37,6 +36,7 @@ def parse(filepath: str) -> mujoco.MjData:
   Raises:
     ValueError: If the file cannot be loaded or compiled.
   """
-  mjb = parser_cc.parse_to_mjb(filepath)
-  model = mujoco.MjModel.from_binary_path(_MJB_KEY, {_MJB_KEY: mjb})
+  # parse_to_model_ptr hands over ownership of the raw mjModel*;
+  # _from_model_ptr wraps it (and frees it on destruction).
+  model = mujoco.MjModel._from_model_ptr(parser_cc.parse_to_model_ptr(filepath))
   return mujoco.MjData(model)

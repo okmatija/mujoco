@@ -16,7 +16,6 @@
 #include <memory>
 #include <string>
 #include <string_view>
-#include <vector>
 
 #include <mujoco/mujoco.h>
 #include <mujoco/experimental/platform/sim/model_holder.h>
@@ -27,39 +26,36 @@ namespace py = pybind11;
 namespace mujoco::python {
 
 // Loads, parses, and compiles a MuJoCo model with the platform loader and
-// returns it serialized as MJB bytes. parser.py wraps the bytes back into
-// python MjModel/MjData objects via mujoco's own bindings. Do NOT construct
-// the python wrappers here: extension modules load RTLD_LOCAL, so wrappers
-// built in this module register their raw pointers in a private copy of the
-// bookkeeping maps and mujoco._structs aborts when they are destroyed.
-py::bytes ParseToMjb(std::string_view filepath) {
+// returns the raw mjModel* as an integer address, transferring ownership to
+// the caller. parser.py wraps it into a python MjModel via
+// mujoco.MjModel._from_model_ptr, which builds the wrapper inside mujoco's
+// own bindings. Do NOT construct the python wrappers here: extension modules
+// load RTLD_LOCAL, so wrappers built in this module register their raw
+// pointers in a private copy of the bookkeeping maps and mujoco._structs
+// aborts when they are destroyed.
+uintptr_t ParseToModelPtr(std::string_view filepath) {
   std::unique_ptr<platform::ModelHolder> holder;
-  std::vector<uint8_t> buffer;
+  mjModel* model = nullptr;
   {
     py::gil_scoped_release no_gil;
     holder = platform::ModelHolder::FromFile(filepath);
     if (holder->ok()) {
-      mjModel* model = holder->ReleaseModel();
+      // Hand the model to the caller and drop the paired data; parser.py
+      // wraps the model (taking ownership) and builds a fresh MjData.
+      model = holder->ReleaseModel();
       mj_deleteData(holder->ReleaseData());
-      buffer.resize(mj_sizeModel(model));
-      mj_saveModel(model, nullptr, buffer.data(),
-                   static_cast<int>(buffer.size()));
-      mj_deleteModel(model);
     }
   }
-  // ReleaseModel() empties the holder, so a successful parse is signalled by
-  // the serialized buffer, not by holder->ok().
-  if (buffer.empty()) {
+  if (model == nullptr) {
     throw py::value_error(std::string("Failed to load model from '") +
                           std::string(filepath) +
                           "': " + std::string(holder->error()));
   }
-  return py::bytes(reinterpret_cast<const char*>(buffer.data()),
-                   buffer.size());
+  return reinterpret_cast<uintptr_t>(model);
 }
 
 }  // namespace mujoco::python
 
 PYBIND11_MODULE(parser_cc, m, pybind11::mod_gil_not_used()) {
-  m.def("parse_to_mjb", &mujoco::python::ParseToMjb);
+  m.def("parse_to_model_ptr", &mujoco::python::ParseToModelPtr);
 }
