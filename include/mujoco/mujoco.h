@@ -16,7 +16,7 @@
 #define MUJOCO_MUJOCO_H_
 
 // header version; should match the library version as returned by mj_version()
-#define mjVERSION_HEADER 3010001
+#define mjVERSION_HEADER 3011000
 
 // needed to define size_t, fabs and log10
 #include <stdlib.h>
@@ -255,6 +255,9 @@ MJAPI mjData* mj_copyData(mjData* dest, const mjModel* m, const mjData* src);
 // Copy mjData, skip large arrays not required for visualization.
 MJAPI mjData* mjv_copyData(mjData* dest, const mjModel* m, const mjData* src);
 
+// Reset ctrl to neutral values: zero, except quaternion inputs which reset to the identity.
+MJAPI void mj_resetCtrl(const mjModel* m, mjData* d);
+
 // Reset data to defaults.
 MJAPI void mj_resetData(const mjModel* m, mjData* d);
 
@@ -264,7 +267,7 @@ MJAPI void mj_resetDataDebug(const mjModel* m, mjData* d, unsigned char debug_va
 // Reset data. If 0 <= key < nkey, set fields from specified keyframe.
 MJAPI void mj_resetDataKeyframe(const mjModel* m, mjData* d, int key);
 
-#ifndef ADDRESS_SANITIZER  // Stack management functions declared in mjsan.h if ASAN is active.
+#ifndef mjUSEASAN  // Stack management functions declared in mjsan.h if ASAN is active.
 
 // Mark a new frame on the mjData stack.
 MJAPI void mj_markStack(mjData* d);
@@ -600,6 +603,10 @@ MJAPI int mj_name2id(const mjModel* m, int type, const char* name);
 
 // Get name of object with the specified mjtObj type and id; return NULL if name not found.
 MJAPI const char* mj_id2name(const mjModel* m, int type, int id);
+
+// Get name of actuator input, determined by the actuator type and input signature;
+// return NULL if the actuator type defines no input names.
+MJAPI const char* mj_actuatorInputName(const mjModel* m, int id, int input);
 
 // Convert sparse inertia matrix into full (i.e. dense) matrix.
 MJAPI void mj_fullM(const mjModel* m, const mjData* d, mjtNum* dst);
@@ -1744,6 +1751,10 @@ MJAPI const char* mjs_setToIntVelocity(mjsActuator* actuator, double kp, double 
 
 // Set actuator to velocity servo; return error if any.
 MJAPI const char* mjs_setToVelocity(mjsActuator* actuator, double kv);
+
+// Set actuator to orientation servo.
+MJAPI const char* mjs_setToOrientation(mjsActuator* actuator, double kp, double kv[1],
+                                       double dampratio[1], int ctrlspec);
 
 // Set actuator to activate damper; return error if any.
 MJAPI const char* mjs_setToDamper(mjsActuator* actuator, double kv);

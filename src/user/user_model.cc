@@ -3063,6 +3063,7 @@ void mjCModel::CopyTree(mjModel* m) {
       m->geom_margin[gid] = (mjtNum)pg->margin;
       m->geom_gap[gid] = (mjtNum)pg->gap;
       mjuu_copyvec(m->geom_surfacevel+6*gid, pg->surfacevel, 6);
+      m->geom_adhesion[gid] = (mjtNum)pg->adhesion;
       mjuu_copyvec(m->geom_fluid+mjNFLUID*gid, pg->fluid, mjNFLUID);
       mjuu_copyvec(m->geom_user+nuser_geom*gid, pg->get_userdata().data(), nuser_geom);
       mjuu_copyvec(m->geom_rgba+4*gid, pg->rgba, 4);
@@ -3393,6 +3394,11 @@ int mjCModel::CountNJmom(const mjModel* m) {
 
     // process according to transmission type
     switch ((mjtTrn)m->actuator_trntype[i]) {
+      case mjTRN_SO3:
+        // ball joint: 3 identity rows; site+refsite: 3 dense rows
+        count += m->actuator_trnid[2*i+1] >= 0 ? 3*nv : 3;
+        break;
+
       case mjTRN_JOINT:
       case mjTRN_JOINTINPARENT:
         switch ((mjtJoint)m->jnt_type[id]) {
@@ -3927,6 +3933,7 @@ void mjCModel::CopyObjects(mjModel* m) {
     mjuu_copyvec(m->pair_solimp+mjNIMP*i, pairs_[i]->solimp, mjNIMP);
     m->pair_margin[i] = (mjtNum)pairs_[i]->margin;
     m->pair_gap[i] = (mjtNum)pairs_[i]->gap;
+    m->pair_adhesion[i] = (mjtNum)pairs_[i]->adhesion;
     mjuu_copyvec(m->pair_friction+5*i, pairs_[i]->friction, 5);
   }
 
@@ -4009,7 +4016,7 @@ void mjCModel::CopyObjects(mjModel* m) {
     mjCActuator* pac = actuators_[i];
 
     // set fields
-    m->actuator_trntype[i] = pac->trntype;
+    m->actuator_trntype[i] = pac->so3_ ? mjTRN_SO3 : pac->trntype;
     m->actuator_dyntype[i] = pac->dyntype;
     m->actuator_gaintype[i] = pac->gaintype;
     m->actuator_biastype[i] = pac->biastype;
@@ -4022,9 +4029,10 @@ void mjCModel::CopyObjects(mjModel* m) {
     adr += m->actuator_actnum[i];
     m->actuator_group[i] = pac->group;
 
-    // input and output blocks; all actuator types are currently 1x1
+    // input and output blocks
     m->actuator_ctrladr[i] = ctrladr;
     m->actuator_ctrlnum[i] = pac->ctrlnum_;
+    m->actuator_ctrlspec[i] = pac->ctrlspec_;
     pac->ctrladr_ = ctrladr;
     ctrladr += pac->ctrlnum_;
     m->actuator_outadr[i] = outadr;
@@ -4053,6 +4061,8 @@ void mjCModel::CopyObjects(mjModel* m) {
     mjuu_copyvec(m->actuator_gainprm + mjNGAIN*i, pac->gainprm, mjNGAIN);
     mjuu_copyvec(m->actuator_biasprm + mjNBIAS*i, pac->biasprm, mjNBIAS);
     mjuu_copyvec(m->actuator_actrange + 2*i, pac->actrange, 2);
+    m->actuator_forcelimited[i] = (mjtBool)pac->is_forcelimited();
+    mjuu_copyvec(m->actuator_forcerange + 2*i, pac->forcerange, 2);
     mjuu_copyvec(m->actuator_user+nuser_actuator*i, pac->get_userdata().data(), nuser_actuator);
 
     // per-input arrays, at the actuator's ctrl block
@@ -4064,8 +4074,6 @@ void mjCModel::CopyObjects(mjModel* m) {
 
     // per-output arrays, at the actuator's output block
     for (int j=m->actuator_outadr[i]; j < m->actuator_outadr[i]+m->actuator_outnum[i]; j++) {
-      m->actuator_forcelimited[j] = (mjtBool)pac->is_forcelimited();
-      mjuu_copyvec(m->actuator_forcerange + 2*j, pac->forcerange, 2);
       mjuu_copyvec(m->actuator_gear + 6*j, pac->gear, 6);
       mjuu_copyvec(m->actuator_lengthrange + 2*j, pac->lengthrange, 2);
     }
@@ -5843,6 +5851,7 @@ bool mjCModel::CopyBack(const mjModel* m) {
     pg->margin = (double)m->geom_margin[i];
     pg->gap = (double)m->geom_gap[i];
     mjuu_copyvec(pg->surfacevel, m->geom_surfacevel+6*i, 6);
+    pg->adhesion = (double)m->geom_adhesion[i];
 
     if (nuser_geom) {
       mjuu_copyvec(pg->userdata_.data(), m->geom_user + nuser_geom*i, nuser_geom);
@@ -5926,6 +5935,7 @@ bool mjCModel::CopyBack(const mjModel* m) {
     mjuu_copyvec(pairs_[i]->solimp, m->pair_solimp+mjNIMP*i, mjNIMP);
     pairs_[i]->margin = (double)m->pair_margin[i];
     pairs_[i]->gap = (double)m->pair_gap[i];
+    pairs_[i]->adhesion = (double)m->pair_adhesion[i];
     mjuu_copyvec(pairs_[i]->friction, m->pair_friction+5*i, 5);
   }
 
@@ -5968,7 +5978,7 @@ bool mjCModel::CopyBack(const mjModel* m) {
     mjuu_copyvec(pa->gainprm, m->actuator_gainprm+i*mjNGAIN, mjNGAIN);
     mjuu_copyvec(pa->biasprm, m->actuator_biasprm+i*mjNBIAS, mjNBIAS);
     mjuu_copyvec(pa->ctrlrange, m->actuator_ctrlrange+2*m->actuator_ctrladr[i], 2);
-    mjuu_copyvec(pa->forcerange, m->actuator_forcerange+2*m->actuator_outadr[i], 2);
+    mjuu_copyvec(pa->forcerange, m->actuator_forcerange+2*i, 2);
     mjuu_copyvec(pa->actrange, m->actuator_actrange+2*i, 2);
     mjuu_copyvec(pa->lengthrange, m->actuator_lengthrange+2*m->actuator_outadr[i], 2);
     mjuu_copyvec(pa->gear, m->actuator_gear+6*m->actuator_outadr[i], 6);

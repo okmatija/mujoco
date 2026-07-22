@@ -377,6 +377,12 @@ struct MjContact {
   emscripten::val solimp() const {
     return emscripten::val(emscripten::typed_memory_view(5, ptr_->solimp));
   }
+  mjtNum adhesion() const {
+    return ptr_->adhesion;
+  }
+  void set_adhesion(mjtNum value) {
+    ptr_->adhesion = value;
+  }
   mjtNum mu() const {
     return ptr_->mu;
   }
@@ -3091,6 +3097,12 @@ struct MjsPair {
   void set_gap(double value) {
     ptr_->gap = value;
   }
+  double adhesion() const {
+    return ptr_->adhesion;
+  }
+  void set_adhesion(double value) {
+    ptr_->adhesion = value;
+  }
   emscripten::val friction() const {
     return emscripten::val(emscripten::typed_memory_view(5, ptr_->friction));
   }
@@ -4320,6 +4332,12 @@ struct MjModel {
   void set_flg_surfacevel(mjtBool value) {
     ptr_->flg_surfacevel = value;
   }
+  mjtBool flg_adhesion() const {
+    return ptr_->flg_adhesion;
+  }
+  void set_flg_adhesion(mjtBool value) {
+    ptr_->flg_adhesion = value;
+  }
   emscripten::val buffer() const {
     return emscripten::val(emscripten::typed_memory_view(ptr_->nbuffer, static_cast<uint8_t*>(ptr_->buffer)));
   }
@@ -4625,6 +4643,9 @@ struct MjModel {
   }
   emscripten::val geom_surfacevel() const {
     return emscripten::val(emscripten::typed_memory_view(ptr_->ngeom * 6, ptr_->geom_surfacevel));
+  }
+  emscripten::val geom_adhesion() const {
+    return emscripten::val(emscripten::typed_memory_view(ptr_->ngeom, ptr_->geom_adhesion));
   }
   emscripten::val geom_fluid() const {
     return emscripten::val(emscripten::typed_memory_view(ptr_->ngeom * mjNFLUID, ptr_->geom_fluid));
@@ -5289,6 +5310,9 @@ struct MjModel {
   emscripten::val pair_gap() const {
     return emscripten::val(emscripten::typed_memory_view(ptr_->npair, ptr_->pair_gap));
   }
+  emscripten::val pair_adhesion() const {
+    return emscripten::val(emscripten::typed_memory_view(ptr_->npair, ptr_->pair_adhesion));
+  }
   emscripten::val pair_friction() const {
     return emscripten::val(emscripten::typed_memory_view(ptr_->npair * 5, ptr_->pair_friction));
   }
@@ -5439,6 +5463,9 @@ struct MjModel {
   emscripten::val actuator_ctrlnum() const {
     return emscripten::val(emscripten::typed_memory_view(ptr_->nactuator, ptr_->actuator_ctrlnum));
   }
+  emscripten::val actuator_ctrlspec() const {
+    return emscripten::val(emscripten::typed_memory_view(ptr_->nactuator, ptr_->actuator_ctrlspec));
+  }
   emscripten::val actuator_outadr() const {
     return emscripten::val(emscripten::typed_memory_view(ptr_->nactuator, ptr_->actuator_outadr));
   }
@@ -5502,6 +5529,12 @@ struct MjModel {
   emscripten::val actuator_plugin() const {
     return emscripten::val(emscripten::typed_memory_view(ptr_->nactuator, ptr_->actuator_plugin));
   }
+  emscripten::val actuator_forcelimited() const {
+    return emscripten::val(emscripten::typed_memory_view(ptr_->nactuator, ptr_->actuator_forcelimited));
+  }
+  emscripten::val actuator_forcerange() const {
+    return emscripten::val(emscripten::typed_memory_view(ptr_->nactuator * 2, ptr_->actuator_forcerange));
+  }
   emscripten::val actuator_ctrllimited() const {
     return emscripten::val(emscripten::typed_memory_view(ptr_->nu, ptr_->actuator_ctrllimited));
   }
@@ -5510,12 +5543,6 @@ struct MjModel {
   }
   emscripten::val actuator_gear() const {
     return emscripten::val(emscripten::typed_memory_view(ptr_->nout * 6, ptr_->actuator_gear));
-  }
-  emscripten::val actuator_forcelimited() const {
-    return emscripten::val(emscripten::typed_memory_view(ptr_->nout, ptr_->actuator_forcelimited));
-  }
-  emscripten::val actuator_forcerange() const {
-    return emscripten::val(emscripten::typed_memory_view(ptr_->nout * 2, ptr_->actuator_forcerange));
   }
   emscripten::val actuator_acc0() const {
     return emscripten::val(emscripten::typed_memory_view(ptr_->nout, ptr_->actuator_acc0));
@@ -5992,6 +6019,12 @@ struct MjsActuator {
   void set_actdim(int value) {
     ptr_->actdim = value;
   }
+  int ctrlspec() const {
+    return ptr_->ctrlspec;
+  }
+  void set_ctrlspec(int value) {
+    ptr_->ctrlspec = value;
+  }
   mjtBool actearly() const {
     return ptr_->actearly;
   }
@@ -6289,6 +6322,12 @@ struct MjsGeom {
   }
   emscripten::val surfacevel() const {
     return emscripten::val(emscripten::typed_memory_view(6, ptr_->surfacevel));
+  }
+  double adhesion() const {
+    return ptr_->adhesion;
+  }
+  void set_adhesion(double value) {
+    ptr_->adhesion = value;
   }
   double mass() const {
     return ptr_->mass;
@@ -7054,6 +7093,9 @@ struct MjData {
   }
   emscripten::val qfrc_fluid() const {
     return emscripten::val(emscripten::typed_memory_view(model->nv, ptr_->qfrc_fluid));
+  }
+  emscripten::val qfrc_adhesion() const {
+    return emscripten::val(emscripten::typed_memory_view(model->nv, ptr_->qfrc_adhesion));
   }
   emscripten::val qfrc_passive() const {
     return emscripten::val(emscripten::typed_memory_view(model->nv, ptr_->qfrc_passive));

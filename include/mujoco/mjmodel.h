@@ -350,6 +350,7 @@ typedef struct mjModel_ {
 
   mjtBool flg_gravcomp;           // whether any body has nonzero gravcomp
   mjtBool flg_surfacevel;         // whether any geom has nonzero surfacevel
+  mjtBool flg_adhesion;           // whether any geom or pair has nonzero adhesion
 
   // ------------------------------- options and statistics
 
@@ -478,6 +479,7 @@ typedef struct mjModel_ {
   mjtNum*   geom_margin;          // geometric inflation for contact          (ngeom x 1)
   mjtNum*   geom_gap;             // additional contact detection buffer      (ngeom x 1)
   mjtNum*   geom_surfacevel;      // surface velocity in local frame: lin,ang (ngeom x 6)
+  mjtNum*   geom_adhesion;        // adhesive force of contacts               (ngeom x 1)
   mjtNum*   geom_fluid;           // fluid interaction parameters             (ngeom x mjNFLUID)
   mjtNum*   geom_user;            // user data                                (ngeom x nuser_geom)
   float*    geom_rgba;            // rgba when material is omitted            (ngeom x 4)
@@ -721,6 +723,7 @@ typedef struct mjModel_ {
   mjtNum*   pair_solimp;          // solver impedance: contact                (npair x mjNIMP)
   mjtNum*   pair_margin;          // geometric inflation for contact          (npair x 1)
   mjtNum*   pair_gap;             // additional contact detection buffer      (npair x 1)
+  mjtNum*   pair_adhesion;        // adhesive force of contacts               (npair x 1)
   mjtNum*   pair_friction;        // tangent1, 2, spin, roll1, 2              (npair x 5)
 
   // excluded body pairs for collision detection
@@ -781,6 +784,7 @@ typedef struct mjModel_ {
   int*      actuator_biastype;    // bias type (mjtBias)                      (nactuator x 1)
   int*      actuator_ctrladr;     // address of first control                 (nactuator x 1)
   int*      actuator_ctrlnum;     // number of controls                       (nactuator x 1)
+  int*      actuator_ctrlspec;    // input signature, scoped by gaintype      (nactuator x 1)
   int*      actuator_outadr;      // address of first force output            (nactuator x 1)
   int*      actuator_outnum;      // number of force outputs, from trntype    (nactuator x 1)
   int*      actuator_actadr;      // first activation address; -1: stateless  (nactuator x 1)
@@ -802,11 +806,11 @@ typedef struct mjModel_ {
   int*      actuator_group;       // group for visibility                     (nactuator x 1)
   mjtNum*   actuator_user;        // user data                                (nactuator x nuser_actuator)
   int*      actuator_plugin;      // plugin instance id; -1: not a plugin     (nactuator x 1)
+  mjtBool*  actuator_forcelimited;// is force limited                         (nactuator x 1)
+  mjtNum*   actuator_forcerange;  // range of forces                          (nactuator x 2)
   mjtBool*  actuator_ctrllimited; // is control limited                       (nu x 1)
   mjtNum*   actuator_ctrlrange;   // range of controls                        (nu x 2)
   mjtNum*   actuator_gear;        // scale length and transmitted force       (nout x 6)
-  mjtBool*  actuator_forcelimited;// is force limited                         (nout x 1)
-  mjtNum*   actuator_forcerange;  // range of forces                          (nout x 2)
   mjtNum*   actuator_acc0;        // acceleration from unit force in qpos0    (nout x 1)
   mjtNum*   actuator_length0;     // actuator length in qpos0                 (nout x 1)
   mjtNum*   actuator_lengthrange; // feasible actuator length range           (nout x 2)

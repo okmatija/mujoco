@@ -483,6 +483,36 @@ TEST_F(MujocoTest, SetToDCMotorLuGre) {
   mj_deleteSpec(spec);
 }
 
+TEST_F(MujocoTest, SetToOrientation) {
+  mjSpec* spec = mj_makeSpec();
+  mjsActuator* actuator = mjs_addActuator(spec, 0);
+
+  // kv variant, default (expmap) chart
+  double kv = 2.0;
+  const char* err = mjs_setToOrientation(actuator, 5.0, &kv, nullptr, 0);
+  EXPECT_STREQ(err, "");
+  EXPECT_EQ(actuator->gaintype, mjGAIN_SO3);
+  EXPECT_EQ(actuator->biastype, mjBIAS_SO3);
+  EXPECT_EQ(actuator->dyntype, mjDYN_NONE);
+  EXPECT_EQ(actuator->gainprm[0], 5.0);
+  EXPECT_EQ(actuator->biasprm[1], -5.0);
+  EXPECT_EQ(actuator->biasprm[2], -2.0);
+  EXPECT_EQ(actuator->ctrlspec, 0);
+
+  // dampratio variant, quat chart
+  double dampratio = 1.0;
+  err = mjs_setToOrientation(actuator, 5.0, nullptr, &dampratio, mjCHART_QUAT);
+  EXPECT_STREQ(err, "");
+  EXPECT_EQ(actuator->biasprm[2], 1.0);
+  EXPECT_EQ(actuator->ctrlspec, mjCHART_QUAT);
+
+  // kv and dampratio are mutually exclusive
+  err = mjs_setToOrientation(actuator, 5.0, &kv, &dampratio, 0);
+  EXPECT_STREQ(err, "kv and dampratio cannot both be defined");
+
+  mj_deleteSpec(spec);
+}
+
 static constexpr char xml_plugin_1[] = R"(
   <mujoco model="MuJoCo Model">
     <worldbody>
@@ -1282,6 +1312,20 @@ TEST_F(MujocoTest, AttachSpatialTendonWithoutSidesite) {
   EXPECT_THAT(
       mjs_findElement(parent, mjOBJ_TENDON, "tendon_without_sidesite_child"),
       NotNull());
+
+  mjsTendon* tendon = mjs_asTendon(
+      mjs_findElement(parent, mjOBJ_TENDON, "tendon_with_sidesite_child"));
+  ASSERT_THAT(tendon, NotNull());
+  ASSERT_EQ(mjs_getWrapNum(tendon), 3);
+
+  EXPECT_EQ(mjs_getWrapTarget(mjs_getWrap(tendon, 0)),
+            mjs_findElement(parent, mjOBJ_SITE, "site_A_child"));
+  EXPECT_EQ(mjs_getWrapTarget(mjs_getWrap(tendon, 1)),
+            mjs_findElement(parent, mjOBJ_GEOM, "wrap_geom_child"));
+  EXPECT_EQ(mjs_getWrapTarget(mjs_getWrap(tendon, 2)),
+            mjs_findElement(parent, mjOBJ_SITE, "site_B_child"));
+  EXPECT_EQ(mjs_getWrapSideSite(mjs_getWrap(tendon, 1)),
+            mjs_asSite(mjs_findElement(parent, mjOBJ_SITE, "side_site_child")));
 
   mjModel* model = mj_compile(parent, nullptr);
   ASSERT_THAT(model, NotNull()) << mjs_getError(parent);

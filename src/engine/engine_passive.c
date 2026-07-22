@@ -884,7 +884,7 @@ static int mj_fluid(const mjModel* m, mjData* d) {
 int mj_contactPassive(const mjModel* m, mjData* d) {
   int ncon = d->ncon, issparse = mj_isSparse(m);
   int dim, NV, nv = m->nv, *chain = NULL;
-  mjtNum *jac, *jacdif, *jacdifp, *jacdifr, *jac1p, *jac2p, *jac1r, *jac2r, *qfrc;
+  mjtNum *jac, *jacdifp, *jac1p, *jac2p, *qfrc;
   mjContact* con;
   int has_contact = 0;
 
@@ -907,13 +907,9 @@ int mj_contactPassive(const mjModel* m, mjData* d) {
   // allocate Jacobian
   mj_markStack(d);
   jac     = mjSTACKALLOC(d, 6*nv, mjtNum);
-  jacdif  = mjSTACKALLOC(d, 6*nv, mjtNum);
-  jacdifp = jacdif;
-  jacdifr = jacdif + 3*nv;
+  jacdifp = mjSTACKALLOC(d, 3*nv, mjtNum);
   jac1p   = mjSTACKALLOC(d, 3*nv, mjtNum);
   jac2p   = mjSTACKALLOC(d, 3*nv, mjtNum);
-  jac1r   = mjSTACKALLOC(d, 3*nv, mjtNum);
-  jac2r   = mjSTACKALLOC(d, 3*nv, mjtNum);
   qfrc    = mjSTACKALLOC(d, nv, mjtNum);
   if (issparse) {
     chain = mjSTACKALLOC(d, nv, int);
@@ -929,8 +925,8 @@ int mj_contactPassive(const mjModel* m, mjData* d) {
     con = d->contact + i;
     dim = con->dim;
     con->efc_address = -1;
-    NV = mj_contactJacobian(m, d, con, dim, jac, jacdif, jacdifp, jacdifr,
-                            jac1p, jac2p, jac1r, jac2r, chain);
+    NV = mj_contactJacobian(m, d, con, dim, jacdifp, NULL,
+                            jac1p, jac2p, NULL, NULL, chain);
 
     // skip contact if no DOFs affected
     if (NV == 0) {
@@ -941,9 +937,6 @@ int mj_contactPassive(const mjModel* m, mjData* d) {
 
     // rotate Jacobian differences to contact frame
     mju_mulMatMat(jac, con->frame, jacdifp, dim > 1 ? 3 : 1, 3, NV);
-    if (dim > 3) {
-      mju_mulMatMat(jac + 3*NV, con->frame, jacdifr, dim-3, 3, NV);
-    }
 
     // compute passive contact force (dim = 1)
     mjtNum scl = -kContactStiffness*con->dist;
@@ -962,6 +955,71 @@ int mj_contactPassive(const mjModel* m, mjData* d) {
 }
 
 
+// adhesion forces: constant attraction along the normals of adhesive contacts
+int mj_adhesion(const mjModel* m, mjData* d) {
+  int ncon = d->ncon, issparse = mj_isSparse(m);
+  int NV, nv = m->nv, *chain = NULL;
+  mjtNum *jac, *jacdif, *jac1p, *jac2p, *qfrc;
+  mjContact* con;
+  int has_adhesion = 0;
+
+  if (!m->flg_adhesion || mjDISABLED(mjDSBL_CONTACT) || ncon == 0 || nv == 0) {
+    return 0;
+  }
+
+  // early return if no adhesive contact
+  for (int i=0; i < ncon; i++) {
+    if (d->contact[i].adhesion && d->contact[i].exclude <= 1) {
+      has_adhesion = 1;
+      break;
+    }
+  }
+  if (!has_adhesion) {
+    return 0;
+  }
+
+  // allocate Jacobian; contacts are normal-only (dim 1): no rotational buffers
+  mj_markStack(d);
+  jac    = mjSTACKALLOC(d, nv, mjtNum);
+  jacdif = mjSTACKALLOC(d, 3*nv, mjtNum);
+  jac1p  = mjSTACKALLOC(d, 3*nv, mjtNum);
+  jac2p  = mjSTACKALLOC(d, 3*nv, mjtNum);
+  qfrc   = mjSTACKALLOC(d, nv, mjtNum);
+  if (issparse) {
+    chain = mjSTACKALLOC(d, nv, int);
+  }
+
+  // pull adhesive contacts together along the contact normal
+  for (int i=0; i < ncon; i++) {
+    con = d->contact + i;
+    if (!con->adhesion || con->exclude > 1) {
+      continue;
+    }
+
+    // normal Jacobian
+    NV = mj_contactJacobian(m, d, con, 1, jacdif, NULL,
+                            jac1p, jac2p, NULL, NULL, chain);
+    if (NV == 0) {
+      continue;
+    }
+    mju_mulMatMat(jac, con->frame, jacdif, 1, 3, NV);
+
+    // accumulate qfrc_adhesion += jacN' * (-adhesion)
+    if (!issparse) {
+      mju_addToScl(d->qfrc_adhesion, jac, -con->adhesion, nv);
+    } else {
+      mju_scl(qfrc, jac, -con->adhesion, NV);
+      for (int j=0; j < NV; j++) {
+        d->qfrc_adhesion[chain[j]] += qfrc[j];
+      }
+    }
+  }
+
+  mj_freeStack(d);
+  return 1;
+}
+
+
 // all passive forces
 void mj_passive(const mjModel* m, mjData* d) {
   int sleep_filter = mjENABLED(mjENBL_SLEEP) && d->nv_awake < m->nv;
@@ -974,12 +1032,14 @@ void mj_passive(const mjModel* m, mjData* d) {
     mju_zeroInd(d->qfrc_damper,   nv, dof_awake_ind);
     mju_zeroInd(d->qfrc_gravcomp, nv, dof_awake_ind);
     mju_zeroInd(d->qfrc_fluid,    nv, dof_awake_ind);
+    mju_zeroInd(d->qfrc_adhesion, nv, dof_awake_ind);
     mju_zeroInd(d->qfrc_passive,  nv, dof_awake_ind);
   } else {
     mju_zero(d->qfrc_spring,   nv);
     mju_zero(d->qfrc_damper,   nv);
     mju_zero(d->qfrc_gravcomp, nv);
     mju_zero(d->qfrc_fluid,    nv);
+    mju_zero(d->qfrc_adhesion, nv);
     mju_zero(d->qfrc_passive,  nv);
   }
 
@@ -1000,6 +1060,9 @@ void mj_passive(const mjModel* m, mjData* d) {
   // contact forces
   mj_contactPassive(m, d);
 
+  // adhesion forces
+  int has_adhesion = mj_adhesion(m, d);
+
   // add passive forces into qfrc_passive
   if (sleep_filter) {
     mju_addInd(d->qfrc_passive, d->qfrc_spring, d->qfrc_damper, dof_awake_ind, nv);
@@ -1012,6 +1075,14 @@ void mj_passive(const mjModel* m, mjData* d) {
       mju_addToInd(d->qfrc_passive, d->qfrc_fluid, dof_awake_ind, nv);
     } else {
       mju_addTo(d->qfrc_passive, d->qfrc_fluid, nv);
+    }
+  }
+
+  if (has_adhesion) {
+    if (sleep_filter) {
+      mju_addToInd(d->qfrc_passive, d->qfrc_adhesion, dof_awake_ind, nv);
+    } else {
+      mju_addTo(d->qfrc_passive, d->qfrc_adhesion, nv);
     }
   }
 

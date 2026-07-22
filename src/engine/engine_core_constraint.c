@@ -137,7 +137,7 @@ static int arenaAllocEfc(const mjModel* m, mjData* d) {
   d->parena = d->ncon * sizeof(mjContact);
 
   // poison remaining memory
-#ifdef ADDRESS_SANITIZER
+#ifdef mjUSEASAN
   ASAN_POISON_MEMORY_REGION(
     (char*)d->arena + d->parena, d->narena - d->pstack - d->parena);
 #endif
@@ -390,7 +390,7 @@ static int mj_vertBodyWeight(const mjModel* m, const mjData* d, int f, int* v,
 int mj_addContact(const mjModel* m, mjData* d, const mjContact* con) {
   // move arena pointer back to the end of the existing contact array and invalidate efc_ arrays
   d->parena = d->ncon * sizeof(mjContact);
-#ifdef ADDRESS_SANITIZER
+#ifdef mjUSEASAN
   ASAN_POISON_MEMORY_REGION(
     (char*)d->arena + d->parena, d->narena - d->pstack - d->parena);
 #endif
@@ -1533,8 +1533,8 @@ static int mj_instantiateLimit(const mjModel* m, mjData* d, int count_only, int*
 
 // compute Jacobian for contact, return number of DOFs affected
 int mj_contactJacobian(const mjModel* m, mjData* d, const mjContact* con, int dim,
-                       mjtNum* jac, mjtNum* jacdif, mjtNum* jacdifp,
-                       mjtNum* jacdifr, mjtNum* jac1p, mjtNum* jac2p,
+                       mjtNum* jacdifp, mjtNum* jacdifr,
+                       mjtNum* jac1p, mjtNum* jac2p,
                        mjtNum* jac1r, mjtNum* jac2r, int* chain) {
   // special case: single body on each side
   if ((con->geom[0] >= 0 || (con->vert[0] >= 0 && m->flex_interp[con->flex[0]] == 0)) &&
@@ -1608,7 +1608,7 @@ int mj_contactJacobian(const mjModel* m, mjData* d, const mjContact* con, int di
     }
 
     // combine weighted Jacobians
-    return mj_jacSum(m, d, chain, nb, bid, bweight, con->pos, jacdif, dim > 3);
+    return mj_jacSum(m, d, chain, nb, bid, bweight, con->pos, jacdifp, jacdifr, dim > 3);
   }
 }
 
@@ -1618,7 +1618,7 @@ void mj_instantiateContact(const mjModel* m, mjData* d) {
   int ispyramid = mj_isPyramidal(m), issparse = mj_isSparse(m), ncon = d->ncon;
   int dim, NV, nv = m->nv, *chain = NULL;
   mjContact* con;
-  mjtNum cpos[6], cmargin[6], *jac, *jacdif, *jacdifp, *jacdifr, *jac1p, *jac2p, *jac1r, *jac2r;
+  mjtNum cpos[6], cmargin[6], *jac, *jacdifp, *jacdifr, *jac1p, *jac2p, *jac1r, *jac2r;
 
   if (mjDISABLED(mjDSBL_CONTACT) || ncon == 0 || nv == 0) {
     return;
@@ -1628,9 +1628,8 @@ void mj_instantiateContact(const mjModel* m, mjData* d) {
 
   // allocate Jacobian
   jac = mjSTACKALLOC(d, 6*nv, mjtNum);
-  jacdif = mjSTACKALLOC(d, 6*nv, mjtNum);
-  jacdifp = jacdif;
-  jacdifr = jacdif + 3*nv;
+  jacdifp = mjSTACKALLOC(d, 3*nv, mjtNum);
+  jacdifr = mjSTACKALLOC(d, 3*nv, mjtNum);
   jac1p = mjSTACKALLOC(d, 3*nv, mjtNum);
   jac2p = mjSTACKALLOC(d, 3*nv, mjtNum);
   jac1r = mjSTACKALLOC(d, 3*nv, mjtNum);
@@ -1649,7 +1648,7 @@ void mj_instantiateContact(const mjModel* m, mjData* d) {
     con = d->contact + i;
     dim = con->dim;
     con->efc_address = d->nefc;
-    NV = mj_contactJacobian(m, d, con, dim, jac, jacdif, jacdifp, jacdifr,
+    NV = mj_contactJacobian(m, d, con, dim, jacdifp, jacdifr,
                             jac1p, jac2p, jac1r, jac2r, chain);
 
     // skip contact if no DOFs affected
@@ -3199,6 +3198,38 @@ static void mj_addSurfaceVel(const mjModel* m, mjData* d) {
 
 
 
+// bias aref of adhesive contact rows: makes the compression branch of the net
+// force-penetration curve independent of adhesion (exact translated-cone semantics)
+static void mj_adhesionRef(const mjModel* m, mjData* d) {
+  // no adhesion on any geom or pair: quick return
+  if (!m->flg_adhesion) {
+    return;
+  }
+
+  int ispyramid = mj_isPyramidal(m), ncon = d->ncon;
+
+  for (int i=0; i < ncon; i++) {
+    const mjContact* con = d->contact + i;
+    if (!con->adhesion || con->efc_address < 0) {
+      continue;
+    }
+
+    int adr = con->efc_address, dim = con->dim;
+    if (dim == 1 || !ispyramid) {
+      // normal row
+      d->efc_aref[adr] += d->efc_R[adr] * con->adhesion;
+    } else {
+      // pyramid rows: the normal decomposes equally over the 2*(dim-1) edges
+      mjtNum edge = con->adhesion / (2*(dim-1));
+      for (int j=0; j < 2*(dim-1); j++) {
+        d->efc_aref[adr+j] += d->efc_R[adr+j] * edge;
+      }
+    }
+  }
+}
+
+
+
 // compute efc_vel, efc_aref
 void mj_referenceConstraint(const mjModel* m, mjData* d) {
   int nefc = d->nefc;
@@ -3215,6 +3246,9 @@ void mj_referenceConstraint(const mjModel* m, mjData* d) {
     d->efc_aref[i] = -KBIP[4*i+1]*d->efc_vel[i]
                      -KBIP[4*i]*KBIP[4*i+2]*(d->efc_pos[i]-d->efc_margin[i]);
   }
+
+  // bias adhesive contact rows
+  mj_adhesionRef(m, d);
 
   // subtract Jdot*v correction for connect/weld equality constraints
   if (d->ne > 0) {

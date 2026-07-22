@@ -238,7 +238,8 @@ std::vector<const char*> MJCF[nMJCF] = {
         {"geom", "?", "type", "pos", "quat", "contype", "conaffinity", "condim",
             "group", "priority", "size", "material", "friction", "mass", "density",
             "shellinertia", "solmix", "solref", "solimp",
-            "margin", "gap", "surfacevel", "fromto", "axisangle", "xyaxes", "zaxis", "euler",
+            "margin", "gap", "surfacevel", "adhesion", "fromto", "axisangle", "xyaxes", "zaxis",
+            "euler",
             "hfield", "mesh", "fitscale", "rgba", "fluidshape", "fluidcoef", "user"},
         {"site", "?", "type", "group", "pos", "quat", "material",
             "size", "fromto", "axisangle", "xyaxes", "zaxis", "euler", "rgba", "user"},
@@ -249,7 +250,7 @@ std::vector<const char*> MJCF[nMJCF] = {
             "directional", "type", "castshadow", "active", "attenuation", "cutoff", "exponent",
             "ambient", "diffuse", "specular", "mode"},
         {"pair", "?", "condim", "friction", "solref", "solreffriction", "solimp",
-         "gap", "margin"},
+         "gap", "margin", "adhesion"},
         {"equality", "?", "active", "solref", "solimp"},
         {"tendon", "?", "group", "limited", "range",
             "solreflimit", "solimplimit", "solreffriction", "solimpfriction",
@@ -257,7 +258,7 @@ std::vector<const char*> MJCF[nMJCF] = {
             "margin", "stiffness", "damping", "rgba", "user"},
         {"general", "?", "ctrllimited", "forcelimited", "actlimited", "ctrlrange", "forcerange",
             "actrange", "gear", "damping", "armature", "cranklength", "user", "group", "nsample",
-            "interp", "delay", "actdim", "dyntype", "gaintype", "biastype", "dynprm", "gainprm",
+            "interp", "delay", "actdim", "input", "dyntype", "gaintype", "biastype", "dynprm", "gainprm",
             "biasprm", "actearly"},
         {"motor", "?", "ctrllimited", "forcelimited", "ctrlrange", "forcerange",
             "gear", "damping", "armature", "cranklength", "user", "group", "nsample", "interp", "delay"},
@@ -349,9 +350,9 @@ std::vector<const char*> MJCF[nMJCF] = {
         {"geom", "*", "name", "class", "type", "contype", "conaffinity", "condim",
             "group", "priority", "size", "material", "friction", "mass", "density",
             "shellinertia", "solmix", "solref", "solimp",
-            "margin", "gap", "surfacevel", "fromto", "pos", "quat", "axisangle", "xyaxes",
-            "zaxis", "euler", "hfield", "mesh", "fitscale", "rgba", "fluidshape", "fluidcoef",
-            "user"},
+            "margin", "gap", "surfacevel", "adhesion", "fromto", "pos", "quat", "axisangle",
+            "xyaxes", "zaxis", "euler", "hfield", "mesh", "fitscale", "rgba", "fluidshape",
+            "fluidcoef", "user"},
         {"<"},
             {"plugin", "*", "plugin", "instance"},
             {"<"},
@@ -381,7 +382,8 @@ std::vector<const char*> MJCF[nMJCF] = {
             {"skin", "?", "texcoord", "material", "group", "rgba", "inflate", "subgrid"},
             {"geom", "?", "type", "contype", "conaffinity", "condim",
                 "group", "priority", "size", "material", "rgba", "friction", "mass",
-                "density", "solmix", "solref", "solimp", "margin", "gap", "surfacevel"},
+                "density", "solmix", "solref", "solimp", "margin", "gap", "surfacevel",
+                "adhesion"},
             {"site", "?", "group", "size", "material", "rgba"},
             {"plugin", "*", "plugin", "instance"},
             {"<"},
@@ -427,7 +429,7 @@ std::vector<const char*> MJCF[nMJCF] = {
     {"contact", "*"},
     {"<"},
         {"pair", "*", "name", "class", "geom1", "geom2", "condim", "friction",
-            "solref", "solreffriction", "solimp", "gap", "margin"},
+            "solref", "solreffriction", "solimp", "gap", "margin", "adhesion"},
         {"exclude", "*", "name", "body1", "body2"},
     {">"},
 
@@ -474,7 +476,7 @@ std::vector<const char*> MJCF[nMJCF] = {
             "ctrllimited", "forcelimited", "actlimited", "ctrlrange", "forcerange", "actrange",
             "lengthrange", "gear", "damping", "armature", "cranklength", "user",
             "joint", "jointinparent", "tendon", "slidersite", "cranksite", "site", "refsite",
-            "body", "actdim", "dyntype", "gaintype", "biastype", "dynprm", "gainprm", "biasprm",
+            "body", "actdim", "input", "dyntype", "gaintype", "biastype", "dynprm", "gainprm", "biasprm",
             "actearly"},
         {"motor", "*", "name", "class", "group", "nsample", "interp", "delay",
             "ctrllimited", "forcelimited", "ctrlrange", "forcerange",
@@ -496,6 +498,10 @@ std::vector<const char*> MJCF[nMJCF] = {
             "gear", "damping", "armature", "cranklength", "user",
             "joint", "jointinparent", "tendon", "slidersite", "cranksite", "site", "refsite",
             "kp", "kv", "dampratio"},
+        {"orientation", "*", "name", "class", "group", "nsample", "interp", "delay",
+            "forcelimited", "ctrlrange", "forcerange", "user",
+            "joint", "site", "refsite",
+            "kp", "kv", "dampratio", "input"},
         {"damper", "*", "name", "class", "group", "nsample", "interp", "delay",
             "forcelimited", "ctrlrange", "forcerange",
             "lengthrange", "gear", "damping", "armature", "cranklength", "user",
@@ -838,23 +844,33 @@ const mjMap dcmotorinput_map[dcmotorinput_sz] = {
 
 
 // gain type
-const int gain_sz = 5;
+const int gain_sz = 6;
 const mjMap gain_map[gain_sz] = {
   {"fixed",         mjGAIN_FIXED},
   {"affine",        mjGAIN_AFFINE},
   {"muscle",        mjGAIN_MUSCLE},
   {"dcmotor",       mjGAIN_DCMOTOR},
+  {"so3",           mjGAIN_SO3},
   {"user",          mjGAIN_USER}
 };
 
 
+// so3 input chart
+const int input_sz = 2;
+const mjMap input_map[input_sz] = {
+  {"expmap",        mjCHART_EXPMAP},
+  {"quat",          mjCHART_QUAT}
+};
+
+
 // bias type
-const int bias_sz = 5;
+const int bias_sz = 6;
 const mjMap bias_map[bias_sz] = {
   {"none",          mjBIAS_NONE},
   {"affine",        mjBIAS_AFFINE},
   {"muscle",        mjBIAS_MUSCLE},
   {"dcmotor",       mjBIAS_DCMOTOR},
+  {"so3",           mjBIAS_SO3},
   {"user",          mjBIAS_USER}
 };
 
@@ -1975,6 +1991,7 @@ void mjXReader::OneGeom(XMLElement* elem, mjsGeom* geom) {
   ReadAttr(elem, "margin", 1, &geom->margin, text);
   ReadAttr(elem, "gap", 1, &geom->gap, text);
   ReadAttr(elem, "surfacevel", 6, geom->surfacevel, text, false, false);
+  ReadAttr(elem, "adhesion", 1, &geom->adhesion, text);
   if (ReadAttrTxt(elem, "hfield", hfieldname)) {
     mjs_setString(geom->hfieldname, hfieldname.c_str());
   }
@@ -2197,6 +2214,7 @@ void mjXReader::OnePair(XMLElement* elem, mjsPair* pair) {
   ReadAttr(elem, "solimp", mjNIMP, pair->solimp, text, false, false);
   ReadAttr(elem, "margin", 1, &pair->margin, text);
   ReadAttr(elem, "gap", 1, &pair->gap, text);
+  ReadAttr(elem, "adhesion", 1, &pair->adhesion, text);
   ReadAttr(elem, "friction", 5, pair->friction, text, false, false);
 
   // write error info
@@ -2510,6 +2528,9 @@ void mjXReader::OneActuator(XMLElement* elem, mjsActuator* actuator) {
     ReadAttr(elem, "gainprm", mjNGAIN, actuator->gainprm, text, false, false);
     ReadAttr(elem, "biasprm", mjNBIAS, actuator->biasprm, text, false, false);
     ReadAttrInt(elem, "actdim", &actuator->actdim);
+    if (MapValue(elem, "input", &n, input_map, input_sz)) {
+      actuator->ctrlspec = n;
+    }
   }
 
   // direct drive motor
@@ -2554,6 +2575,32 @@ void mjXReader::OneActuator(XMLElement* elem, mjsActuator* actuator) {
     }
   }
 
+  // orientation servo: geodesic PD on an SO3 transmission
+  else if (type == "orientation") {
+    double kp = actuator->gainprm[0];
+    ReadAttr(elem, "kp", 1, &kp, text);
+
+    double kv_data;
+    double *kv = &kv_data;
+    if (!ReadAttr(elem, "kv", 1, kv, text)) {
+      kv = nullptr;
+    }
+
+    double dampratio_data;
+    double *dampratio = &dampratio_data;
+    if (!ReadAttr(elem, "dampratio", 1, dampratio, text)) {
+      dampratio = nullptr;
+    }
+
+    // input chart: expmap (default) or quat
+    int n;
+    if (MapValue(elem, "input", &n, input_map, input_sz)) {
+      actuator->ctrlspec = n;
+    }
+
+    err = mjs_setToOrientation(actuator, kp, kv, dampratio, actuator->ctrlspec);
+  }
+
   // velocity servo
   else if (type == "velocity") {
     double kv = actuator->gainprm[0];
@@ -2572,14 +2619,16 @@ void mjXReader::OneActuator(XMLElement* elem, mjsActuator* actuator) {
   // cylinder
   else if (type == "cylinder") {
     double timeconst = actuator->dynprm[0];
-    double bias = actuator->biasprm[0];
+    double bias[3] = {actuator->biasprm[0], actuator->biasprm[1], actuator->biasprm[2]};
     double area = actuator->gainprm[0];
     double diameter = -1;
     ReadAttr(elem, "timeconst", 1, &timeconst, text);
-    ReadAttr(elem, "bias", 3, &bias, text);
+    ReadAttr(elem, "bias", 3, bias, text);
     ReadAttr(elem, "area", 1, &area, text);
     ReadAttr(elem, "diameter", 1, &diameter, text);
-    err = mjs_setToCylinder(actuator, timeconst, bias, area, diameter);
+    err = mjs_setToCylinder(actuator, timeconst, bias[0], area, diameter);
+    actuator->biasprm[1] = bias[1];
+    actuator->biasprm[2] = bias[2];
   }
 
   // muscle
@@ -2785,6 +2834,7 @@ void mjXReader::OneComposite(XMLElement* elem, mjsBody* body, mjsFrame* frame, c
     ReadAttr(egeom, "margin", 1, &dgeom.margin, text);
     ReadAttr(egeom, "gap", 1, &dgeom.gap, text);
     ReadAttr(egeom, "surfacevel", 6, dgeom.surfacevel, text, false, false);
+    ReadAttr(egeom, "adhesion", 1, &dgeom.adhesion, text);
     if (ReadAttrTxt(egeom, "material", material)) {
       mjs_setString(dgeom.material, material.c_str());
     }
@@ -3117,6 +3167,7 @@ void mjXReader::Default(XMLElement* section, const mjsDefault* def, const mjVFS*
              name == "velocity"    ||
              name == "damper"      ||
              name == "intvelocity" ||
+             name == "orientation" ||
              name == "cylinder"    ||
              name == "muscle"      ||
              name == "adhesion"    ||

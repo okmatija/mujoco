@@ -66,18 +66,11 @@ Parse spec from a file.
 
 .. mujoco-include:: mj_encode
 
-Encode :ref:`mjSpec` or :ref:`mjModel` to a file. The output format is determined by the file extension (case insensitive) or
-``content_type``. Returns the number of bytes written on success, -1 on failure.
+Encode :ref:`mjSpec` or :ref:`mjModel` to a file. The output format is determined by the file extension
+(case insensitive) or ``content_type``. Returns the number of bytes written on success, -1 on failure.
 
-The following formats are supported natively, without a registered encoder:
-
-- **MJCF XML** — extension: ``.xml``, content_type: ``text/xml``. If an :ref:`mjSpec` is provided, saves via
-  :ref:`mj_saveXML`. Otherwise falls back to :ref:`mj_saveLastXML`, which requires a compiled :ref:`mjModel`.
-- **MJB** — extension: ``.mjb``. MuJoCo binary format. Requires a compiled :ref:`mjModel`.
-- **TXT** — extension: ``.txt``, content_type: ``text/plain``. Human-readable text dump via :ref:`mj_printModel`.
-  Requires a compiled :ref:`mjModel`.
-
-For all other formats, a registered encoder is looked up via :ref:`mjp_findEncoder`.
+For detailed documentation, supported output formats (``.xml``, ``.mjb``, ``.txt``, ``.mjz``), and custom encoder
+plugins, see :ref:`Model Encoding & Saving <meSaving>`.
 
 *Nullable:* ``s``, ``m``, ``vfs``, ``error``
 
@@ -602,6 +595,16 @@ Get id of object with the specified :ref:`mjtObj` type and name, returns -1 if i
 .. mujoco-include:: mj_id2name
 
 Get name of object with the specified :ref:`mjtObj` type and id, returns ``NULL`` if name not found.
+
+.. _mj_actuatorInputName:
+
+`mj_actuatorInputName <#mj_actuatorInputName>`__
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. mujoco-include:: mj_actuatorInputName
+
+Get name of actuator input, determined by the actuator type and input signature;
+return NULL if the actuator type defines no input names.
 
 .. _mj_fullM:
 
@@ -1820,6 +1823,15 @@ m is only required to contain the size fields from MJMODEL_INTS.
 .. mujoco-include:: mjv_copyData
 
 Copy mjData, skip large arrays not required for visualization.
+
+.. _mj_resetCtrl:
+
+`mj_resetCtrl <#mj_resetCtrl>`__
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. mujoco-include:: mj_resetCtrl
+
+Reset ctrl to neutral values: zero, except quaternion inputs which reset to the identity.
 
 .. _mj_resetData:
 
@@ -5257,6 +5269,15 @@ Set actuator to integrated velocity; return error if any.
 .. mujoco-include:: mjs_setToVelocity
 
 Set actuator to velocity servo; return error if any.
+
+.. _mjs_setToOrientation:
+
+`mjs_setToOrientation <#mjs_setToOrientation>`__
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. mujoco-include:: mjs_setToOrientation
+
+Set actuator to orientation servo.
 
 .. _mjs_setToDamper:
 

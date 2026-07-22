@@ -9,6 +9,7 @@ Engine
 ^^^^^^
 
 .. youtube:: PdSdrqhSiZA
+   :aspect: 16:7
    :align: right
    :width: 35%
 
@@ -21,6 +22,17 @@ Engine
   velocity relative to the moving surface rather than to the geom, since that is the quantity the constraint acts
   on; for geoms without :at:`surfacevel` the two are identical. Contact-point visualization draws an arrow along the
   surface velocity at contacts with moving surfaces.
+
+.. youtube:: GioWwB36XHI
+   :aspect: 16:7
+   :align: right
+   :width: 35%
+
+- Added :ref:`geom/adhesion<body-geom-adhesion>` and :ref:`pair/adhesion<contact-pair-adhesion>`: an adhesive force
+  associated with a contact, useful for modeling sticky materials. Contacts can pull with up to the given force before
+  breaking, and the friction budget becomes :math:`\mu(f_N + \text{adhesion})`. Combined with :ref:`gap<body-geom-gap>`,
+  adhesive contacts apply "adhesion at a distance", useful for modeling magnets. Resting penetration is unaffected by
+  adhesion. :ref:`mj_contactForce` reports the net interface force, whose normal component can now be negative.
 - Replaced midpoint integration of free bodies with :ref:`gyroscopic derivatives<geFreeBody>` in the ``implicitfast``
   :ref:`integrator<geIntegrators>`: the bias-force derivative of every standalone free body is applied via a local
   unsymmetric solve of its decoupled block, making ``implicitfast`` identical to ``implicit`` for such bodies.
@@ -38,6 +50,8 @@ Engine
   as originally guarded by ``ngravcomp``. Since the engine uses these integers as flags (zero vs. non-zero), the new
   flags are honest boolean properties, writeable from the Python bindings at runtime. The field ``ngravcomp`` is
   deprecated and will be removed in a future release.
+- Replaced quadratic scratch in DFS flood-fill island discovery with a linear-memory Union-Find (disjoint set).
+  Contribution by :github:user:`teerthsharma`.
 
 .. admonition:: Breaking API changes
    :class: attention
@@ -56,7 +70,11 @@ Engine
 .. admonition:: Breaking ABI changes
    :class: caution
 
-   - Added ``texid``, ``texuniform`` and ``texrepeat`` fields to ``mjvGeom``.
+   - :ref:`mjModel` gained the ``actuator_ctrlspec`` field (input signature of each actuator), and :ref:`mjsActuator`
+     gained ``ctrlspec``, changing their size and layout. The :ref:`mjtGain` and :ref:`mjtBias` enums gained ``so3``
+     members, shifting the values of ``mjGAIN_USER`` and ``mjBIAS_USER``.
+   - Added ``texid``, ``texuniform`` and ``texrepeat`` fields to :ref:`mjvGeom`.
+   - The :ref:`mjContact` struct gained an ``adhesion`` member, changing its size and layout.
 
 .. admonition:: Bug fixes
    :class: admonition
@@ -80,6 +98,25 @@ Actuation
   :ref:`general<actuator-general>` actuators it defaults to "auto", so activation clamping is enabled by specifying
   ``actrange``. Unclamped integrated setpoints are well-behaved on rotational transmissions, where they wrap.
 
+.. youtube:: 17XpwnqyCXs
+   :aspect: 16:7
+   :align: right
+   :width: 35%
+
+- Added the :ref:`orientation<actuator-orientation>` actuator: a geodesic servo on a new SO(3) transmission (ball
+  joints, or a site with a :ref:`refsite<actuator-general-refsite>`), acting jointly on the full relative orientation
+  with an exact equilibrium at every commanded orientation. This is the first actuator with multiple force outputs
+  (3), and, with ``input="quat"``, the first with different input and output dimensions (4 controls, 3 outputs). The
+  input signature is recorded in the new ``mjModel.actuator_ctrlspec``, exposed as the
+  :ref:`input<actuator-general-input>` attribute.
+- Added :ref:`mj_actuatorInputName`, returning the name of an actuator input (e.g. "qw" for the first control of a
+  quaternion-commanded orientation actuator). The control sliders in :ref:`simulate<saSimulate>` and MuJoCo Studio are
+  now generated per control and labeled with the actuator name plus the input name suffix.
+- Viewer control sliders now use a defined :ref:`ctrlrange<actuator-general-ctrlrange>` even when
+  :ref:`ctrllimited<actuator-general-ctrllimited>` is "false": the range sets the slider span, while clamping remains
+  controlled by :at:`ctrllimited`.
+- Added :ref:`mj_resetCtrl`, setting controls to neutral values: zero, except quaternion inputs which reset to the
+  identity quaternion. Called by :ref:`mj_resetData` and the viewers' "Clear All".
 
 Solvers
 ^^^^^^^
@@ -109,11 +146,11 @@ Compiler
 - The :ref:`attach<body-attach>` element now supports self-attachment (attaching elements of the current model to
   itself) by omitting the :ref:`model<body-attach-model>` attribute. It also supports attaching a frame via the new
   :ref:`frame<body-attach-frame>` attribute, which is mutually exclusive with :ref:`body<body-attach-body>`.
-- Fixed loading of ``.mjz`` archives in :ref:`simulate<saSimulate>`: the archive was unmounted before model compilation,
-  so assets failed to load. Failures in the ``mjz`` decoder now emit a warning with the underlying error instead of the
-  generic "could not decode content" message.
-- The ``mjz`` decoder now searches for ``model.xml`` at the root of the archive as a fallback if the archive-named XML
-  is not found.
+- Fixed loading of :ref:`.mjz <MJZArchives>` archives in :ref:`simulate<saSimulate>`: the archive was unmounted
+  before model compilation, so assets failed to load. Failures in the :ref:`mjz <MJZArchives>` decoder now emit a
+  warning with the underlying error instead of the generic "could not decode content" message.
+- The :ref:`mjz <MJZArchives>` decoder now searches for ``model.xml`` at the root of the archive as a fallback if the
+  archive-named XML is not found.
 - Added support for resource writing via :ref:`mju_writeResource` and the ``write`` callback in
   :ref:`mjpResourceProvider`.
 
@@ -127,6 +164,16 @@ Compiler
    :class: admonition
 
    - Fixed a bug in the mesh compiler where normals were scaled as vectors rather than covectors.
+
+Python bindings
+^^^^^^^^^^^^^^^
+- The bindings now support free threading (`PEP 703 <https://peps.python.org/pep-0703/>`__) for Python 3.14.
+
+Documentation
+^^^^^^^^^^^^^
+- Expanded documentation for :ref:`spec.encode <meSaving>` workflows and added detailed documentation for the
+  :ref:`MJZ Archive <MJZArchives>` format (``.mjz`` / ``.zip``).
+
 
 Version 3.10.0 (June 22, 2026)
 ------------------------------
@@ -196,8 +243,8 @@ Bug fixes
 15. :commit:`a8eaccd2` Fixed a vulnerability in the System Identification toolbox where loading a trajectory or time
     series called ``np.load`` with ``allow_pickle=True``, allowing arbitrary code execution from a malicious ``.npz``
     file. Signal metadata is now serialized as JSON and loaded with ``allow_pickle=False``.
-16. :commit:`b9fb817a` Fixed a bug in the ``mjz`` :ref:`decoder <mjpDecoder>` where unnormalized paths would fail to be
-    read.
+16. :commit:`b9fb817a` Fixed a bug in the :ref:`mjz <MJZArchives>` :ref:`decoder <mjpDecoder>` where unnormalized paths
+    would fail to be read.
 17. :commit:`986d73c0` Fixed a bug where the mesh compiler would produce non-unit convex hull polygon normals.
 
 Version 3.9.0 (May 27, 2026)
@@ -643,7 +690,7 @@ Version 3.4.0 (December 5, 2025)
 General
 ^^^^^^^
 
-.. youtube:: aKa3ZlEF9_Y
+.. youtube:: vct493lGQ8Q
    :aspect: 2:1
    :align: right
    :width: 35%

@@ -33,9 +33,7 @@ PYBIND11_MODULE(implot, m) {
   // Import dear_imgui to make types like ImVec2 available.
   py::module_::import("mujoco.experimental.dear_imgui.dear_imgui");
 
-  // Each pybind module holds its own copy of the ImGui/ImPlot context
-  // globals, so the viewer must share its context pointers with this module
-  // (same pattern as ux.set_imgui_context).
+  // Each pybind module holds its own ImGui/ImPlot context globals
   m.def(
       "set_imgui_context",
       [](intptr_t ptr) {
