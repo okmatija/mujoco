@@ -11,17 +11,16 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Loads and compiles MuJoCo models with the platform parser.
+"""Loads and compiles MuJoCo models for the studio viewer.
 
-The heavy lifting happens in the ``parser_cc`` extension module, which
-returns the compiled model as a raw pointer. The pointer is wrapped into an
-MjModel here through mujoco's own bindings (``MjModel._from_model_ptr``), so
-the python wrapper is built in mujoco's core module rather than in the studio
-extension (see parser.cc for why that matters).
+This is a thin wrapper over mujoco's own bindings: MJB files load directly,
+everything else parses through mujoco.MjSpec (mj_parse under the hood, the
+same call the platform loader used) and compiles. Keeping the model
+construction inside mujoco's module means the MjModel/MjData wrappers come
+from there, with no separate extension involved.
 """
 
 import mujoco
-from mujoco.experimental.studio import parser_cc
 
 
 def parse(filepath: str) -> mujoco.MjData:
@@ -30,13 +29,14 @@ def parse(filepath: str) -> mujoco.MjData:
   The compiled model is available as ``data.model``.
 
   Args:
-    filepath: Path to the model file (MJCF, MJB, or anything else the
-      platform loader understands).
+    filepath: Path to the model file (MJCF, URDF, MJB, or anything else
+      mujoco's parser understands).
 
   Raises:
     ValueError: If the file cannot be loaded or compiled.
   """
-  # parse_to_model_ptr hands over ownership of the raw mjModel*;
-  # _from_model_ptr wraps it (and frees it on destruction).
-  model = mujoco.MjModel._from_model_ptr(parser_cc.parse_to_model_ptr(filepath))
+  if filepath.endswith('.mjb'):
+    model = mujoco.MjModel.from_binary_path(filepath)
+  else:
+    model = mujoco.MjSpec.from_file(filepath).compile()
   return mujoco.MjData(model)
