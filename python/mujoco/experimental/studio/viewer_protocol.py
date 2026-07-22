@@ -23,7 +23,6 @@ from mujoco.experimental.studio import endpoints
 from mujoco.experimental.studio import handler_registry
 from mujoco.experimental.studio import messages
 from mujoco.experimental.studio import ux
-import numpy as np
 
 GFX_MODES = (
     'classic',
@@ -58,31 +57,9 @@ class ViewerConfig:
   height: int = 800
   gfx: str = ''
   viewer_mode: ViewerMode = ViewerMode.NATIVE
-
-
-# Legacy message types kept for backward compatibility.
-# Will be removed when callers are migrated.
-
-
-@dataclasses.dataclass
-class SimToView:
-  """A message sent from the simulation to the viewer."""
-
-  model: mujoco.MjModel | None = None
-  state: np.ndarray | None = None
-  state_sig: int = 0
-  user_data: dict[str, Any] = dataclasses.field(default_factory=dict)
-
-
-@dataclasses.dataclass
-class ViewToSim:
-  """A message sent from the viewer to the simulation."""
-
-  state: np.ndarray | None = None
-  state_sig: int = 0
-  reset: bool = False
-  send_rate: float = 60.0
-  user_data: dict[str, Any] = dataclasses.field(default_factory=dict)
+  # Web viewer only: public port. 0 picks the first free port starting at
+  # 8080, so several viewers can run side by side.
+  http_port: int = 0
 
 
 # -----------------------------------------------------------------------------
@@ -176,6 +153,24 @@ class Viewer(abc.ABC):
       except Exception:  # pylint: disable=broad-exception-caught
         pass  # Ignore exceptions, the sim may have already closed.
       self._endpoint.close()
+
+  def request_close(self) -> None:
+    """Asks the viewer loop to exit; safe to call from another thread.
+
+    Unlike close(), this only flips the running flag: run_viewer_loop
+    observes it through is_running() within a frame and shuts the viewer
+    down on the viewer thread. This suffices for viewers whose frame wait
+    always returns (the native viewer paces at display rate); viewers whose
+    wait can block indefinitely override this to also interrupt the wait
+    (see WebViewer.request_close).
+    """
+    self._is_running = False
+
+  @messages.handler(priority=messages.Priority.CRITICAL)
+  def _on_exit(self, _: messages.ExitEvent) -> bool:
+    """Stops the viewer loop when the sim side requests an exit."""
+    self.request_close()
+    return False  # Do not consume; app handlers may want cleanup too.
 
   def is_running(self) -> bool:
     """Returns True while the viewer has not been closed."""

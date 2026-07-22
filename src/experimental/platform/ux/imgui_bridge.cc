@@ -14,6 +14,7 @@
 
 #include "experimental/platform/ux/imgui_bridge.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -178,7 +179,13 @@ void ImguiBridge::Update() {
     PrepareRenderables(0);
     return;
   }
-  commands->ScaleClipRects(scale);
+  // Do NOT call commands->ScaleClipRects(scale): it mutates the draw data
+  // in place, and draw lists that persist across frames (the web client's
+  // streamed remote UI is rendered from the same lists until the next
+  // network frame arrives) would be scaled repeatedly — clip rects grow by
+  // the DPI scale on every re-render, intermittently clipping widgets out
+  // and letting scrolled-out content show. Clip rects are scaled locally
+  // in the per-command scissor computation below instead.
 
   // 2 floats for position, 2 floats for uv, 4 bytes for color.
   constexpr size_t kExpectedVertexSize =
@@ -255,19 +262,26 @@ void ImguiBridge::Update() {
       material.color_texture = GetTexture(command.GetTexID());
 
       material.decor_ux = true;
-      material.scissor[0] = command.ClipRect.x;
-      material.scissor[1] = height - command.ClipRect.w;
-      material.scissor[2] = command.ClipRect.z - command.ClipRect.x;
-      material.scissor[3] = command.ClipRect.w - command.ClipRect.y;
-      // Modal dialogs try to cover the whole window, but also a little outside
-      // of it. This doesn't work well with filament's scissor test, so we clip
-      // them to the window.
-      if (material.scissor[0] < 0 || material.scissor[1] < 0) {
-        material.scissor[0] = 0;
-        material.scissor[1] = 0;
-        material.scissor[2] = width;
-        material.scissor[3] = height;
-      }
+      // Intersect the clip rect (scaled to physical pixels here, not via the
+      // mutating ScaleClipRects) with the viewport. Clip rects may extend
+      // slightly outside it (modal dialogs by design; bottom/right-docked
+      // windows by fractional DPI rounding, since width/height are truncated
+      // ints while the scaled clip rect is not), and filament's scissor test
+      // rejects out-of-window rects. Never substitute a full-window scissor
+      // for an out-of-range one: that disables clipping entirely and lets
+      // scrolled-out widgets paint over the rest of the UI.
+      const float clip_x0 = std::clamp(command.ClipRect.x * scale.x, 0.0f,
+                                       static_cast<float>(width));
+      const float clip_y0 = std::clamp(command.ClipRect.y * scale.y, 0.0f,
+                                       static_cast<float>(height));
+      const float clip_x1 = std::clamp(command.ClipRect.z * scale.x, clip_x0,
+                                       static_cast<float>(width));
+      const float clip_y1 = std::clamp(command.ClipRect.w * scale.y, clip_y0,
+                                       static_cast<float>(height));
+      material.scissor[0] = clip_x0;
+      material.scissor[1] = height - clip_y1;
+      material.scissor[2] = clip_x1 - clip_x0;
+      material.scissor[3] = clip_y1 - clip_y0;
       mjrf_setRenderableMaterial(renderable.get(), &material);
 
       const float size[] = {scale.x, scale.y, 1.0f};

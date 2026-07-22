@@ -1,0 +1,767 @@
+// Copyright 2026 DeepMind Technologies Limited
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     https://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+#include "web_client_remote_ui.h"
+
+#include <algorithm>
+#include <cstring>
+#include <string>
+
+#include "google/logging.h"
+
+namespace mujoco::studio {
+
+using namespace NetImgui::Internal;
+
+namespace {
+
+void log_unmapped_texture(
+    RemoteUi::ClientTextureID clientTexId, size_t mapSize, uint32_t drawIdx,
+    const std::unordered_map<RemoteUi::ClientTextureID, uintptr_t>& texMap) {
+  VLOG(1, "DrawFrame: UNMAPPED clientTexId=%lu, mapSize=%zu, draw#=%u",
+       static_cast<unsigned long>(clientTexId), mapSize, drawIdx);
+  std::string keys_str = "";
+  for (auto& kv : texMap) {
+    keys_str += " " + std::to_string(kv.first) +
+                "(fil=" + std::to_string(kv.second) + ")";
+  }
+  VLOG(1, "  map keys:%s", keys_str.c_str());
+}
+
+void log_cmd_received(CmdHeader::eCommands cmdType, uint32_t cmdSize,
+                      int drawFrames, int textures,
+                      const PendingCom& pendingReceive) {
+  if (cmdType == CmdHeader::eCommands::Version) {
+    const CmdVersion* pVer =
+        reinterpret_cast<const CmdVersion*>(pendingReceive.pCommand);
+    LOG(Info,
+        "Received CmdVersion from client: name='%s', version=%d, wcharSize=%d",
+        pVer->mClientName, static_cast<int>(pVer->mVersion), pVer->mWCharSize);
+  } else if (cmdType == CmdHeader::eCommands::DrawFrame) {
+    VLOG(2, "Received DrawFrame #%d (size=%u)", drawFrames, cmdSize);
+  } else if (cmdType == CmdHeader::eCommands::Texture) {
+    VLOG(2, "Received Texture #%d (size=%u)", textures, cmdSize);
+  } else if (cmdType == CmdHeader::eCommands::Background) {
+    VLOG(2, "Received Background cmd (size=%u)", cmdSize);
+  } else if (cmdType != CmdHeader::eCommands::Count &&
+             cmdType != CmdHeader::eCommands::Clipboard &&
+             cmdType != CmdHeader::eCommands::Input) {
+    VLOG(2, "Received UNKNOWN cmd: type=%d, size=%u", static_cast<int>(cmdType),
+         cmdSize);
+  }
+}
+
+}  // namespace
+
+void RemoteUi::Connect(const std::string& url) {
+  if (socket_) {
+    Network::Disconnect(socket_);
+    socket_ = nullptr;
+  }
+  // The port argument is unused when a full URL is passed.
+  LOG(Info, "Connecting to WebSocket at %s", url.c_str());
+  socket_ = Network::Connect(url.c_str(), 0);
+  LOG(Info, "Network::Connect returned: socket=%p",
+      static_cast<void*>(socket_));
+}
+
+RemoteUi::ReadyState RemoteUi::ConnectionState() const {
+  return Network::GetReadyState(socket_);
+}
+
+int RemoteUi::CloseCode() const { return Network::GetCloseCode(socket_); }
+
+void RemoteUi::ReceiveAndProcessCommands(int frame) {
+  if (!socket_) return;
+
+  const ReadyState state = ConnectionState();
+  if (last_state_ != state) {
+    LOG(Info, "WebSocket status changed: '%s' -> '%s' (frame %d)",
+        Network::ReadyStateName(last_state_), Network::ReadyStateName(state),
+        frame);
+    last_state_ = state;
+  }
+  VLOG(1,
+       "Frame %d: status='%s', handshake=%s, cmds=%d, draws=%d, textures=%d, "
+       "hasDrawData=%s",
+       frame, Network::ReadyStateName(state),
+       handshake_sent_ ? "sent" : "not_sent", total_cmds_received_,
+       draw_frames_received_, textures_received_,
+       remote_draw_data_ != nullptr ? "yes" : "no");
+
+  if (state == ReadyState::kOpen) {
+    if (!handshake_sent_) {
+      CmdVersion cmdVersion;
+      StringCopy(cmdVersion.mClientName, "MuJoCo Web Viewer");
+      LOG(Info,
+          "Sending CmdVersion handshake: size=%u, type=%d, version=%d, "
+          "wcharSize=%d, name='%s'",
+          cmdVersion.mSize, static_cast<int>(cmdVersion.mType),
+          static_cast<int>(cmdVersion.mVersion), cmdVersion.mWCharSize,
+          cmdVersion.mClientName);
+
+      PendingCom pendingSend;
+      pendingSend.pCommand = &cmdVersion;
+      pendingSend.SizeCurrent = 0;
+
+      int sendAttempts = 0;
+      while (!pendingSend.IsDone() && !pendingSend.IsError()) {
+        const size_t before = pendingSend.SizeCurrent;
+        Network::DataSend(socket_, pendingSend);
+        sendAttempts++;
+        if (pendingSend.SizeCurrent == before) {
+          // No progress: the socket already reads OPEN (from emscripten's
+          // ready state) but the send backend is not ready yet, because the
+          // open callback that sets mConnected has not run. DataSend then
+          // returns with neither progress nor error, so this loop would spin
+          // the browser's main thread forever. Stop and retry on a later
+          // frame instead (handshake_sent_ stays false below).
+          break;
+        }
+      }
+      LOG(Info,
+          "CmdVersion send: done=%s, error=%s, attempts=%d, bytesSent=%zu",
+          pendingSend.IsDone() ? "true" : "false",
+          pendingSend.IsError() ? "true" : "false", sendAttempts,
+          static_cast<size_t>(pendingSend.SizeCurrent));
+      if (pendingSend.IsDone()) {
+        handshake_sent_ = true;
+        // Fresh connection: the client may resume delta compression against
+        // a frame from a previous session; ask for an uncompressed keyframe.
+        request_keyframe_ = true;
+      }
+    }
+  } else {
+    if (handshake_sent_) {
+      LOG(Info, "Resetting handshake (status='%s')",
+          Network::ReadyStateName(state));
+    }
+    handshake_sent_ = false;
+  }
+
+  // Network receive — drain all available data in one frame.
+  const bool isConnected = (state == ReadyState::kOpen);
+
+  // If the connection has closed, discard any buffered data immediately
+  // rather than churning through stale commands for several seconds.
+  if (was_connected_ && !isConnected) {
+    LOG(Info, "Connection lost (status='%s'). Discarding buffered data.",
+        Network::ReadyStateName(state));
+    // Reset any in-progress receive.
+    if (pending_receive_.bAutoFree)
+      netImguiDeleteSafe(pending_receive_.pCommand);
+    pending_receive_ = PendingCom();
+    was_connected_ = false;
+  }
+  if (isConnected) was_connected_ = true;
+
+  int maxCommandsPerFrame = 64;
+  int cmdsThisFrame = 0;
+  bool hadPendingData = Network::DataReceivePending(socket_);
+  if (hadPendingData) {
+    VLOG(1, "Frame %d: data pending on socket", frame);
+  }
+
+  while (isConnected && maxCommandsPerFrame-- > 0) {
+    if (pending_receive_.IsReady()) {
+      cmd_pending_read_ = CmdPendingRead();
+      pending_receive_.pCommand = &cmd_pending_read_;
+      pending_receive_.bAutoFree = false;
+    }
+
+    if (!Network::DataReceivePending(socket_)) break;
+
+    Network::DataReceive(socket_, pending_receive_);
+
+    if (pending_receive_.pCommand->mSize > sizeof(CmdPendingRead) &&
+        pending_receive_.pCommand == &cmd_pending_read_) {
+      VLOG(2, "Allocating %u bytes for incoming cmd type=%d",
+           pending_receive_.pCommand->mSize,
+           static_cast<int>(pending_receive_.pCommand->mType));
+      CmdPendingRead* pCmdHeader = reinterpret_cast<CmdPendingRead*>(
+          netImguiSizedNew<uint8_t>(pending_receive_.pCommand->mSize));
+      *pCmdHeader = cmd_pending_read_;
+      pending_receive_.pCommand = pCmdHeader;
+      pending_receive_.bAutoFree = true;
+    }
+
+    if (!pending_receive_.IsDone()) {
+      if (pending_receive_.IsError()) {
+        LOG(Error, "Receive ERROR: cmdSize=%u, got=%zu, type=%d",
+            pending_receive_.pCommand->mSize,
+            static_cast<size_t>(pending_receive_.SizeCurrent),
+            static_cast<int>(pending_receive_.pCommand->mType));
+        if (pending_receive_.bAutoFree)
+          netImguiDeleteSafe(pending_receive_.pCommand);
+        pending_receive_ = PendingCom();
+      }
+      continue;
+    }
+
+    // Command fully received — dispatch.
+    bytes_accum_ += pending_receive_.pCommand->mSize;
+    cmdsThisFrame++;
+    total_cmds_received_++;
+    CmdHeader::eCommands cmdType = pending_receive_.pCommand->mType;
+    log_cmd_received(cmdType, pending_receive_.pCommand->mSize,
+                     draw_frames_received_, textures_received_,
+                     pending_receive_);
+
+    if (cmdType == CmdHeader::eCommands::Count) {
+      // CmdPendingRead sentinel — skip silently.
+    } else if (cmdType == CmdHeader::eCommands::DrawFrame) {
+      draw_frames_received_++;
+      ProcessCmdDrawFrame(
+          reinterpret_cast<CmdDrawFrame*>(pending_receive_.pCommand));
+    } else if (cmdType == CmdHeader::eCommands::Texture) {
+      textures_received_++;
+      ProcessCmdTexture(
+          reinterpret_cast<CmdTexture*>(pending_receive_.pCommand));
+    }
+    // Version, Background, Clipboard, Input — already logged by
+    // log_cmd_received.
+
+    if (pending_receive_.bAutoFree)
+      netImguiDeleteSafe(pending_receive_.pCommand);
+    pending_receive_ = PendingCom();
+  }
+
+  VLOG(2, "Frame %d: processed %d commands", frame, cmdsThisFrame);
+}
+
+void RemoteUi::FlushPendingTextures() {
+  for (auto& [texID, entry] : texture_cpu_) {
+    uintptr_t& localTex = texture_map_[texID];
+    if (localTex == 0 && !entry.pixels.empty()) {
+      localTex = callbacks_.UploadTexture(
+          localTex, reinterpret_cast<const std::byte*>(entry.pixels.data()),
+          entry.width, entry.height);
+      LOG(Info, "FlushPendingTextures: uploaded texID=%lu -> filament=%lu",
+          static_cast<unsigned long>(texID),
+          static_cast<unsigned long>(localTex));
+    }
+  }
+}
+
+void RemoteUi::ProcessCmdTexture(CmdTexture* pCmdTexture) {
+  if (!pCmdTexture) return;
+
+  if (!pCmdTexture->mpTextureData.IsPointer()) {
+    pCmdTexture->mpTextureData.ToPointer();
+  }
+
+  ClientTextureID texID = pCmdTexture->mTextureClientID;
+  VLOG(1,
+       "ProcessCmdTexture: clientTexID=%lu, status=%d, size=%ux%u, format=%d, "
+       "offset=%u,%u, mapSize=%zu",
+       static_cast<unsigned long>(texID),
+       static_cast<int>(pCmdTexture->mStatus),
+       static_cast<uint32_t>(pCmdTexture->mWidth),
+       static_cast<uint32_t>(pCmdTexture->mHeight),
+       static_cast<int>(pCmdTexture->mFormat),
+       static_cast<uint32_t>(pCmdTexture->mOffsetX),
+       static_cast<uint32_t>(pCmdTexture->mOffsetY), texture_map_.size());
+
+  uintptr_t& localTex = texture_map_[texID];
+
+  if (pCmdTexture->mStatus == CmdTexture::eType::Destroy) {
+    if (localTex != 0 && callbacks_.GpuReady()) {
+      // Pass nullptr pixels to destroy the GPU texture.
+      callbacks_.UploadTexture(localTex, nullptr, 0, 0);
+    }
+    localTex = 0;
+    texture_cpu_.erase(texID);
+    return;
+  }
+
+  uint8_t* pPixels = pCmdTexture->mpTextureData.Get();
+  if (!pPixels) return;
+
+  // All of width/height/size come off the wire, so compute in size_t (no
+  // 32-bit overflow) and verify the command actually carries the pixel
+  // bytes before reading them — a short or corrupt command must not make
+  // the memcpy/expand below read past the command buffer.
+  const uint32_t patchW = pCmdTexture->mWidth;
+  const uint32_t patchH = pCmdTexture->mHeight;
+  const size_t pixelCount = static_cast<size_t>(patchW) * patchH;
+  const size_t dataSize = pCmdTexture->mSize >= sizeof(CmdTexture)
+                              ? pCmdTexture->mSize - sizeof(CmdTexture)
+                              : 0;
+  const size_t expectedRGBA = pixelCount * 4;
+
+  // Detect actual format by data size, not format tag (which can be wrong).
+  const bool isA8 = (pCmdTexture->mFormat == 1) ||
+                    (dataSize == pixelCount && dataSize != expectedRGBA);
+  const size_t needed = isA8 ? pixelCount : expectedRGBA;
+  if (pixelCount == 0 || dataSize < needed) {
+    LOG(Warning,
+        "ProcessCmdTexture: texID=%lu declares %ux%u but carries only %zu "
+        "bytes; dropping",
+        static_cast<unsigned long>(texID), patchW, patchH, dataSize);
+    return;
+  }
+
+  // Convert incoming pixels to RGBA (Filament requires RGBA).
+  // For A8 font atlas data, expand each byte to (255, 255, 255, alpha).
+  std::vector<uint8_t> rgbaPixels(pixelCount * 4);
+  if (isA8) {
+    for (size_t p = 0; p < pixelCount; ++p) {
+      rgbaPixels[p * 4 + 0] = 255;
+      rgbaPixels[p * 4 + 1] = 255;
+      rgbaPixels[p * 4 + 2] = 255;
+      rgbaPixels[p * 4 + 3] = pPixels[p];
+    }
+  } else {
+    memcpy(rgbaPixels.data(), pPixels, expectedRGBA);
+  }
+
+  TextureEntry& entry = texture_cpu_[texID];
+
+  if (pCmdTexture->mStatus == CmdTexture::eType::Create) {
+    // Full texture creation — store the CPU-side mirror.
+    entry.width = patchW;
+    entry.height = patchH;
+    entry.pixels = std::move(rgbaPixels);
+  } else {
+    // Partial update — patch the sub-region into the existing CPU mirror.
+    // If no CPU mirror exists (e.g. we missed the Create), skip.
+    if (entry.pixels.empty()) {
+      LOG(Warning,
+          "ProcessCmdTexture: partial update for texID=%lu "
+          "but no CPU mirror exists, skipping",
+          static_cast<unsigned long>(texID));
+      return;
+    }
+    const uint32_t offX = pCmdTexture->mOffsetX;
+    const uint32_t offY = pCmdTexture->mOffsetY;
+    // The patch rectangle is wire-supplied; reject one that would write past
+    // the stored mirror (e.g. dims desynced from a stale entry after a
+    // reconnect) rather than corrupting the heap.
+    if (static_cast<size_t>(offX) + patchW > entry.width ||
+        static_cast<size_t>(offY) + patchH > entry.height) {
+      LOG(Warning,
+          "ProcessCmdTexture: patch %ux%u at (%u,%u) exceeds mirror %ux%u "
+          "for texID=%lu; dropping",
+          patchW, patchH, offX, offY, entry.width, entry.height,
+          static_cast<unsigned long>(texID));
+      return;
+    }
+    for (uint32_t row = 0; row < patchH; ++row) {
+      size_t dstOffset =
+          (static_cast<size_t>(offY + row) * entry.width + offX) * 4;
+      size_t srcOffset = static_cast<size_t>(row) * patchW * 4;
+      memcpy(&entry.pixels[dstOffset], &rgbaPixels[srcOffset],
+             static_cast<size_t>(patchW) * 4);
+    }
+  }
+
+  // Upload the full CPU-side texture to the GPU if the context is ready.
+  // If it isn't yet (model still loading), the texture stays in texture_cpu_
+  // and will be flushed by FlushPendingTextures() later.
+  if (callbacks_.GpuReady()) {
+    localTex = callbacks_.UploadTexture(
+        localTex, reinterpret_cast<const std::byte*>(entry.pixels.data()),
+        entry.width, entry.height);
+    VLOG(1, "uploadGuiImage for clientTexID=%lu -> filament=%lu",
+         static_cast<unsigned long>(texID),
+         static_cast<unsigned long>(localTex));
+  } else {
+    VLOG(1, "ProcessCmdTexture: buffered texID=%lu, deferring GPU upload",
+         static_cast<unsigned long>(texID));
+  }
+}
+
+void RemoteUi::CaptureAndSendInput() {
+  if (!socket_) return;
+
+  if (ConnectionState() != ReadyState::kOpen) return;
+
+  // Capture input from Dear ImGui.
+  const ImGuiIO& io = ImGui::GetIO();
+
+  // When the local UI wants to capture mouse or keyboard, suppress the
+  // corresponding input from being forwarded to the remote client. This
+  // prevents clicks/keys meant for the local status overlay (or any other
+  // local window) from leaking through to the UI server.
+  const bool localWantsMouse = io.WantCaptureMouse;
+  const bool localWantsKeyboard = io.WantCaptureKeyboard;
+
+  {
+    // Only accumulate characters when the local UI is NOT capturing keyboard.
+    if (!localWantsKeyboard) {
+      const size_t initialSize = pending_input_chars_.size();
+      const size_t addedChar = io.InputQueueCharacters.size();
+      if (addedChar) {
+        pending_input_chars_.resize(initialSize + addedChar);
+        memcpy(&pending_input_chars_[initialSize], io.InputQueueCharacters.Data,
+               addedChar * sizeof(ImWchar));
+      }
+    }
+
+    // Only accumulate scroll when the local UI is NOT capturing mouse.
+    if (!localWantsMouse) {
+      mouse_wheel_pos_[0] += io.MouseWheel;
+      mouse_wheel_pos_[1] += io.MouseWheelH;
+    }
+  }
+
+  CmdInput cmdInput;
+  cmdInput.mScreenSize[0] = static_cast<uint16_t>(io.DisplaySize.x);
+  cmdInput.mScreenSize[1] = static_cast<uint16_t>(io.DisplaySize.y);
+  // An unstable screen size forces the remote UI to relayout every frame
+  // (visible as UI flicker), so make changes loud.
+  if (cmdInput.mScreenSize[0] != last_screen_size_[0] ||
+      cmdInput.mScreenSize[1] != last_screen_size_[1]) {
+    LOG(Info, "Screen size sent to client changed: %ux%u -> %ux%u",
+        last_screen_size_[0], last_screen_size_[1], cmdInput.mScreenSize[0],
+        cmdInput.mScreenSize[1]);
+    last_screen_size_[0] = cmdInput.mScreenSize[0];
+    last_screen_size_[1] = cmdInput.mScreenSize[1];
+  }
+  cmdInput.mFontDPIScaling = 1.f;
+  cmdInput.mDesiredFps = 60.0f;
+  cmdInput.mCompressionUse = use_compression_;
+  cmdInput.mCompressionSkip = request_keyframe_;
+
+  // Always send the absolute accumulated wheel counters. NetImgui derives
+  // scroll as (current - previous), so parking these at 0 while the local
+  // UI captures would reset the baseline: the remote side would then read a
+  // huge delta on the next real frame (wild zoom on expand, a jump back on
+  // collapse). A constant value keeps the delta at zero.
+  cmdInput.mMouseWheelVert = mouse_wheel_pos_[0];
+  cmdInput.mMouseWheelHoriz = mouse_wheel_pos_[1];
+
+  // Send the mouse position only when the local UI is not capturing.
+  if (!localWantsMouse) {
+    cmdInput.mMousePos[0] = static_cast<int16_t>(io.MousePos.x);
+    cmdInput.mMousePos[1] = static_cast<int16_t>(io.MousePos.y);
+  } else {
+    // Park the mouse off-screen so the remote side doesn't think we're
+    // hovering over anything.
+    cmdInput.mMousePos[0] = -1;
+    cmdInput.mMousePos[1] = -1;
+  }
+
+  // Mouse button inputs. This static_assert detects when a Dear ImGui update
+  // changes ImGuiMouseButton, which requires updating NetImgui's enum copy.
+  static_assert(
+      static_cast<int>(CmdInput::NetImguiMouseButton::ImGuiMouseButton_COUNT) ==
+          static_cast<int>(ImGuiMouseButton_::ImGuiMouseButton_COUNT),
+      "Update the NetImgui enum to match the updated Dear ImGui enum");
+  cmdInput.mMouseDownMask = 0;
+  if (!localWantsMouse) {
+    cmdInput.mMouseDownMask |=
+        ImGui::IsMouseDown(ImGuiMouseButton_::ImGuiMouseButton_Left)
+            ? 1 << CmdInput::ImGuiMouseButton_Left
+            : 0;
+    cmdInput.mMouseDownMask |=
+        ImGui::IsMouseDown(ImGuiMouseButton_::ImGuiMouseButton_Right)
+            ? 1 << CmdInput::ImGuiMouseButton_Right
+            : 0;
+    cmdInput.mMouseDownMask |=
+        ImGui::IsMouseDown(ImGuiMouseButton_::ImGuiMouseButton_Middle)
+            ? 1 << CmdInput::ImGuiMouseButton_Middle
+            : 0;
+    cmdInput.mMouseDownMask |=
+        ImGui::IsMouseDown(3) ? 1 << CmdInput::ImGuiMouseButton_Extra1 : 0;
+    cmdInput.mMouseDownMask |=
+        ImGui::IsMouseDown(4) ? 1 << CmdInput::ImGuiMouseButton_Extra2 : 0;
+  }
+
+// Keyboard inputs. These static_asserts detect when a Dear ImGui update
+// changes ImGuiKey, which requires updating NetImgui's enum copy to match.
+#define EnumKeynameTest(KEYNAME)                                               \
+  static_cast<int>(CmdInput::NetImguiKeys::KEYNAME) ==                         \
+      static_cast<int>(ImGuiKey::KEYNAME - ImGuiKey::ImGuiKey_NamedKey_BEGIN), \
+      "Update the NetImgui enum to match the updated Dear ImGui enum"
+  static_assert(
+      CmdInput::NetImguiKeys::ImGuiKey_COUNT ==
+          (ImGuiKey_NamedKey_END - ImGuiKey_NamedKey_BEGIN),
+      "Update the NetImgui enum to match the updated Dear ImGui enum");
+  static_assert(EnumKeynameTest(ImGuiKey_Tab));
+  static_assert(EnumKeynameTest(ImGuiKey_Escape));
+  static_assert(EnumKeynameTest(ImGuiKey_RightSuper));
+  static_assert(EnumKeynameTest(ImGuiKey_Apostrophe));
+  static_assert(EnumKeynameTest(ImGuiKey_Keypad0));
+  static_assert(EnumKeynameTest(ImGuiKey_CapsLock));
+  static_assert(EnumKeynameTest(ImGuiKey_ReservedForModCtrl));
+  static_assert(EnumKeynameTest(ImGuiKey_ReservedForModShift));
+  static_assert(EnumKeynameTest(ImGuiKey_ReservedForModAlt));
+  static_assert(EnumKeynameTest(ImGuiKey_ReservedForModSuper));
+#undef EnumKeynameTest
+
+  // Save every keydown status to out bitmask — only when local UI is not
+  // capturing keyboard.
+  if (!localWantsKeyboard) {
+    uint64_t valueMask(0);
+    for (uint32_t i(0); i < ImGuiKey::ImGuiKey_NamedKey_COUNT; ++i) {
+      valueMask |=
+          ImGui::IsKeyDown(static_cast<ImGuiKey>(ImGuiKey_NamedKey_BEGIN + i))
+              ? 0x0000000000000001ull << (i % 64)
+              : 0;
+      if (((i % 64) == 63) || i == (ImGuiKey::ImGuiKey_NamedKey_COUNT - 1)) {
+        cmdInput.mInputDownMask[i / 64] = valueMask;
+        valueMask = 0;
+      }
+    }
+  }
+  // When local UI captures keyboard, mInputDownMask and mInputAnalog stay
+  // zero-initialized from the CmdInput constructor.
+
+  // Copy waiting characters inputs — only when local UI is not capturing
+  // keyboard. When captured, pending chars are discarded to avoid buffering
+  // stale input that would replay when focus returns to remote.
+  if (!localWantsKeyboard) {
+    size_t addedKeyCount = std::min<size_t>(
+        ArrayCount(cmdInput.mKeyChars) - cmdInput.mKeyCharCount,
+        pending_input_chars_.size());
+    if (addedKeyCount) {
+      memcpy(&cmdInput.mKeyChars[cmdInput.mKeyCharCount],
+             &pending_input_chars_[0], addedKeyCount * sizeof(ImWchar));
+      cmdInput.mKeyCharCount += static_cast<uint16_t>(addedKeyCount);
+      size_t charRemainCount = pending_input_chars_.size() - addedKeyCount;
+      if (charRemainCount > 0) {
+        memcpy(&pending_input_chars_[0], &pending_input_chars_[addedKeyCount],
+               charRemainCount * sizeof(ImWchar));
+      }
+      pending_input_chars_.resize(charRemainCount);
+    }
+    if (cmdInput.mKeyCharCount > 0) {
+      VLOG(1, "[web_client_remote_ui.cc] Queued %u characters to send\n",
+           cmdInput.mKeyCharCount);
+    }
+  } else {
+    // Discard any pending characters that were accumulated while local UI
+    // had keyboard focus.
+    pending_input_chars_.clear();
+  }
+
+  PendingCom pendingSend;
+  pendingSend.pCommand = &cmdInput;
+  pendingSend.SizeCurrent = 0;
+  Network::DataSend(socket_, pendingSend);
+  if (pendingSend.IsDone() && cmdInput.mCompressionSkip) {
+    request_keyframe_ = false;
+  }
+}
+
+// Keep in sync with ProcessCmdDrawFrame in the vendored
+// netimgui/Code/ServerApp/Source/NetImguiServer_RemoteClient.cpp
+void RemoteUi::ProcessCmdDrawFrame(CmdDrawFrame* pCmdDrawFrame) {
+  if (!pCmdDrawFrame) return;
+
+  // Take ownership to prevent pending_receive_ from deleting it prematurely.
+  pending_receive_.bAutoFree = false;
+  pCmdDrawFrame->ToPointers();
+
+  if (pCmdDrawFrame->mCompressed) {
+    if (last_uncompressed_frame_ != nullptr &&
+        (last_uncompressed_frame_->mFrameIndex + 1) ==
+            pCmdDrawFrame->mFrameIndex) {
+      CmdDrawFrame* pUncompressedFrame =
+          DecompressCmdDrawFrame(last_uncompressed_frame_, pCmdDrawFrame);
+      netImguiDeleteSafe(pCmdDrawFrame);
+      pCmdDrawFrame = pUncompressedFrame;
+    } else {
+      // Missing previous / reference frame data. Ignore this delta-encoded
+      // drawframe and ask the client for a fresh uncompressed keyframe.
+      request_keyframe_ = true;
+      netImguiDeleteSafe(pCmdDrawFrame);
+      return;
+    }
+  }
+
+  // Release previous cached frame and store current for the next delta
+  // decompression.
+  netImguiDeleteSafe(last_uncompressed_frame_);
+  last_uncompressed_frame_ = pCmdDrawFrame;
+
+  pCmdDrawFrame->ToPointers();
+
+  NetImguiImDrawData* pDrawData = netImguiNew<NetImguiImDrawData>();
+  pDrawData->mFrameIndex = pCmdDrawFrame->mFrameIndex;
+  pDrawData->Valid = true;
+  pDrawData->TotalVtxCount =
+      static_cast<int>(pCmdDrawFrame->mTotalVerticeCount);
+  pDrawData->TotalIdxCount = static_cast<int>(pCmdDrawFrame->mTotalIndiceCount);
+
+  pDrawData->DisplayPos.x = pCmdDrawFrame->mDisplayArea[0];
+  pDrawData->DisplayPos.y = pCmdDrawFrame->mDisplayArea[1];
+  pDrawData->DisplaySize.x =
+      pCmdDrawFrame->mDisplayArea[2] - pCmdDrawFrame->mDisplayArea[0];
+  pDrawData->DisplaySize.y =
+      pCmdDrawFrame->mDisplayArea[3] - pCmdDrawFrame->mDisplayArea[1];
+  pDrawData->FramebufferScale = ImGui::GetIO().DisplayFramebufferScale;
+
+  ImDrawList* pCmdList = pDrawData->CmdLists[0];
+  pCmdList->IdxBuffer.resize(pCmdDrawFrame->mTotalIndiceCount);
+  pCmdList->VtxBuffer.resize(pCmdDrawFrame->mTotalVerticeCount);
+  pCmdList->CmdBuffer.resize(pCmdDrawFrame->mTotalDrawCount);
+  // ImVector::resize() doesn't call constructors. Zero-init to ensure
+  // TexRef._TexData is NULL, not garbage.
+  memset(pCmdList->CmdBuffer.Data, 0,
+         pCmdList->CmdBuffer.Size * sizeof(ImDrawCmd));
+  pCmdList->Flags =
+      ImDrawListFlags_AllowVtxOffset | ImDrawListFlags_AntiAliasedLines |
+      ImDrawListFlags_AntiAliasedFill | ImDrawListFlags_AntiAliasedLinesUseTex;
+
+  constexpr float kPosRangeMin = static_cast<float>(ImguiVert::kPosRange_Min);
+  constexpr float kPosRangeMax = static_cast<float>(ImguiVert::kPosRange_Max);
+  constexpr float kUVRangeMin = static_cast<float>(ImguiVert::kUvRange_Min);
+  constexpr float kUVRangeMax = static_cast<float>(ImguiVert::kUvRange_Max);
+
+  if (pCmdDrawFrame->mTotalDrawCount != 0) {
+    // WebGL 1.0/2.0 often uses uint16_t for ImDrawIdx. Check for potential
+    // overflow if the total vertex count exceeds the limit for 16-bit indices.
+    if (sizeof(ImDrawIdx) == 2 && pCmdDrawFrame->mTotalVerticeCount > 65536) {
+      fprintf(stderr,
+              "WARNING: NetImgui WASM Viewer received a draw frame with %u "
+              "vertices. This exceeds the maximum of 65536 for 16-bit "
+              "ImDrawIdx, potentially causing rendering artifacts due to index "
+              "wrapping.\n",
+              pCmdDrawFrame->mTotalVerticeCount);
+    }
+    uint32_t indexOffset(0), vertexOffset(0);
+    ImDrawIdx* pIndexDst = &pCmdList->IdxBuffer[0];
+    ImDrawVert* pVertexDst = &pCmdList->VtxBuffer[0];
+    ImDrawCmd* pCommandDst = &pCmdList->CmdBuffer[0];
+
+    for (uint32_t i(0); i < pCmdDrawFrame->mDrawGroupCount; ++i) {
+      const ImguiDrawGroup& drawGroup = pCmdDrawFrame->mpDrawGroups[i];
+
+      // Indices
+      const uint16_t* pIndices =
+          reinterpret_cast<const uint16_t*>(drawGroup.mpIndices.Get());
+      if (drawGroup.mBytePerIndex == sizeof(ImDrawIdx)) {
+        memcpy(pIndexDst, pIndices, drawGroup.mIndiceCount * sizeof(ImDrawIdx));
+      } else {
+        for (uint32_t indexIdx(0); indexIdx < drawGroup.mIndiceCount;
+             ++indexIdx) {
+          pIndexDst[indexIdx] = static_cast<ImDrawIdx>(pIndices[indexIdx]);
+        }
+      }
+
+      // Vertices — unpack quantized positions and UVs.
+      const ImguiVert* pVertexSrc = drawGroup.mpVertices.Get();
+      for (uint32_t vtxIdx(0); vtxIdx < drawGroup.mVerticeCount; ++vtxIdx) {
+        pVertexDst[vtxIdx].pos.x =
+            (static_cast<float>(pVertexSrc[vtxIdx].mPos[0]) *
+             (kPosRangeMax - kPosRangeMin)) /
+                static_cast<float>(0xFFFF) +
+            kPosRangeMin + drawGroup.mReferenceCoord[0];
+        pVertexDst[vtxIdx].pos.y =
+            (static_cast<float>(pVertexSrc[vtxIdx].mPos[1]) *
+             (kPosRangeMax - kPosRangeMin)) /
+                static_cast<float>(0xFFFF) +
+            kPosRangeMin + drawGroup.mReferenceCoord[1];
+        pVertexDst[vtxIdx].uv.x =
+            (static_cast<float>(pVertexSrc[vtxIdx].mUV[0]) *
+             (kUVRangeMax - kUVRangeMin)) /
+                static_cast<float>(0xFFFF) +
+            kUVRangeMin;
+        pVertexDst[vtxIdx].uv.y =
+            (static_cast<float>(pVertexSrc[vtxIdx].mUV[1]) *
+             (kUVRangeMax - kUVRangeMin)) /
+                static_cast<float>(0xFFFF) +
+            kUVRangeMin;
+        pVertexDst[vtxIdx].col = pVertexSrc[vtxIdx].mColor;
+      }
+
+      // Draw commands.
+      // NOTE: WebGL lacks glDrawElementsBaseVertex, so the backend's
+      // glDrawElements ignores VtxOffset. We bake the offset directly
+      // into the index values.
+      const ImguiDraw* pDrawSrc = drawGroup.mpDraws.Get();
+      for (uint32_t drawIdx(0); drawIdx < drawGroup.mDrawCount; ++drawIdx) {
+        uint32_t vtxOff = pDrawSrc[drawIdx].mVtxOffset + vertexOffset;
+        uint32_t idxOff = pDrawSrc[drawIdx].mIdxOffset + indexOffset;
+        uint32_t elemCount = pDrawSrc[drawIdx].mIdxCount;
+
+        // Bake vertex offset into index values.
+        for (uint32_t ei = 0; ei < elemCount; ++ei) {
+          pCmdList->IdxBuffer[idxOff + ei] += static_cast<ImDrawIdx>(vtxOff);
+        }
+
+        float cx = std::max(
+            0.f, std::min(max_clip_[0], pDrawSrc[drawIdx].mClipRect[0]));
+        float cy = std::max(
+            0.f, std::min(max_clip_[1], pDrawSrc[drawIdx].mClipRect[1]));
+        float cz = std::max(
+            cx, std::min(max_clip_[0], pDrawSrc[drawIdx].mClipRect[2]));
+        float cw = std::max(
+            cy, std::min(max_clip_[1], pDrawSrc[drawIdx].mClipRect[3]));
+
+        pCommandDst[drawIdx].ClipRect.x = cx;
+        pCommandDst[drawIdx].ClipRect.y = cy;
+        pCommandDst[drawIdx].ClipRect.z = cz;
+        pCommandDst[drawIdx].ClipRect.w = cw;
+        pCommandDst[drawIdx].VtxOffset = 0;  // Baked into indices
+        pCommandDst[drawIdx].IdxOffset = idxOff;
+        pCommandDst[drawIdx].ElemCount = elemCount;
+        pCommandDst[drawIdx].UserCallback = nullptr;
+        pCommandDst[drawIdx].UserCallbackData = nullptr;
+
+        // Map remote ClientTextureID -> local GL handle.
+        ClientTextureID clientTexId = pDrawSrc[drawIdx].mClientTexId;
+        auto it = texture_map_.find(clientTexId);
+        if (it != texture_map_.end() && it->second != 0) {
+          pCommandDst[drawIdx].TexRef._TexData = nullptr;
+          pCommandDst[drawIdx].TexRef._TexID =
+              static_cast<ImTextureID>(it->second);
+        } else {
+          log_unmapped_texture(clientTexId, texture_map_.size(), drawIdx,
+                               texture_map_);
+          // Skip draw commands with unmapped textures.
+          pCommandDst[drawIdx].ElemCount = 0;
+        }
+      }
+
+      pIndexDst += drawGroup.mIndiceCount;
+      pVertexDst += drawGroup.mVerticeCount;
+      pCommandDst += drawGroup.mDrawCount;
+      indexOffset += drawGroup.mIndiceCount;
+      vertexOffset += drawGroup.mVerticeCount;
+    }
+  }
+
+  // Update internal write pointers to satisfy ImGui's draw list sanity checks.
+  // AddDrawListToDrawDataEx asserts that _VtxWritePtr/_IdxWritePtr point to the
+  // end of their respective buffers. Since we populated them via
+  // resize()+memcpy (bypassing ImGui's PrimReserve API), we must fix up these
+  // pointers manually.
+  pCmdList->_VtxWritePtr = pCmdList->VtxBuffer.Data + pCmdList->VtxBuffer.Size;
+  pCmdList->_IdxWritePtr = pCmdList->IdxBuffer.Data + pCmdList->IdxBuffer.Size;
+  pCmdList->_VtxCurrentIdx = pCmdList->VtxBuffer.Size;
+
+  if (remote_draw_data_ == nullptr) {
+    LOG(Info, "First remote draw frame applied (%d cmds, %d vtx)",
+        pDrawData->CmdLists[0]->CmdBuffer.Size, pDrawData->TotalVtxCount);
+  }
+  if (remote_draw_data_) netImguiDelete(remote_draw_data_);
+  remote_draw_data_ = pDrawData;
+}
+
+void RemoteUi::Shutdown() {
+  if (remote_draw_data_) {
+    netImguiDelete(remote_draw_data_);
+    remote_draw_data_ = nullptr;
+  }
+  netImguiDeleteSafe(last_uncompressed_frame_);
+  if (socket_) {
+    Network::Disconnect(socket_);
+    socket_ = nullptr;
+  }
+}
+
+}  // namespace mujoco::studio
