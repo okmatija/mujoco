@@ -50,7 +50,6 @@ endif()
 set(FILAMENT_PATCH_COMMAND
   git apply --reject --whitespace=fix
       ${mujoco_SOURCE_DIR}/cmake/filament-allow-clang-windows.patch
-      ${mujoco_SOURCE_DIR}/cmake/filament-webgl-froxel-record-size.patch
 )
 
 fetchpackage(
