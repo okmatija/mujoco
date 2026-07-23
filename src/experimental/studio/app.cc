@@ -85,7 +85,8 @@ static constexpr const char* ICON_REDO_SPEC = platform::ICON_FA_REPEAT;
 App::App(Config config)
     : app_title_(std::move(config.title)),
       ini_path_(std::move(config.ini_path)),
-      gfx_mode_(config.gfx_mode) {
+      gfx_mode_(config.gfx_mode),
+      max_fps_(config.max_fps) {
   SwitchGraphicsMode(config.width, config.height, config.gfx_mode);
 
   if (config.initial_theme.has_value()) {
@@ -117,6 +118,7 @@ void App::SwitchGraphicsMode(int width, int height,
 
   platform::Window::Config window_config;
   window_config.gfx_mode = gfx_mode_;
+  window_config.max_fps = max_fps_;
   window_ = std::make_unique<platform::Window>(app_title_, width, height,
                                                window_config);
   renderer_ = std::make_unique<platform::Renderer>(

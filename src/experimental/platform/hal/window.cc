@@ -15,9 +15,11 @@
 #include "experimental/platform/hal/window.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstddef>
 #include <string>
 #include <string_view>
+#include <thread>
 
 #include <SDL.h>
 #include <SDL_error.h>
@@ -281,7 +283,43 @@ void Window::Present(std::span<const std::byte> pixels) {
   } else if (config_.gfx_mode != GraphicsMode::FilamentVulkan &&
              config_.gfx_mode != GraphicsMode::FilamentOpenGl) {
     SDL_GL_SwapWindow(sdl_window_);
+  } else {
+    // Filament manages its own swap chain but never enables vsync (its WGL
+    // backend issues a bare SwapBuffers and only its Vulkan backend gets FIFO
+    // present mode), so without a cap the render loop free-runs at whatever
+    // rate the GPU can sustain.
+    PaceFrame();
   }
+}
+
+void Window::PaceFrame() {
+  if (config_.max_fps < 0) {
+    return;
+  }
+  int fps = config_.max_fps;
+  if (fps == 0) {
+    SDL_DisplayMode mode;
+    const int display = SDL_GetWindowDisplayIndex(sdl_window_);
+    if (display >= 0 && SDL_GetDesktopDisplayMode(display, &mode) == 0 &&
+        mode.refresh_rate > 0) {
+      fps = mode.refresh_rate;
+    } else {
+      fps = 60;
+    }
+  }
+
+  using Clock = std::chrono::steady_clock;
+  const auto period = std::chrono::nanoseconds(1'000'000'000 / fps);
+  const auto now = Clock::now();
+  // Pace against absolute deadlines so jitter does not accumulate, but reset
+  // the deadline when we fall behind by more than a frame (e.g. after a slow
+  // frame or a model load) instead of trying to catch up.
+  if (next_present_time_ == Clock::time_point{} ||
+      now > next_present_time_ + period) {
+    next_present_time_ = now;
+  }
+  next_present_time_ += period;
+  std::this_thread::sleep_until(next_present_time_);
 }
 
 GraphicsMode Window::GetGraphicsMode() const { return config_.gfx_mode; }

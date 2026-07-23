@@ -141,6 +141,7 @@ int LaunchStudio(int argc, char** argv, LauncherConfig config) {
     .height = config.window_height,
     .ini_path = ini_path,
     .gfx_mode = gfx_mode,
+    .max_fps = config.max_fps,
     .title = config.title,
   });
 

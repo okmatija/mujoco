@@ -35,6 +35,10 @@ struct LauncherConfig {
   std::string model_file = "";
 
   std::string gfx_mode = "";
+
+  // Frame rate cap for backends that do not vsync; see
+  // platform::Window::Config::max_fps.
+  int max_fps = 0;
 };
 
 // Runs the MuJoCo Studio application.

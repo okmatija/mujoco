@@ -56,6 +56,10 @@ class App {
     // The graphics configuration used for initializing the window.
     platform::GraphicsMode gfx_mode = platform::GraphicsMode::FilamentVulkan;
 
+    // Frame rate cap for backends that do not vsync; see
+    // platform::Window::Config::max_fps.
+    int max_fps = 0;
+
     // The initial GUI theme. If set, overrides the default (kLight).
     std::optional<platform::GuiTheme> initial_theme;
 
@@ -261,6 +265,7 @@ class App {
   bool preserve_camera_on_load_ = false;
   ModelKind model_kind_ = kEmptyModel;
   platform::GraphicsMode gfx_mode_ = platform::GraphicsMode::FilamentVulkan;
+  int max_fps_ = 0;
 
   std::unique_ptr<platform::Window> window_;
   std::unique_ptr<platform::Renderer> renderer_;

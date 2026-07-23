@@ -15,6 +15,7 @@
 #ifndef MUJOCO_SRC_EXPERIMENTAL_PLATFORM_HAL_WINDOW_H_
 #define MUJOCO_SRC_EXPERIMENTAL_PLATFORM_HAL_WINDOW_H_
 
+#include <chrono>
 #include <cstddef>
 #include <span>
 #include <string>
@@ -35,6 +36,11 @@ class Window {
   struct Config {
     GraphicsMode gfx_mode = GraphicsMode::FilamentVulkan;
     bool load_fonts = true;
+
+    // Caps the presented frame rate when the swap chain itself does not block
+    // on vsync (the filament backends never enable vsync). 0 means match the
+    // display refresh rate; negative means uncapped.
+    int max_fps = 0;
   };
 
   Window(std::string_view title, int width, int height, Config config);
@@ -94,6 +100,9 @@ class Window {
  private:
   void InitOffscreenEglContext();
 
+  // Sleeps until the next frame deadline; see Config::max_fps.
+  void PaceFrame();
+
   int width_ = 0;
   int height_ = 0;
   float scale_ = 1.0f;
@@ -103,6 +112,7 @@ class Window {
   SDL_Renderer* sdl_renderer_ = nullptr;
   bool should_exit_ = false;
   std::string drop_file_;
+  std::chrono::steady_clock::time_point next_present_time_{};
 };
 
 }  // namespace mujoco::platform

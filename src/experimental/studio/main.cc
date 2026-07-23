@@ -22,6 +22,9 @@ ABSL_FLAG(int, window_width, 1400, "Window width");
 ABSL_FLAG(int, window_height, 720, "Window height");
 ABSL_FLAG(std::string, model_file, "", "MuJoCo model file.");
 ABSL_FLAG(std::string, gfx, "", "Graphics API");
+ABSL_FLAG(int, max_fps, 0,
+          "Frame rate cap for backends that do not vsync. 0 matches the "
+          "display refresh rate; negative disables the cap.");
 
 int main(int argc, char** argv) {
   absl::ParseCommandLine(argc, argv);
@@ -36,5 +39,6 @@ int main(int argc, char** argv) {
       .window_height = absl::GetFlag(FLAGS_window_height),
       .model_file = model_file,
       .gfx_mode = absl::GetFlag(FLAGS_gfx),
+      .max_fps = absl::GetFlag(FLAGS_max_fps),
   });
 }
