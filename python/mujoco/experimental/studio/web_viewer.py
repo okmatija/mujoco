@@ -321,24 +321,15 @@ class WebViewer(viewer_protocol.Viewer):
   # Viewer interface.
   # ---------------------------------------------------------------------------
 
-  def is_running(self) -> bool:
-    """Starts a new headless frame; blocks until a browser is connected."""
-    if super().is_running():
-      # Injects browser input (received via NetImgui) into the ImGui context
-      # and paces the loop to the browser's desired frame rate. Returns False
-      # only when request_close() interrupted the wait.
-      if not self._headless_ui.new_frame():
-        self.close()
-    return super().is_running()
+  def get_frame(self) -> bool:
+    """Starts the headless ImGui frame; returns False if no browser is ready.
 
-  def request_close(self) -> None:
-    """Asks the viewer loop to exit; safe to call from another thread.
-
-    Unblocks a loop stuck in new_frame() waiting for a browser frame, so
-    Ctrl+C shuts the viewer down even when no browser is attached.
+    When a browser is connected, injects its input (received via NetImgui) into
+    the ImGui context and paces to the browser's frame rate. When no browser is
+    connected, returns False (no frame) after a short wait, so the loop keeps
+    draining messages and can stop on an ExitEvent.
     """
-    super().request_close()
-    self._headless_ui.request_close()
+    return self._headless_ui.new_frame()
 
   def sync(self) -> None:
     """Streams state to the browser and ends the headless ImGui frame."""

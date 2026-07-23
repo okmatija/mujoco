@@ -100,11 +100,16 @@ class NativeViewer(viewer_protocol.Viewer):
       self._viewer.InitRenderer(model)
       self._renderer_model_id = id(model)
 
-  def is_running(self) -> bool:
-    """Poll for a new frame; returns ``False`` when the window is closed."""
-    if super().is_running() and not self._viewer.NewFrame():
-      self.close()
-    return super().is_running()
+  def get_frame(self) -> bool:
+    """Advances the window and starts a frame.
+
+    Returns False when the window has been closed, flipping the running flag
+    so the loop exits and tears the viewer down on this thread.
+    """
+    if not self._viewer.NewFrame():
+      self._is_running = False
+      return False
+    return True
 
   def sync(self) -> None:
     """Render the scene and present it to the window."""

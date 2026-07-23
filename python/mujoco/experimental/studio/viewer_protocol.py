@@ -118,6 +118,7 @@ class Viewer(abc.ABC):
     self.config = config
     self._endpoint = endpoint
     self._is_running = True
+    self._closed = False
 
     # Viewer-owned model and data.
     if model is None:
@@ -145,35 +146,35 @@ class Viewer(abc.ABC):
     self.handlers = handler_registry.HandlerRegistry(all_handlers)
 
   def close(self) -> None:
-    """Closes the viewer, sends an exit event and shuts down the endpoint."""
-    if self._is_running:
-      self._is_running = False
-      try:
-        self.send_to_sim(messages.ExitEvent())
-      except Exception:  # pylint: disable=broad-exception-caught
-        pass  # Ignore exceptions, the sim may have already closed.
-      self._endpoint.close()
+    """Tears the viewer down: exit event to the sim, then endpoint closed.
 
-  def request_close(self) -> None:
-    """Asks the viewer loop to exit; safe to call from another thread.
-
-    Unlike close(), this only flips the running flag: run_viewer_loop
-    observes it through is_running() within a frame and shuts the viewer
-    down on the viewer thread. This suffices for viewers whose frame wait
-    always returns (the native viewer paces at display rate); viewers whose
-    wait can block indefinitely override this to also interrupt the wait
-    (see WebViewer.request_close).
+    Idempotent, and called once on the viewer thread by run_viewer_loop after
+    the loop exits. Unlike the running flag (which only says "keep looping"),
+    close always performs the teardown, so a shutdown that first flipped
+    is_running (an ExitEvent, a closed window) still releases resources.
     """
+    if self._closed:
+      return
+    self._closed = True
     self._is_running = False
+    try:
+      self.send_to_sim(messages.ExitEvent())
+    except Exception:  # pylint: disable=broad-exception-caught
+      pass  # Ignore exceptions, the sim may have already closed.
+    self._endpoint.close()
 
   @messages.handler(priority=messages.Priority.CRITICAL)
   def _on_exit(self, _: messages.ExitEvent) -> bool:
-    """Stops the viewer loop when the sim side requests an exit."""
-    self.request_close()
+    """Stops the viewer loop when the sim side requests an exit.
+
+    Just flips the running flag; run_viewer_loop observes it on its next
+    iteration and tears the viewer down on the viewer thread.
+    """
+    self._is_running = False
     return False  # Do not consume; app handlers may want cleanup too.
 
   def is_running(self) -> bool:
-    """Returns True while the viewer has not been closed."""
+    """Returns True while the viewer loop should keep running."""
     return self._is_running
 
   def send_to_sim(self, message: messages.Message) -> None:
@@ -217,6 +218,11 @@ class Viewer(abc.ABC):
     return False  # Do not consume; let other handlers see the event.
 
   @abc.abstractmethod
+  def get_frame(self) -> bool:
+    """Advances to the next frame; returns whether one is ready to render."""
+    ...
+
+  @abc.abstractmethod
   def sync(self) -> None:
     """Renders the scene using the viewer's current model and data."""
     ...
@@ -238,26 +244,40 @@ class Viewer(abc.ABC):
 
 
 def run_viewer_loop(viewer: Viewer) -> None:
-  """Minimal viewer loop: process sim messages, dispatch lifecycle events, sync.
+  """Minimal viewer loop: get the next frame, drain sim messages, render.
 
-  Runs until the viewer window is closed or an exit event is received.
-  On exit, closes the viewer (which sends an ExitEvent to the sim side).
+  Runs until the viewer window is closed or an exit event is received. Each
+  iteration gets the next frame and drains sim messages. When running the web
+  viewer get_frame returns without a frame when no browser is connected, so an
+  exit event is still observed promptly.
 
   Args:
     viewer: A Viewer that owns the endpoint and handler registry.
   """
-  while viewer.is_running():
-    # Process incoming messages.
+  while True:
+    # Get the next frame; this also gets the frame's mouse/keyboard input.
+    frame = viewer.get_frame()
+
+    # Process incoming events.
     for event in viewer.get_sim_events():
       viewer.dispatch(event)
+
+    # Stop the loop if the viewer is not running (endpoint will be closed).
+    if not viewer.is_running():
+      break
+
+    # Apply incoming simulation snapshots.
     for snapshot in viewer.get_sim_snapshots():
       viewer.dispatch(snapshot)
 
-    # Dispatch lifecycle events.
-    viewer.dispatch(messages.UpdateEvent())
-    viewer.dispatch(messages.BuildGuiEvent())
+    # Skip rendering when get_frame returned no active frame.
+    # e.g., no browser is connected yet.
+    if frame:
+      # Dispatch lifecycle events.
+      viewer.dispatch(messages.UpdateEvent())
+      viewer.dispatch(messages.BuildGuiEvent())
 
-    # Render the scene.
-    viewer.sync()
+      # Render the scene.
+      viewer.sync()
 
   viewer.close()

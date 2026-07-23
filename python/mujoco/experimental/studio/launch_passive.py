@@ -28,10 +28,7 @@ from mujoco.experimental.studio import viewer_protocol
 
 
 class _PassiveSnapshotChannel(messages.SnapshotChannel):
-  """SnapshotChannel for passive mode.
-
-  Stores per-type snapshot by reference and wakes the viewer thread when put.
-  """
+  """SnapshotChannel for passive mode: keeps only the latest snapshot per type."""
 
   def __init__(self) -> None:
     self._pending_snapshots: dict[
@@ -78,12 +75,16 @@ class _PassiveEventChannel(messages.EventChannel):
     pass
 
 
-def _create_viewer(
+def run_viewer_target(
     config: viewer_protocol.ViewerConfig,
     viewer_endpoint: endpoints.ViewerEndpoint,
     handlers: list[Any] | None = None,
-) -> viewer_protocol.Viewer:
-  """Creates the viewer requested by ``config.viewer_mode``.
+) -> None:
+  """Creates the viewer requested by ``config.viewer_mode`` and runs its loop.
+
+  Used as the daemon thread target: the viewer is created and run entirely on
+  this thread (render contexts are thread-affine), and the sim side never
+  touches the viewer object.
 
   Raises:
     ValueError: If the viewer mode requested in config is unknown.
@@ -91,14 +92,17 @@ def _create_viewer(
   if config.viewer_mode == viewer_protocol.ViewerMode.NATIVE:
     from mujoco.experimental.studio import native_viewer  # pylint: disable=g-import-not-at-top
 
-    return native_viewer.NativeViewer(
+    viewer = native_viewer.NativeViewer(
         config, viewer_endpoint, handlers=handlers
     )
-  if config.viewer_mode == viewer_protocol.ViewerMode.WEB:
+  elif config.viewer_mode == viewer_protocol.ViewerMode.WEB:
     from mujoco.experimental.studio import web_viewer  # pylint: disable=g-import-not-at-top
 
-    return web_viewer.WebViewer(config, viewer_endpoint, handlers=handlers)
-  raise ValueError(f'Unknown viewer mode: {config.viewer_mode!r}')
+    viewer = web_viewer.WebViewer(config, viewer_endpoint, handlers=handlers)
+  else:
+    raise ValueError(f'Unknown viewer mode: {config.viewer_mode!r}')
+
+  viewer_protocol.run_viewer_loop(viewer)
 
 
 def launch_passive(
@@ -130,29 +134,20 @@ def launch_passive(
       v2s_snapshot=_PassiveSnapshotChannel(),
   )
 
-  # The viewer must be created on its own thread (render contexts are
-  # thread-affine). The thread caches the created viewer in `viewer` so the
-  # sim side can request a shutdown across threads (see shutdown_viewer).
-  viewer: viewer_protocol.Viewer | None = None
-
-  def viewer_thread() -> None:
-    nonlocal viewer
-    viewer = _create_viewer(config, viewer_endpoint, viewer_handlers)
-    viewer_protocol.run_viewer_loop(viewer)
-
-  thread = threading.Thread(target=viewer_thread, daemon=True)
+  # Shutdown is message-driven: close() sends an ExitEvent that the viewer loop
+  # drains and acts on, tearing itself down on the viewer thread; the shutdown
+  # hook then joins that thread.
+  thread = threading.Thread(
+      target=run_viewer_target,
+      args=(config, viewer_endpoint, viewer_handlers),
+      daemon=True,
+  )
   thread.start()
-
-  def shutdown_viewer(timeout: float) -> None:
-    """Asks the cached viewer to exit and waits for the viewer thread."""
-    if viewer is not None:
-      viewer.request_close()
-    thread.join(timeout)
 
   handle = viewer_handle.ViewerHandle(
       sim_endpoint,
       is_alive_fn=thread.is_alive,
-      shutdown_fn=shutdown_viewer,
+      shutdown_fn=thread.join,
       handlers=sim_handlers,
   )
   return handle

@@ -28,12 +28,12 @@ import numpy as np
 # sending ExitEvent.
 IsAliveFn = Callable[[], bool]
 
-# Launcher-owned shutdown hook: makes the viewer exit promptly and waits (up
-# to the given timeout in seconds) for it to finish. If the viewer runs in a
-# separate thread, call the viewer's request_close() and join the thread; if
-# the viewer runs in a separate process (not implemented), signal the process
-# and join it. Waiting lets the viewer release its resources before the
-# interpreter starts tearing itself down.
+# Launcher-owned shutdown hook: waits (up to the given timeout in seconds) for
+# the viewer to finish exiting. close() has already sent the ExitEvent that
+# tells the viewer to stop; this hook only waits. If the viewer runs in a
+# separate thread it is the thread's join; if it runs in a separate process
+# (not implemented) it joins the process. Waiting lets the viewer release its
+# resources before the interpreter starts tearing itself down.
 ShutdownFn = Callable[[float], None]
 
 

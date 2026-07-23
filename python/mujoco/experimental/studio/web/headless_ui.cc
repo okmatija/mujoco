@@ -26,7 +26,6 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 
-#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -206,28 +205,22 @@ class HeadlessUi {
 
   ~HeadlessUi() { Client_Shutdown(context_); }
 
-  // Makes a NewFrame() call return false instead of blocking. Thread safe.
-  void RequestClose() { close_requested_ = true; }
-
   bool NewFrame() {
     py::gil_scoped_release no_gil;
     ImGui::SetCurrentContext(context_);
     static int frame_count = 0;
     frame_count++;
 
-    // Block until connected and a frame is successfully started.
-    // This ensures that every call to NewFrame() that returns true
-    // guarantees an active ImGui frame, eliminating the need for
-    // is_frame_active() in the Python API.
+    // Returns true with an active ImGui frame once a browser is connected and
+    // ready. Returns false (no frame) while no browser is connected so the
+    // caller's loop keeps running and can drain messages (e.g., to respond to
+    // an ExitEvent for shutdown).
     std::chrono::steady_clock::time_point last_signal_check =
         std::chrono::steady_clock::now();
     while (true) {
-      if (close_requested_) {
-        is_drawing_remote_ = false;
-        return false;
-      }
-      // While blocked (e.g. no browser connected), periodically check for
-      // Python signals so Ctrl+C interrupts the wait instead of hanging.
+      // Periodically check for Python signals so Ctrl+C interrupts a wait that
+      // runs on the main thread (a no-op on the daemon viewer thread, where
+      // shutdown instead arrives as an ExitEvent the caller's loop drains).
       const std::chrono::steady_clock::time_point now =
           std::chrono::steady_clock::now();
       if (now - last_signal_check > std::chrono::milliseconds(200)) {
@@ -241,10 +234,12 @@ class HeadlessUi {
       Client_Connect(title_.c_str(), port_);
 
       if (!NetImgui::IsConnected()) {
-        // Not connected yet — wait and retry.
+        // No browser connected: yield with no frame so the caller can drain
+        // messages and stop if asked. Sleeping first paces this poll (~10ms)
+        // instead of busy-spinning the caller's loop.
         is_drawing_remote_ = false;
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
-        continue;
+        return false;
       }
 
       bool newFrameResult = NetImgui::NewFrame(false);
@@ -334,7 +329,6 @@ class HeadlessUi {
   int port_;
   ImGuiContext* context_ = nullptr;
   bool is_drawing_remote_ = false;
-  std::atomic<bool> close_requested_{false};
   // User texture ids start well above the ids ImGui's managed texture system
   // (font atlas) hands out, so the two can never collide in the browser's
   // texture map.
@@ -351,11 +345,8 @@ PYBIND11_MODULE(headless_ui, m, pybind11::mod_gil_not_used()) {
            "Starts a headless ImGui frame, returning True once the frame is "
            "active. When a browser is viewing the page (via the URL printed "
            "at startup), this returns at the browser's requested frame rate. "
-           "When no browser is viewing, it blocks until one connects. "
-           "Returns False only if request_close() interrupts the wait.")
-      .def("request_close", &HeadlessUi::RequestClose,
-           "Makes a blocked (or future) new_frame() call return False. "
-           "Safe to call from any thread.")
+           "When no browser is viewing, it returns False (no frame) after a "
+           "short wait, so the caller's loop keeps running and can shut down.")
       .def("end_frame", &HeadlessUi::EndFrame)
       .def("get_context", &HeadlessUi::GetContext)
       .def("get_implot_context", &HeadlessUi::GetImPlotContext)
