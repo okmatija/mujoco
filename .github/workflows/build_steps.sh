@@ -407,6 +407,177 @@ build_mujoco_live() {
 }
 
 
+# -----------------------------------------------------------------------------
+# Web viewer wheel.
+#
+# These four steps build a self-contained Python wheel in which the Studio web
+# viewer works out of the box: the compiled server-side modules (headless_ui,
+# native_viewer_cc, ux, sim, ...) plus the pre-built browser client bundled at
+# experimental/studio/web/dist (which web_server.py serves). Run them, in order,
+# from the repository top level:
+#
+#   build_web_viewer_host          # native MuJoCo + Studio + Filament -> build_host
+#   build_web_viewer_wasm          # browser client (Emscripten) -> .../web/dist
+#   install_mujoco_for_web_viewer  # headers + libs the wheel compiles against
+#   build_web_viewer_wheel         # the wheel -> python/dist
+#
+# The browser client is platform-independent, so a release process can build it
+# once (build_web_viewer_wasm) and bundle the same web/dist into each per-platform
+# wheel; only the native host build + wheel compile are per-platform.
+#
+# TODO(robotics-simulation): once the web viewer ships to users, fold these
+# modules + the bundled browser client into the DEFAULT `mujoco` wheel
+# (build_python_bindings) so `pip install mujoco` includes the web viewer with no
+# extra steps. Kept as a separate build for now to avoid pulling Filament + an
+# Emscripten pre-step into every release build, and because it is Linux-only.
+# -----------------------------------------------------------------------------
+
+build_web_viewer_host() {
+    echo "Building native MuJoCo + Studio + Filament (host)..."
+    # A full native build. It provides two things the later steps consume:
+    #  1. the Filament host tools (matc/resgen/cmgen) + baked assets that the
+    #     Emscripten client build needs (MUJOCO_NATIVE_BUILD_DIR=build_host);
+    #  2. libmujoco.so, the platform/dependency static archives, the engine
+    #     plugins and the fetched third-party sources under build_host/_deps,
+    #     which install_mujoco_for_web_viewer gathers into the compile inputs.
+    cmake -S . -B build_host -G Ninja \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_INTERPROCEDURAL_OPTIMIZATION:BOOL=OFF \
+        -DUSE_STATIC_LIBCXX=OFF \
+        -DMUJOCO_BUILD_STUDIO=ON \
+        -DMUJOCO_USE_FILAMENT=ON \
+        -DMUJOCO_BUILD_TESTS=OFF \
+        -DMUJOCO_BUILD_EXAMPLES=OFF \
+        -DMUJOCO_BUILD_SIMULATE=OFF \
+        ${CCACHE_ARGS} \
+        ${CMAKE_ARGS}
+    cmake --build build_host -j$(nproc)
+}
+
+
+build_web_viewer_wasm() {
+    echo "Building web viewer browser client (WASM)..."
+    source emsdk/emsdk_env.sh
+    # The browser client. Reuses the Filament host tools from build_host. The
+    # web/ CMakeLists POST_BUILD stages web_client.js/.wasm + index.html +
+    # assets into python/mujoco/experimental/studio/web/dist, which web_server.py
+    # serves and setup.py bundles into the wheel.
+    emcmake cmake -S . -B build_wasm -G Ninja \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DMUJOCO_BUILD_STUDIO=ON \
+        -DMUJOCO_USE_FILAMENT=ON \
+        -DMUJOCO_BUILD_TESTS_WASM=OFF \
+        -DMUJOCO_NATIVE_BUILD_DIR=$(pwd)/build_host \
+        ${CCACHE_ARGS}
+    cmake --build build_wasm --target web_client -j$(nproc)
+}
+
+
+install_mujoco_for_web_viewer() {
+    echo "Gathering the headers + libraries the web viewer wheel compiles against..."
+    # A plain `cmake --install` only provides the public headers + libmujoco.
+    # The web viewer modules also need the platform/dependency static archives,
+    # the internal source-tree headers (src/experimental, src/render), the
+    # imgui/implot/SDL2/Filament headers, the engine plugins and the Studio
+    # assets. Gather all of it into build/mujoco_install; setup.py reads this
+    # directory via MUJOCO_PATH (see build_web_viewer_wheel). This is the former
+    # web/tools/make_linux_sdk.sh, run from the top level.
+    local build_dir prefix deps
+    build_dir="build_host"
+    mkdir -p build/mujoco_install
+    prefix="$(cd build/mujoco_install && pwd)"
+
+    # 1. Standard install: libmujoco.so + public headers + models.
+    cmake --install "${build_dir}" --prefix "${prefix}"
+
+    # 2. Engine plugins (setup.py packages them from MUJOCO_PLUGIN_PATH).
+    mkdir -p "${prefix}/mujoco_plugin"
+    for plugin in actuator elasticity sensor sdf_plugin; do
+        [[ -f "${build_dir}/lib/lib${plugin}.so" ]] &&
+            cp "${build_dir}/lib/lib${plugin}.so" "${prefix}/mujoco_plugin/"
+    done
+
+    # 3. Static archives: mujoco_platform + every dependency archive; the Python
+    #    build looks each one up by name with find_library().
+    mkdir -p "${prefix}/lib"
+    find "${build_dir}" -name "*.a" -exec cp -u {} "${prefix}/lib/" \;
+
+    # 4. Source-tree headers for platform / filament-compat / render.
+    rsync -a --include='*/' --include='*.h' --include='*.inl' --exclude='*' \
+        src/experimental/ "${prefix}/include/mujoco/experimental/"
+    rsync -a --include='*/' --include='*.h' --include='*.inl' --exclude='*' \
+        src/render/ "${prefix}/include/mujoco/render/"
+
+    # 5. Third-party headers.
+    deps="${build_dir}/_deps"
+    # Dear ImGui (flat at the include root, matching the internal SDK layout).
+    cp "${deps}/dear_imgui-src/"im*.h "${prefix}/include/"
+    mkdir -p "${prefix}/include/misc/cpp"
+    cp "${deps}/dear_imgui-src/misc/cpp/imgui_stdlib.h" "${prefix}/include/misc/cpp/"
+    mkdir -p "${prefix}/include/backends"
+    cp "${deps}/dear_imgui-src/backends/"imgui_impl_{sdl2,opengl3}.h \
+        "${prefix}/include/backends/" 2>/dev/null || true
+    # ImPlot.
+    cp "${deps}/implot-src/"implot*.h "${prefix}/include/"
+    # SDL2.
+    mkdir -p "${prefix}/include/SDL2"
+    cp "${deps}/sdl2-src/include/"*.h "${prefix}/include/SDL2/"
+    cp -f "${deps}/sdl2-build/include/"*.h "${prefix}/include/SDL2/" 2>/dev/null || true
+    cp -f "${deps}/sdl2-build/include-config-"*/*.h "${prefix}/include/SDL2/" 2>/dev/null || true
+    # Filament support libraries (math/, utils/, filament/, backend/, ...).
+    for lib in math utils filament backend filabridge ibl; do
+        [[ -d "${deps}/filament-src/libs/${lib}/include/" ]] &&
+            rsync -a "${deps}/filament-src/libs/${lib}/include/" "${prefix}/include/"
+    done
+    rsync -a "${deps}/filament-src/filament/include/" "${prefix}/include/"
+    rsync -a "${deps}/filament-src/filament/backend/include/" "${prefix}/include/"
+
+    # 6. Studio assets (fonts + Filament materials) for the wheel.
+    mkdir -p "${prefix}/assets"
+    if [[ -d "${build_dir}/bin/assets" ]]; then
+        cp -r "${build_dir}/bin/assets/." "${prefix}/assets/"
+    else
+        echo "WARNING: ${build_dir}/bin/assets not found; Studio fonts will be missing." >&2
+    fi
+
+    echo "Gathered web viewer compile inputs at ${prefix}"
+}
+
+
+build_web_viewer_wheel() {
+    echo "Building the self-contained web viewer wheel..."
+    # In CI the venv lives under ${TMPDIR}; for local dev, activate your own
+    # virtualenv before calling this.
+    if [[ -n "${TMPDIR:-}" && -f "${TMPDIR}/venv/bin/activate" ]]; then
+        source "${TMPDIR}/venv/bin/activate"
+    fi
+    # Build the sdist first: it carries web/dist (see MANIFEST.in) so the wheel
+    # bundles the browser client.
+    (cd python && ./make_sdist.sh)
+    local prefix
+    prefix="$(cd build/mujoco_install && pwd)"
+    # See build_python_bindings for why CCACHE_BASEDIR/SLOPPINESS are set.
+    export CCACHE_BASEDIR="${TMPDIR:-$(pwd)}"
+    export CCACHE_SLOPPINESS="time_macros,include_file_mtime,include_file_ctime,pch_defines,locale"
+    MUJOCO_PATH="${prefix}" \
+    MUJOCO_PLUGIN_PATH="${prefix}/mujoco_plugin" \
+    MUJOCO_CMAKE_ARGS="-DCMAKE_INTERPROCEDURAL_OPTIMIZATION:BOOL=OFF ${CCACHE_ARGS} ${CMAKE_ARGS}" \
+    pip wheel -v --no-deps -w python/dist python/dist/mujoco-*.tar.gz
+}
+
+
+build_web_viewer() {
+    # Convenience wrapper: build the whole self-contained web viewer wheel in
+    # order. Assumes the toolchain is ready — a virtualenv (prepare_python) and
+    # Emscripten (setup_emsdk). This is both the single CI build step and the
+    # one-liner for local development.
+    build_web_viewer_host
+    build_web_viewer_wasm
+    install_mujoco_for_web_viewer
+    build_web_viewer_wheel
+}
+
+
 # Discover functions defined in this script by finding identifiers followed by
 # "()" and capturing the identifier as a valid function name.
 VALID_FUNCTIONS=()

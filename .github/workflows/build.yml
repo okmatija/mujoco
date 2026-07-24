@@ -355,6 +355,74 @@ jobs:
       run: bash ./.github/workflows/build_steps.sh notify_team_chat
 
 
+  # Builds the self-contained Studio web viewer wheel: the compiled server-side
+  # modules plus the pre-built browser client bundled in (see the web_viewer
+  # functions in build_steps.sh). Linux-only for now.
+  web_viewer:
+    name: "ubuntu-24.04-clang-18-web-viewer"
+    runs-on: ubuntu-24.04
+    env:
+      TMPDIR: "/tmp"
+      label: "ubuntu-24.04-clang-18-web-viewer"
+      CMAKE_ARGS: >-
+        -G Ninja
+        -DCMAKE_C_COMPILER:STRING=clang-18
+        -DCMAKE_CXX_COMPILER:STRING=clang++-18
+    steps:
+    - uses: actions/checkout@v6
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v6
+      with:
+        node-version: '20'
+
+    - uses: actions/setup-python@v6
+      with:
+        python-version: "3.11"
+
+    - name: Install uv
+      uses: astral-sh/setup-uv@v8.2.0
+      with:
+        enable-cache: true
+        cache-dependency-glob: "python/build_requirements*.txt"
+
+    # Key the cache on the Filament pin, matching the studio job.
+    - name: Setup ccache
+      uses: hendrikmuhs/ccache-action@v1.2.23
+      with:
+        key: ${{ env.label }}-filament-${{ hashFiles('cmake/third_party_deps/filament.cmake') }}
+        restore-keys: ${{ env.label }}-filament-
+        max-size: "2.0G"
+
+    # Everything else is a build_steps.sh function so this job stays a thin
+    # wrapper around the shared build script (build_web_viewer runs the four
+    # host/wasm/gather/wheel steps in order).
+    - name: Prepare toolchain and build web viewer wheel
+      run: |
+        bash ./.github/workflows/build_steps.sh prepare_linux
+        bash ./.github/workflows/build_steps.sh prepare_python
+        bash ./.github/workflows/build_steps.sh setup_emsdk
+        bash ./.github/workflows/build_steps.sh build_web_viewer
+
+    - name: Upload web viewer wheel
+      uses: actions/upload-artifact@v7
+      with:
+        name: mujoco-web-viewer-wheel
+        path: python/dist/*.whl
+
+    - name: Notify team chat
+      shell: bash
+      env:
+        GCHAT_API_URL: ${{ secrets.GCHAT_API }}
+        JOB_URL: "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+        CHATMSG_AUTHOR_NAME: ${{ github.event.head_commit.author.name }}
+        CHATMSG_AUTHOR_EMAIL: ${{ github.event.head_commit.author.email }}
+        CHATMSG_COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
+        CHATMSG_JOB_ID: ${{ env.label }}
+      if: failure() && github.ref_name == 'main' && github.event_name == 'push' && env.GCHAT_API_URL != ''
+      run: bash ./.github/workflows/build_steps.sh notify_team_chat
+
+
   # MJX (mujoco.mjx) is pure JAX/XLA and compiler-independent: it imports the
   # mujoco Python package only as a reference, so its tests run once here instead
   # of in every matrix job. MuJoCo is built WITHOUT the C++ test suite (MJX does
