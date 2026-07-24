@@ -1,0 +1,5 @@
+# Files that must keep LF endings regardless of core.autocrlf: *.patch files
+# are consumed by `git apply` against LF upstream sources, and *.sh files may
+# run under shells without CRLF tolerance.
+*.patch text eol=lf
+*.sh text eol=lf

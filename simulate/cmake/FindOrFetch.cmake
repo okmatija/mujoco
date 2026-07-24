@@ -60,6 +60,8 @@
 # https://cmake.org/cmake/help/latest/module/FetchContent.html#variables to
 # override this macro behaviour.
 
+set(_MUJOCO_FINDORFETCH_LIST_DIR "${CMAKE_CURRENT_LIST_DIR}")
+
 if(NOT COMMAND FindOrFetch)
   macro(FindOrFetch)
     if(NOT FetchContent)
@@ -120,7 +122,20 @@ if(NOT COMMAND FindOrFetch)
           endif()
         endif()
         if(_ARGS_PATCH_COMMAND)
-          set(_WRAPPED_PATCH_COMMAND ${CMAKE_COMMAND} -E env GIT_CEILING_DIRECTORIES=${CMAKE_BINARY_DIR} ${_ARGS_PATCH_COMMAND})
+          # `git apply` invocations are routed through ApplyPatch.cmake, which
+          # neutralizes ambient git context (an enclosing repository or
+          # inherited GIT_DIR/GIT_WORK_TREE can make `git apply` silently skip
+          # every path and exit 0) and verifies the patch actually applied.
+          list(GET _ARGS_PATCH_COMMAND 0 _PATCH_CMD_HEAD)
+          list(GET _ARGS_PATCH_COMMAND -1 _PATCH_CMD_FILE)
+          if(_PATCH_CMD_HEAD STREQUAL "git" AND EXISTS "${_PATCH_CMD_FILE}")
+            set(_WRAPPED_PATCH_COMMAND
+                ${CMAKE_COMMAND} "-DPATCH_FILE=${_PATCH_CMD_FILE}" -P
+                "${_MUJOCO_FINDORFETCH_LIST_DIR}/ApplyPatch.cmake"
+            )
+          else()
+            set(_WRAPPED_PATCH_COMMAND ${CMAKE_COMMAND} -E env GIT_CEILING_DIRECTORIES=${CMAKE_BINARY_DIR} ${_ARGS_PATCH_COMMAND})
+          endif()
         else()
           set(_WRAPPED_PATCH_COMMAND)
         endif()
