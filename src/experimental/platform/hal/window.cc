@@ -310,15 +310,11 @@ void Window::PaceFrame() {
 
   using Clock = std::chrono::steady_clock;
   const auto period = std::chrono::nanoseconds(1'000'000'000 / fps);
-  const auto now = Clock::now();
-  // Pace against absolute deadlines so jitter does not accumulate, but reset
-  // the deadline when we fall behind by more than a frame (e.g. after a slow
-  // frame or a model load) instead of trying to catch up.
-  if (next_present_time_ == Clock::time_point{} ||
-      now > next_present_time_ + period) {
-    next_present_time_ = now;
-  }
-  next_present_time_ += period;
+  // Pace against absolute deadlines so jitter does not accumulate. When a
+  // frame overruns the period (heavy scene, model load), present immediately
+  // and restart the cadence from now rather than sleeping or trying to catch
+  // up.
+  next_present_time_ = std::max(next_present_time_ + period, Clock::now());
   std::this_thread::sleep_until(next_present_time_);
 }
 
