@@ -68,7 +68,7 @@ under `${TMPDIR}/venv` via `prepare_python`. Locally, activate your own venv (wi
 
 [MuJoCo Studio](../../src/experimental/studio) is the next iteration of the
 `simulate` application — the UI reimplemented with [Dear ImGui](https://github.com/ocornut/imgui)
-and Filament as the default renderer. It is a WIP.
+and Filament as the default renderer.
 
 CI compiles it (a build check, no packaging) with:
 
@@ -76,10 +76,6 @@ CI compiles it (a build check, no packaging) with:
 bash .github/workflows/build_steps.sh configure_studio       # -> build/
 bash .github/workflows/build_steps.sh build_studio           # target: mujoco_studio
 ```
-
-> [!NOTE]
-> Studio does not yet work under Wayland on Linux — use X11 instead. Python
-> integration and further UI/UX work are tracked as future work.
 </details>
 
 <details>
@@ -106,7 +102,7 @@ emcmake cmake -B build -DMUJOCO_WASM_THREADS=ON && cmake --build build   # multi
 > The full JavaScript **API reference and user guide** (named access, memory
 > management, out-parameters, threading headers, …) lives in
 > [`wasm/README.md`](../../wasm/README.md), which is also the README shipped with
-> the npm package.
+> the npm package. We may in future move that README into this file.
 </details>
 
 <details>
@@ -149,10 +145,4 @@ python -m mujoco.experimental.studio.web_viewer     # open the printed URL in a 
 
 CI runs exactly these steps in the `web_viewer` job of `build.yml` and uploads the
 wheel as an artifact.
-
-> [!NOTE]
-> The web viewer modules are Linux-only today (the build skips them on Windows).
-> Folding these modules into the default `mujoco` wheel — so `pip install mujoco`
-> ships the web viewer everywhere — is tracked by `TODO(robotics-simulation)` in
-> `build_steps.sh`.
 </details>
