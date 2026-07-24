@@ -52,6 +52,53 @@ limitations under the License.
             return 'assets/' + filename;
           }
           return prefix + path;
+        },
+        onRuntimeInitialized: () => {
+          const assetsToPrefetch = [
+            "AtkinsonHyperlegibleNext[wght].ttf",
+            "AtkinsonHyperlegibleMono-Regular.ttf",
+            "fontawesome-webfont.ttf",
+            "ibl.ktx",
+            "pbr.filamat",
+            "pbr_transparent.filamat",
+            "pbr_packed.filamat",
+            "pbr_packed_transparent.filamat",
+            "phong_2d.filamat",
+            "phong_2d_fade.filamat",
+            "phong_2d_reflect.filamat",
+            "phong_2d_uv.filamat",
+            "phong_2d_uv_fade.filamat",
+            "phong_2d_uv_reflect.filamat",
+            "phong_color.filamat",
+            "phong_color_fade.filamat",
+            "phong_color_reflect.filamat",
+            "phong_cube.filamat",
+            "phong_cube_fade.filamat",
+            "phong_cube_reflect.filamat",
+            "outline_composite.filamat",
+            "outline_flatten.filamat",
+            "outline_jumpflood.filamat",
+            "decor.filamat",
+            "unlit_depth.filamat",
+            "unlit_segmentation.filamat",
+            "unlit_ui.filamat"
+          ];
+          const assetPromises = assetsToPrefetch.map(async (filename) => {
+            try {
+              const response = await fetch("assets/" + filename);
+              if (!response.ok) {
+                console.error(`Failed to fetch asset ${filename}: ${response.statusText}`);
+                return;
+              }
+              const buffer = await response.arrayBuffer();
+              Module.registerAsset(filename, new Uint8Array(buffer));
+            } catch (error) {
+              console.error(`Error prefetching asset ${filename}:`, error);
+            }
+          });
+          Promise.all(assetPromises).then(() => {
+            Module.startApp();
+          });
         }
       };
       // Set only the CSS size; SDL owns canvas.width/height. Use whole

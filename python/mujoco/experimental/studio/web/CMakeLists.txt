@@ -65,6 +65,8 @@ if(EMSCRIPTEN)
     -sMAX_WEBGL_VERSION=2
     -sALLOW_MEMORY_GROWTH=1
     -sFETCH=1
+    # embind (EMSCRIPTEN_BINDINGS registerAsset/startApp) needs eval enabled.
+    -sDYNAMIC_EXECUTION=1
     -sGL_ASSERTIONS=0
     -sSTACK_SIZE=32mb
     -sINITIAL_MEMORY=1024mb
@@ -98,34 +100,35 @@ if(EMSCRIPTEN)
     COMMENT "Staging web viewer UI fonts"
   )
 
-  # Bundle the Filament assets (materials, IBL) and the UI fonts into
-  # web_client.data. Both are exposed at /assets in the Emscripten virtual
-  # filesystem, where the "filament:" and "font:" resource providers
-  # registered in web_client.cc read them.
+  # The Filament assets (materials, IBL) and UI fonts are served as plain files
+  # under /assets (staged into dist/assets below). The page fetches them and
+  # pushes them into the client via registerAsset() before startApp() runs (see
+  # index.html and web_client.cc's AssetRegistry). No --preload-file is used, so
+  # no web_client.data is produced.
   set(WEB_CLIENT_FILAMENT_ASSETS_DIR
       ${CMAKE_BINARY_DIR}/src/render/filament/assets
-  )
-  target_link_options(web_client PRIVATE
-    "SHELL:--preload-file ${WEB_CLIENT_FILAMENT_ASSETS_DIR}@/assets"
-    "SHELL:--preload-file ${WEB_CLIENT_FONTS_DIR}@/assets"
   )
   add_dependencies(web_client mujoco_filament_assets web_client_fonts)
 
   # Stage the browser artifacts into the source-tree dist/ folder, which
-  # web_server.py serves by default (see _find_static_files_dir).
+  # web_server.py serves by default (see _find_static_files_dir). Assets go in
+  # dist/assets/ so the page can fetch them at /assets/<name>.
   set(WEB_CLIENT_DIST_DIR ${CMAKE_CURRENT_SOURCE_DIR}/dist)
   add_custom_command(
     TARGET web_client
     POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E make_directory ${WEB_CLIENT_DIST_DIR}
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${WEB_CLIENT_DIST_DIR}/assets
     COMMAND ${CMAKE_COMMAND} -E copy
         $<TARGET_FILE_DIR:web_client>/web_client.js
         $<TARGET_FILE_DIR:web_client>/web_client.wasm
-        $<TARGET_FILE_DIR:web_client>/web_client.data
         ${CMAKE_CURRENT_SOURCE_DIR}/index.html
         ${CMAKE_CURRENT_SOURCE_DIR}/favicon.png
         ${WEB_CLIENT_DIST_DIR}
-    COMMENT "Staging web viewer artifacts into ${WEB_CLIENT_DIST_DIR}"
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+        ${WEB_CLIENT_FILAMENT_ASSETS_DIR} ${WEB_CLIENT_DIST_DIR}/assets
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+        ${WEB_CLIENT_FONTS_DIR} ${WEB_CLIENT_DIST_DIR}/assets
+    COMMENT "Staging web viewer artifacts + assets into ${WEB_CLIENT_DIST_DIR}"
   )
 else()
   # ---------------------------------------------------------------------------

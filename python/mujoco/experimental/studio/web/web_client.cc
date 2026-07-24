@@ -23,6 +23,7 @@
 #include <SDL.h>
 #include <SDL_opengl.h>
 #include <emscripten.h>
+#include <emscripten/bind.h>
 #include <emscripten/fetch.h>
 #include <imgui.h>
 #include <implot.h>
@@ -42,6 +43,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 #include "NetImgui_Api.h"
@@ -685,75 +687,71 @@ void StartModelFetch() {
   emscripten_fetch(&attr, "/model.mjb");
 }
 
-// Loads an asset from the Emscripten virtual filesystem. The Filament assets
-// (materials, IBL) are bundled into web_client.data at link time via
-// --preload-file and mounted at /assets.
-static std::vector<std::byte> LoadAsset(std::string_view path) {
-  std::string_view subpath = path.substr(path.find(':') + 1);
-  std::string file_path = std::string("/assets/") + std::string(subpath);
-
-  std::ifstream file(file_path, std::ios::binary | std::ios::ate);
-  if (!file.is_open()) {
-    return {};
+// Holds assets (Filament materials/IBL, local ImGui UI fonts) that the page
+// fetches and pushes in via the registerAsset() binding before startApp()
+// runs, so the resource providers below can resolve them without a filesystem.
+class AssetRegistry {
+ public:
+  static AssetRegistry& Instance() {
+    static AssetRegistry instance;
+    return instance;
   }
-  auto file_size = file.tellg();
-  file.seekg(0, std::ios::beg);
-  std::vector<std::byte> buffer(file_size);
-  if (!file.read(reinterpret_cast<char*>(buffer.data()), file_size)) {
-    return {};
-  }
-  return buffer;
-}
 
-// Holds loaded resource data for the MuJoCo resource provider.
-struct ResourceData {
-  std::vector<std::byte> bytes;
+  void RegisterAsset(std::string filename, std::string contents) {
+    assets_[std::move(filename)] = std::move(contents);
+  }
+
+  const std::string& Get(std::string_view filename) const {
+    filename = filename.substr(filename.find_first_of(':') + 1);
+    static std::string empty;
+    auto it = assets_.find(std::string(filename));
+    return it != assets_.end() ? it->second : empty;
+  }
+
+ private:
+  std::unordered_map<std::string, std::string> assets_;
 };
 
+// Exposed to JS (see EMSCRIPTEN_BINDINGS): the page calls this once per asset.
+void RegisterAsset(std::string filename, std::string contents) {
+  AssetRegistry::Instance().RegisterAsset(std::move(filename),
+                                          std::move(contents));
+}
+
 // Registers resource providers so that "filament:" (renderer materials/IBL)
-// and "font:" (the local ImGui UI fonts) asset requests resolve to the
-// preloaded /assets files. Both prefixes share the same loader — LoadAsset
-// maps either to /assets/<name>.
-// TODO(matijak): Near-identical copies of LoadAsset/ResourceData/registration
-// live in native_viewer.cc, launcher.cc, and emscripten.cc (differing only in
-// asset root and prefixes). Extract a shared helper into mujoco::platform.
+// and "font:" (the local ImGui UI fonts) asset requests resolve from the
+// AssetRegistry populated by registerAsset().
 static void RegisterAssetProviders() {
   mjpResourceProvider resource_provider;
   mjp_defaultResourceProvider(&resource_provider);
 
   resource_provider.open = [](mjResource* resource) {
-    auto* data = new ResourceData();
-    data->bytes = LoadAsset(resource->name);
-    if (data->bytes.empty()) {
-      delete data;
-      return 0;
-    }
-    resource->data = data;
-    return static_cast<int>(data->bytes.size());
+    AssetRegistry& r = AssetRegistry::Instance();
+    return static_cast<int>(r.Get(resource->name).size());
   };
   resource_provider.read = [](mjResource* resource, const void** buffer) {
-    auto* data = static_cast<ResourceData*>(resource->data);
-    *buffer = data->bytes.data();
-    return static_cast<int>(data->bytes.size());
+    AssetRegistry& r = AssetRegistry::Instance();
+    const std::string& contents = r.Get(resource->name);
+    *buffer = contents.data();
+    return static_cast<int>(contents.size());
   };
-  resource_provider.close = [](mjResource* resource) {
-    delete static_cast<ResourceData*>(resource->data);
-    resource->data = nullptr;
-  };
+  resource_provider.close = [](mjResource* resource) {};
   for (const char* prefix : {"filament", "font"}) {
     resource_provider.prefix = prefix;
     mjp_registerResourceProvider(&resource_provider);
   }
 }
 
-int main(int argc, char** argv) {
-  RegisterAssetProviders();
-
+// Starts the viewer once the page has registered every asset. Exposed to JS
+// (see EMSCRIPTEN_BINDINGS) and called from index.html after the fetches
+// complete. emscripten_set_main_loop with simulate_infinite_loop=1 never
+// returns, so there is no post-loop cleanup.
+void StartApp() {
   mujoco::platform::Window::Config config;
   config.gfx_mode = mujoco::platform::GraphicsMode::FilamentWebGl;
   // Load the Studio UI fonts for the browser's local ImGui (the role window);
-  // the "font:" resource provider above resolves them from the preloaded
-  // /assets. (The streamed Studio UI carries its own font atlas separately.)
+  // the "font:" resource provider above resolves them from the AssetRegistry.
+  // (The streamed Studio UI carries its own font atlas separately.)
   config.load_fonts = true;
 
   g_app.window = std::make_unique<mujoco::platform::Window>("MuJoCo Web Viewer",
@@ -772,12 +770,14 @@ int main(int argc, char** argv) {
   StartModelFetch();
 
   emscripten_set_main_loop(MainLoop, 0, 1);
+}
 
-  // Cleanup (reached if emscripten loop exits).
-  g_app.remote_ui.Shutdown();
-  NetImgui::Internal::Network::Shutdown();
-
-  g_app.window.reset();
-
+int main(int argc, char** argv) {
+  RegisterAssetProviders();
   return 0;
+}
+
+EMSCRIPTEN_BINDINGS(web_client_bindings) {
+  emscripten::function("registerAsset", &RegisterAsset);
+  emscripten::function("startApp", &StartApp);
 }
