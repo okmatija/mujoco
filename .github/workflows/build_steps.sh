@@ -483,7 +483,9 @@ install_mujoco_for_web_viewer() {
     # directory via MUJOCO_PATH (see build_web_viewer_wheel). This is the former
     # web/tools/make_linux_sdk.sh, run from the top level.
     local build_dir prefix deps
-    build_dir="build_host"
+    # Resolve to an absolute real path so `find` still descends when build_host
+    # is a symlink (e.g. a local build routed onto a faster filesystem).
+    build_dir="$(readlink -f build_host)"
     mkdir -p build/mujoco_install
     prefix="$(cd build/mujoco_install && pwd)"
 
