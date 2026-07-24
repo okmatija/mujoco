@@ -249,6 +249,17 @@ jobs:
             cmake_args: >-
               -G Ninja
               -DCMAKE_SYSTEM_VERSION=10.0.26100.0
+          # kokoro parity: the internal Windows CI builds Studio with clang
+          # (not MSVC), which exercises filament-allow-clang-windows.patch.
+          # Without this entry that toolchain has no public CI coverage at
+          # all, so breakage only ever surfaces downstream.
+          - os: windows-2025
+            label: "windows-2025-clang-studio"
+            cmake_args: >-
+              -G Ninja
+              -DCMAKE_C_COMPILER:STRING=clang
+              -DCMAKE_CXX_COMPILER:STRING=clang++
+              -DCMAKE_SYSTEM_VERSION=10.0.26100.0
           - os: macos-15
             label: "macos-15-arm64-studio"
             cmake_args: >-
