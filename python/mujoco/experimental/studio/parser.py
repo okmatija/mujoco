@@ -11,30 +11,12 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Loads and compiles MuJoCo models for the studio viewer.
-
-This is a thin wrapper over mujoco's own bindings: MJB files load directly,
-everything else parses through mujoco.MjSpec (mj_parse under the hood, the
-same call the platform loader used) and compiles. Keeping the model
-construction inside mujoco's module means the MjModel/MjData wrappers come
-from there, with no separate extension involved.
-"""
+"""Loads and compiles MuJoCo models for the studio viewer."""
 
 import mujoco
 
 
 def parse(filepath: str) -> mujoco.MjData:
-  """Parses and compiles a model file; returns a fresh MjData.
-
-  The compiled model is available as ``data.model``.
-
-  Args:
-    filepath: Path to the model file (MJCF, URDF, MJB, or anything else
-      mujoco's parser understands).
-
-  Raises:
-    ValueError: If the file cannot be loaded or compiled.
-  """
   if filepath.endswith('.mjb'):
     model = mujoco.MjModel.from_binary_path(filepath)
   else:
