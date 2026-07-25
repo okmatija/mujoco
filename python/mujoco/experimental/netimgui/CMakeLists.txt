@@ -48,10 +48,18 @@ if(EMSCRIPTEN)
   target_sources(netimgui PRIVATE google/NetImgui_NetworkWASM.cpp)
   # emscripten_websocket_* requires the JS websocket library.
   target_link_options(netimgui PUBLIC -lwebsocket.js)
+elseif(WIN32)
+  # Winsock2 networking for Windows. NetImgui_Config.h enables
+  # NETIMGUI_WINSOCKET_ENABLED automatically on _WIN32.
+  target_sources(netimgui PRIVATE Code/Client/Private/NetImgui_NetworkWin32.cpp)
+  # The source self-links ws2_32 via `#pragma comment(lib, ...)` under MSVC;
+  # link it explicitly so non-MSVC Windows toolchains (e.g. clang-cl) resolve it
+  # too.
+  target_link_libraries(netimgui PUBLIC ws2_32)
 elseif(UNIX)
+  # BSD-socket networking for Linux and macOS (both are UNIX).
   target_sources(netimgui PRIVATE Code/Client/Private/NetImgui_NetworkPosix.cpp)
 else()
-  # TODO(matijak): Port NetImgui networking to Win32 (winsock2).
   message(WARNING "NetImgui networking is not available on this platform. "
                   "netimgui will not be built.")
   return()

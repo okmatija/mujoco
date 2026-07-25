@@ -133,14 +133,10 @@ if(EMSCRIPTEN)
 else()
   # ---------------------------------------------------------------------------
   # headless_ui and state_payload pybind modules (built from the Python
-  # bindings build).
+  # bindings build). Built on Linux, macOS and Windows: netimgui now provides a
+  # Winsock backend (see netimgui/CMakeLists.txt), so the previous Windows skip
+  # has been removed.
   # ---------------------------------------------------------------------------
-  if(WIN32)
-    message(WARNING "The web viewer modules are not yet supported on "
-                    "Windows. Skipping.")
-    return()
-  endif()
-
   if(NOT TARGET mujoco::dep::implot)
     message(WARNING "mujoco::dep::implot target not found. The web viewer "
                     "modules will not be built.")
