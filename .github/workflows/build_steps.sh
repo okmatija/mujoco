@@ -425,11 +425,21 @@ build_mujoco_live() {
 # once (build_web_viewer_wasm) and bundle the same web/dist into each per-platform
 # wheel; only the native host build + wheel compile are per-platform.
 #
+# Platform status: Linux and macOS build here; Windows is being brought up (the
+# NetImgui Winsock backend has landed). The per-OS branches below cover Linux and
+# macOS; Windows-specific paths are marked "verify on Windows".
+#
+# TODO(kokoro): these functions are exercised by the web_viewer* jobs in build.yml
+# for development/CI only — those jobs build and smoke-check the wheel but do not
+# release it. The release wheels are built by kokoro, so port these steps into
+# kokoro's per-platform wheel build once the web viewer ships, so released wheels
+# actually contain it.
+#
 # TODO(robotics-simulation): once the web viewer ships to users, fold these
 # modules + the bundled browser client into the DEFAULT `mujoco` wheel
 # (build_python_bindings) so `pip install mujoco` includes the web viewer with no
 # extra steps. Kept as a separate build for now to avoid pulling Filament + an
-# Emscripten pre-step into every release build, and because it is Linux-only.
+# Emscripten pre-step into every release build.
 # -----------------------------------------------------------------------------
 
 build_web_viewer_host() {
@@ -451,7 +461,9 @@ build_web_viewer_host() {
         -DMUJOCO_BUILD_SIMULATE=OFF \
         ${CCACHE_ARGS} \
         ${CMAKE_ARGS}
-    cmake --build build_host -j$(nproc)
+    # getconf _NPROCESSORS_ONLN works on both Linux and macOS (nproc is
+    # GNU-only); fall back to Windows' env var, then a constant.
+    cmake --build build_host -j"$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo "${NUMBER_OF_PROCESSORS:-4}")"
 }
 
 
@@ -469,7 +481,7 @@ build_web_viewer_wasm() {
         -DMUJOCO_BUILD_TESTS_WASM=OFF \
         -DMUJOCO_NATIVE_BUILD_DIR=$(pwd)/build_host \
         ${CCACHE_ARGS}
-    cmake --build build_wasm --target web_client -j$(nproc)
+    cmake --build build_wasm --target web_client -j"$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo "${NUMBER_OF_PROCESSORS:-4}")"
 }
 
 
@@ -482,29 +494,46 @@ install_mujoco_for_web_viewer() {
     # assets. Gather all of it into build/mujoco_install; setup.py reads this
     # directory via MUJOCO_PATH (see build_web_viewer_wheel). This is the former
     # web/tools/make_linux_sdk.sh, run from the top level.
-    local build_dir prefix deps
-    # Resolve to an absolute real path so `find` still descends when build_host
-    # is a symlink (e.g. a local build routed onto a faster filesystem).
-    build_dir="$(readlink -f build_host)"
+    local build_dir prefix deps plugin_ext plugin_dir
+    # Resolve build_host to an absolute real path. Use `cd && pwd -P` rather than
+    # `readlink -f` (macOS's readlink has no -f); pwd -P resolves symlinks so
+    # `find` still descends when build_host is a symlink (e.g. a local build
+    # routed onto a faster filesystem).
+    build_dir="$(cd build_host && pwd -P)"
     mkdir -p build/mujoco_install
     prefix="$(cd build/mujoco_install && pwd)"
 
-    # 1. Standard install: libmujoco.so + public headers + models.
+    # Per-OS engine-plugin layout.
+    case "$(uname -s)" in
+        Darwin) plugin_ext="dylib"; plugin_dir="${build_dir}/lib" ;;
+        # TODO(matijak): verify on Windows. MSVC emits plugin DLLs under
+        # bin/<config> (see copy_plugins_window), not lib/.
+        MINGW*|MSYS*|CYGWIN*) plugin_ext="dll"; plugin_dir="${build_dir}/bin" ;;
+        *) plugin_ext="so"; plugin_dir="${build_dir}/lib" ;;
+    esac
+
+    # 1. Standard install: libmujoco + public headers + models.
     cmake --install "${build_dir}" --prefix "${prefix}"
 
-    # 2. Engine plugins (setup.py packages them from MUJOCO_PLUGIN_PATH).
+    # 2. Engine plugins (setup.py packages them from MUJOCO_PLUGIN_PATH). find
+    #    matches lib<name>.<ext> (posix/macOS) and <name>.dll (Windows), and any
+    #    config subdir MSVC nests under bin/.
     mkdir -p "${prefix}/mujoco_plugin"
     for plugin in actuator elasticity sensor sdf_plugin; do
-        [[ -f "${build_dir}/lib/lib${plugin}.so" ]] &&
-            cp "${build_dir}/lib/lib${plugin}.so" "${prefix}/mujoco_plugin/"
+        find "${plugin_dir}" -name "*${plugin}.${plugin_ext}" \
+            -exec cp {} "${prefix}/mujoco_plugin/" \; 2>/dev/null || true
     done
 
     # 3. Static archives: mujoco_platform + every dependency archive; the Python
-    #    build looks each one up by name with find_library().
+    #    build looks each one up by name with find_library(). posix/macOS use .a;
+    #    MSVC uses .lib.
     mkdir -p "${prefix}/lib"
-    find "${build_dir}" -name "*.a" -exec cp -u {} "${prefix}/lib/" \;
+    find "${build_dir}" \( -name "*.a" -o -name "*.lib" \) -exec cp -u {} "${prefix}/lib/" \;
 
     # 4. Source-tree headers for platform / filament-compat / render.
+    # TODO(matijak): verify on Windows. rsync is present on Linux and macOS but
+    # not in Windows Git Bash; the rsync copies in steps 4-5 need a find+cp
+    # fallback there (or ship rsync via the CI image).
     rsync -a --include='*/' --include='*.h' --include='*.inl' --exclude='*' \
         src/experimental/ "${prefix}/include/mujoco/experimental/"
     rsync -a --include='*/' --include='*.h' --include='*.inl' --exclude='*' \
