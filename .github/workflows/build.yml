@@ -491,6 +491,69 @@ jobs:
       run: bash ./.github/workflows/build_steps.sh notify_team_chat
 
 
+  # Windows variant of the web_viewer job (see the TODO(kokoro) above). Windows
+  # uses the new NetImgui Winsock backend. This is bring-up: several build_steps.sh
+  # paths are still marked "verify on Windows" (plugin DLL layout under bin/, the
+  # Emscripten toolchain under Git Bash), so expect this job to need iteration.
+  # TODO(matijak): stabilise, then treat like the Linux/macOS jobs.
+  web_viewer_windows:
+    name: "windows-2025-web-viewer"
+    runs-on: windows-2025
+    env:
+      TMPDIR: "C:/Temp"
+      label: "windows-2025-web-viewer"
+      CMAKE_ARGS: >-
+        -G Ninja
+        -DCMAKE_SYSTEM_VERSION=10.0.26100.0
+    steps:
+    - uses: actions/checkout@v6
+
+    - name: Prepare Windows (setup MSVC)
+      uses: ilammy/msvc-dev-cmd@v1
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v6
+      with:
+        node-version: '20'
+
+    - uses: actions/setup-python@v6
+      with:
+        python-version: "3.11"
+
+    - name: Install uv
+      uses: astral-sh/setup-uv@v8.2.0
+      with:
+        enable-cache: true
+        cache-dependency-glob: "python/build_requirements*.txt"
+
+    # ccache is skipped on Windows (MSVC + ccache is finicky; matches the studio
+    # job). The msvc-dev-cmd env above propagates to this bash step via GITHUB_ENV.
+    - name: Prepare toolchain and build web viewer wheel
+      shell: bash
+      run: |
+        bash ./.github/workflows/build_steps.sh prepare_python
+        bash ./.github/workflows/build_steps.sh setup_emsdk
+        bash ./.github/workflows/build_steps.sh build_web_viewer
+
+    - name: Upload web viewer wheel (Windows)
+      uses: actions/upload-artifact@v7
+      with:
+        name: mujoco-web-viewer-wheel-windows
+        path: python/dist/*.whl
+
+    - name: Notify team chat
+      shell: bash
+      env:
+        GCHAT_API_URL: ${{ secrets.GCHAT_API }}
+        JOB_URL: "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+        CHATMSG_AUTHOR_NAME: ${{ github.event.head_commit.author.name }}
+        CHATMSG_AUTHOR_EMAIL: ${{ github.event.head_commit.author.email }}
+        CHATMSG_COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
+        CHATMSG_JOB_ID: ${{ env.label }}
+      if: failure() && github.ref_name == 'main' && github.event_name == 'push' && env.GCHAT_API_URL != ''
+      run: bash ./.github/workflows/build_steps.sh notify_team_chat
+
+
   # MJX (mujoco.mjx) is pure JAX/XLA and compiler-independent: it imports the
   # mujoco Python package only as a reference, so its tests run once here instead
   # of in every matrix job. MuJoCo is built WITHOUT the C++ test suite (MJX does

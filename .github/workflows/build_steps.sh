@@ -512,6 +512,20 @@ install_mujoco_for_web_viewer() {
         *) plugin_ext="so"; plugin_dir="${build_dir}/lib" ;;
     esac
 
+    # Portable copy helpers. rsync is not available in Windows Git Bash, so use
+    # find+cp everywhere (one codepath on every OS).
+    _copy_headers() {  # $1=src dir, $2=dst dir — only *.h/*.inl, keep subdirs
+        local s="${1%/}"
+        (cd "${s}" && find . \( -name '*.h' -o -name '*.inl' \) -print0 |
+            while IFS= read -r -d '' f; do
+                mkdir -p "$2/${f%/*}" && cp "${f}" "$2/${f}"
+            done)
+    }
+    _copy_tree() {  # $1=src dir, $2=dst dir — the whole subtree
+        local s="${1%/}"
+        mkdir -p "$2" && cp -r "${s}/." "$2/"
+    }
+
     # 1. Standard install: libmujoco + public headers + models.
     cmake --install "${build_dir}" --prefix "${prefix}"
 
@@ -531,13 +545,8 @@ install_mujoco_for_web_viewer() {
     find "${build_dir}" \( -name "*.a" -o -name "*.lib" \) -exec cp -u {} "${prefix}/lib/" \;
 
     # 4. Source-tree headers for platform / filament-compat / render.
-    # TODO(matijak): verify on Windows. rsync is present on Linux and macOS but
-    # not in Windows Git Bash; the rsync copies in steps 4-5 need a find+cp
-    # fallback there (or ship rsync via the CI image).
-    rsync -a --include='*/' --include='*.h' --include='*.inl' --exclude='*' \
-        src/experimental/ "${prefix}/include/mujoco/experimental/"
-    rsync -a --include='*/' --include='*.h' --include='*.inl' --exclude='*' \
-        src/render/ "${prefix}/include/mujoco/render/"
+    _copy_headers src/experimental "${prefix}/include/mujoco/experimental"
+    _copy_headers src/render "${prefix}/include/mujoco/render"
 
     # 5. Third-party headers.
     deps="${build_dir}/_deps"
@@ -558,10 +567,10 @@ install_mujoco_for_web_viewer() {
     # Filament support libraries (math/, utils/, filament/, backend/, ...).
     for lib in math utils filament backend filabridge ibl; do
         [[ -d "${deps}/filament-src/libs/${lib}/include/" ]] &&
-            rsync -a "${deps}/filament-src/libs/${lib}/include/" "${prefix}/include/"
+            _copy_tree "${deps}/filament-src/libs/${lib}/include" "${prefix}/include"
     done
-    rsync -a "${deps}/filament-src/filament/include/" "${prefix}/include/"
-    rsync -a "${deps}/filament-src/filament/backend/include/" "${prefix}/include/"
+    _copy_tree "${deps}/filament-src/filament/include" "${prefix}/include"
+    _copy_tree "${deps}/filament-src/filament/backend/include" "${prefix}/include"
 
     # 6. Studio assets (fonts + Filament materials) for the wheel.
     mkdir -p "${prefix}/assets"
