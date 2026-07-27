@@ -1,6 +1,5 @@
-// Google3 modifications:
-// - Added #include <cstdint> for uint32_t (not implicitly available in google3)
-// - Added imgui include from google3 path
+// Google modifications:
+// - Added #include <cstdint> for uint32_t (not implicitly available in Google)
 
 #pragma once
 
