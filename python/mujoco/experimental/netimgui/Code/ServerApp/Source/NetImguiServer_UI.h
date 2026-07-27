@@ -5,7 +5,7 @@
 #pragma once
 
 #include <cstdint>
-#include "third_party/dear_imgui/imgui.h"
+#include <imgui.h>
 
 namespace NetImguiServer {
 namespace App {
