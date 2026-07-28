@@ -51,11 +51,13 @@ static py::bytes SerializeStatePayload(
   }
 
   std::string physics = physics_state;
-  const std::vector<char> buffer = mujoco::studio::SerializeStatePayload(
+  const std::vector<std::byte> buffer = mujoco::studio::SerializeStatePayload(
       model_crc32, physics_spec, physics.data(), physics.size(), *camera.get(),
       *perturb.get(), *vis_options.get(), model.get()->opt, model.get()->vis,
       model.get()->stat, render_flags, geoms.data(), geoms.size());
-  return py::bytes(buffer.data(), buffer.size());
+  // py::bytes wants char*; the payload is raw bytes, so this cast is the one
+  // place the wire format meets the python type system.
+  return py::bytes(reinterpret_cast<const char*>(buffer.data()), buffer.size());
 }
 
 // Upper bound of a serialized payload for a model whose physics state is

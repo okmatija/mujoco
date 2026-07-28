@@ -228,7 +228,7 @@ void ApplyStatePayload(const StatePayloadView& view) {
   // (all input is forwarded to it and handled by the same code as the native
   // viewer); the browser just renders them.
   if (view.render_state != nullptr) {
-    const char* vis_ptr = view.render_state;
+    const std::byte* vis_ptr = view.render_state;
 
     // Spectators in a free camera mode keep their own local camera; everyone
     // else (the controller, and spectators in Follow Controller) mirrors the

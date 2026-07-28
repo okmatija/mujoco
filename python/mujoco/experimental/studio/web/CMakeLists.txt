@@ -26,7 +26,8 @@ if(EMSCRIPTEN)
   add_subdirectory(${NETIMGUI_DIR} ${CMAKE_CURRENT_BINARY_DIR}/netimgui)
 
   add_executable(web_client web_client.cc web_client_local_ui.cc
-                 web_client_remote_ui.cc web_client_session.cc)
+                 web_client_remote_ui.cc web_client_session.cc
+                 state_payload.cc)
 
   target_include_directories(web_client
     PRIVATE
@@ -155,7 +156,7 @@ else()
     netimgui
   )
 
-  mujoco_pybind11_module(state_payload state_payload_py.cc)
+  mujoco_pybind11_module(state_payload state_payload_py.cc state_payload.cc)
   target_link_libraries(state_payload PRIVATE
     mujoco
     structs_header
