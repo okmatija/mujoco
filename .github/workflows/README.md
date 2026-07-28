@@ -130,7 +130,7 @@ bash .github/workflows/build_steps.sh build_web_viewer   # -> python/dist/*.whl
 individually when debugging a single stage:
 
 ```sh
-bash .github/workflows/build_steps.sh build_web_viewer_host          # native MuJoCo+Studio+Filament -> build_host/
+bash .github/workflows/build_steps.sh build_web_viewer_native        # native MuJoCo+Studio+Filament -> build_host/
 bash .github/workflows/build_steps.sh build_web_viewer_wasm          # browser client -> .../web/dist/
 bash .github/workflows/build_steps.sh install_mujoco_for_web_viewer  # headers+libs the wheel compiles against -> build/mujoco_install/
 bash .github/workflows/build_steps.sh build_web_viewer_wheel         # -> python/dist/*.whl

@@ -4,4 +4,5 @@ recursive-include mujoco/mjpython mjpython.* Info.plist
 # The pre-built web viewer browser client (wasm/js + filament/font assets),
 # staged into web/dist by build_web_viewer_wasm. Carrying it in the sdist lets
 # the wheel bundle a ready-to-serve viewer (see pyproject package-data).
+recursive-include mujoco/experimental/studio/web *.html
 recursive-include mujoco/experimental/studio/web/dist *

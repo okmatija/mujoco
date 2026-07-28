@@ -355,14 +355,8 @@ jobs:
       run: bash ./.github/workflows/build_steps.sh notify_team_chat
 
 
-  # Build + smoke-check the self-contained Studio web viewer wheel: the compiled
-  # server-side modules plus the pre-built browser client bundled in (see the
-  # web_viewer functions in build_steps.sh). Runs on Linux and macOS.
-  #
-  # TODO(kokoro): these jobs build and upload the wheel as a CI artifact for
-  # development; they do NOT release it. The released wheels are built by kokoro —
-  # port the build_steps.sh web viewer calls into kokoro's per-platform wheel build
-  # so released wheels include the web viewer.
+  # Build a python wheel supporting the Studio web viewer on Linux.
+  # TODO(robotics-simulation): port to internal CI so the built wheel can be released.
   web_viewer:
     name: "ubuntu-24.04-clang-18-web-viewer"
     runs-on: ubuntu-24.04
@@ -428,8 +422,9 @@ jobs:
       run: bash ./.github/workflows/build_steps.sh notify_team_chat
 
 
-  # macOS variant of the web_viewer job (see the TODO(kokoro) above). macOS uses
-  # the existing NetImgui POSIX backend, so no extra platform code is needed.
+  # Build a python wheel supporting the Studio web viewer on MacOS.
+  # TODO(robotics-simulation): port to internal CI so the built wheel can be released.
+  # TODO(matijak): This job is untested and may not work.
   web_viewer_macos:
     name: "macos-15-arm64-web-viewer"
     runs-on: macos-15
@@ -491,11 +486,9 @@ jobs:
       run: bash ./.github/workflows/build_steps.sh notify_team_chat
 
 
-  # Windows variant of the web_viewer job (see the TODO(kokoro) above). Windows
-  # uses the new NetImgui Winsock backend. This is bring-up: several build_steps.sh
-  # paths are still marked "verify on Windows" (plugin DLL layout under bin/, the
-  # Emscripten toolchain under Git Bash), so expect this job to need iteration.
-  # TODO(matijak): stabilise, then treat like the Linux/macOS jobs.
+  # Build a python wheel supporting the Studio web viewer on Windows.
+  # TODO(robotics-simulation): port to internal CI so the built wheel can be released.
+  # TODO(matijak): This job is untested and may not work.
   web_viewer_windows:
     name: "windows-2025-web-viewer"
     runs-on: windows-2025

@@ -27,6 +27,10 @@ if command -v ccache >/dev/null 2>&1; then
     CCACHE_ARGS="-DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache"
 fi
 
+# Portable parallel job count. getconf works on Linux and macOS; on Windows we
+# fall back to the NUMBER_OF_PROCESSORS environment variable, then to 4.
+NJOBS="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo "${NUMBER_OF_PROCESSORS:-4}")"
+
 
 # Emit the build matrix for build.yml as a step output. On pull_request we run
 # only the representative "core" compiler set; on push (e.g. to main) we run the
@@ -394,7 +398,7 @@ build_mujoco_live() {
         -DMUJOCO_BUILD_TESTS=OFF \
         -DMUJOCO_BUILD_EXAMPLES=OFF \
         -DMUJOCO_BUILD_SIMULATE=OFF
-    cmake --build build_host --target matc resgen cmgen mujoco_filament_assets -j$(nproc)
+    cmake --build build_host --target matc resgen cmgen mujoco_filament_assets -j"${NJOBS}"
 
     echo "Building WASM app..."
     emcmake cmake -S . -B build_wasm -G Ninja \
@@ -403,7 +407,7 @@ build_mujoco_live() {
         -DMUJOCO_USE_FILAMENT=ON \
         -DMUJOCO_BUILD_TESTS_WASM=OFF \
         -DMUJOCO_NATIVE_BUILD_DIR=$(pwd)/build_host
-    cmake --build build_wasm --target mujoco_studio -j$(nproc)
+    cmake --build build_wasm --target mujoco_studio -j"${NJOBS}"
 }
 
 
@@ -416,7 +420,7 @@ build_mujoco_live() {
 # experimental/studio/web/dist (which web_server.py serves). Run them, in order,
 # from the repository top level:
 #
-#   build_web_viewer_host          # native MuJoCo + Studio + Filament -> build_host
+#   build_web_viewer_native          # native MuJoCo + Studio + Filament -> build_host
 #   build_web_viewer_wasm          # browser client (Emscripten) -> .../web/dist
 #   install_mujoco_for_web_viewer  # headers + libs the wheel compiles against
 #   build_web_viewer_wheel         # the wheel -> python/dist
@@ -442,7 +446,7 @@ build_mujoco_live() {
 # Emscripten pre-step into every release build.
 # -----------------------------------------------------------------------------
 
-build_web_viewer_host() {
+build_web_viewer_native() {
     echo "Building native MuJoCo + Studio + Filament (host)..."
     # A full native build. It provides two things the later steps consume:
     #  1. the Filament host tools (matc/resgen/cmgen) + baked assets that the
@@ -461,9 +465,7 @@ build_web_viewer_host() {
         -DMUJOCO_BUILD_SIMULATE=OFF \
         ${CCACHE_ARGS} \
         ${CMAKE_ARGS}
-    # getconf _NPROCESSORS_ONLN works on both Linux and macOS (nproc is
-    # GNU-only); fall back to Windows' env var, then a constant.
-    cmake --build build_host -j"$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo "${NUMBER_OF_PROCESSORS:-4}")"
+    cmake --build build_host -j"${NJOBS}"
 }
 
 
@@ -481,7 +483,7 @@ build_web_viewer_wasm() {
         -DMUJOCO_BUILD_TESTS_WASM=OFF \
         -DMUJOCO_NATIVE_BUILD_DIR=$(pwd)/build_host \
         ${CCACHE_ARGS}
-    cmake --build build_wasm --target web_client -j"$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo "${NUMBER_OF_PROCESSORS:-4}")"
+    cmake --build build_wasm --target web_client -j"${NJOBS}"
 }
 
 
@@ -611,7 +613,7 @@ build_web_viewer() {
     # order. Assumes the toolchain is ready — a virtualenv (prepare_python) and
     # Emscripten (setup_emsdk). This is both the single CI build step and the
     # one-liner for local development.
-    build_web_viewer_host
+    build_web_viewer_native
     build_web_viewer_wasm
     install_mujoco_for_web_viewer
     build_web_viewer_wheel
