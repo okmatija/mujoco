@@ -55,8 +55,6 @@ static py::bytes SerializeStatePayload(
       model_crc32, physics_spec, physics.data(), physics.size(), *camera.get(),
       *perturb.get(), *vis_options.get(), model.get()->opt, model.get()->vis,
       model.get()->stat, render_flags, geoms.data(), geoms.size());
-  // py::bytes wants char*; the payload is raw bytes, so this cast is the one
-  // place the wire format meets the python type system.
   return py::bytes(reinterpret_cast<const char*>(buffer.data()), buffer.size());
 }
 
