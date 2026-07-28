@@ -180,11 +180,11 @@ std::string GetWsBaseUrl() {
 std::string GetSessionId() {
   static const std::string sid = emscripten_run_script_string(
       "(function() {"
-      "  Module.sessionId = Module.sessionId ||"
+      "  Module.session_id = Module.session_id ||"
       "      sessionStorage.getItem('mjwv_sid') ||"
       "      (Date.now().toString(36) + Math.random().toString(36).slice(2));"
-      "  sessionStorage.setItem('mjwv_sid', Module.sessionId);"
-      "  return Module.sessionId;"
+      "  sessionStorage.setItem('mjwv_sid', Module.session_id);"
+      "  return Module.session_id;"
       "})()");
   return sid;
 }
@@ -543,33 +543,33 @@ void MainLoopImpl() {
   // local UI always renders on top of remote content.
   // ImGui::GetDrawData() is only valid after ImGui::Render() and until the next
   // call to ImGui::NewFrame().
-  mujoco::studio::NetImguiImDrawData* remoteDrawData =
+  mujoco::studio::NetImguiImDrawData* remote_draw_data =
       g_app.remote_ui.RemoteDrawData();
-  if (remoteDrawData && remoteDrawData->Valid &&
+  if (remote_draw_data && remote_draw_data->Valid &&
       g_app.session.Role() == SessionRole::kControlling) {
-    ImDrawData* localDrawData = ImGui::GetDrawData();
-    if (localDrawData) {
+    ImDrawData* local_draw_data = ImGui::GetDrawData();
+    if (local_draw_data) {
       // Save local draw lists.
-      ImVector<ImDrawList*> localLists;
-      localLists.reserve(localDrawData->CmdListsCount);
-      for (int i = 0; i < localDrawData->CmdListsCount; ++i) {
-        localLists.push_back(localDrawData->CmdLists[i]);
+      ImVector<ImDrawList*> local_lists;
+      local_lists.reserve(local_draw_data->CmdListsCount);
+      for (int i = 0; i < local_draw_data->CmdListsCount; ++i) {
+        local_lists.push_back(local_draw_data->CmdLists[i]);
       }
 
       // Clear and rebuild: remote first, then local.
-      localDrawData->CmdLists.resize(0);
-      localDrawData->CmdListsCount = 0;
-      localDrawData->TotalVtxCount = 0;
-      localDrawData->TotalIdxCount = 0;
+      local_draw_data->CmdLists.resize(0);
+      local_draw_data->CmdListsCount = 0;
+      local_draw_data->TotalVtxCount = 0;
+      local_draw_data->TotalIdxCount = 0;
 
       // Remote draw lists (background).
-      for (int i = 0; i < remoteDrawData->CmdListsCount; ++i) {
-        localDrawData->AddDrawList(remoteDrawData->CmdLists[i]);
+      for (int i = 0; i < remote_draw_data->CmdListsCount; ++i) {
+        local_draw_data->AddDrawList(remote_draw_data->CmdLists[i]);
       }
 
       // Local draw lists (foreground).
-      for (int i = 0; i < localLists.Size; ++i) {
-        localDrawData->AddDrawList(localLists[i]);
+      for (int i = 0; i < local_lists.Size; ++i) {
+        local_draw_data->AddDrawList(local_lists[i]);
       }
     }
   }

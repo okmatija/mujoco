@@ -28,6 +28,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -38,6 +39,15 @@
 #include "google/network_status.h"
 
 namespace mujoco::studio {
+
+// Deleter for objects allocated by netimgui's allocator; lets unique_ptr own
+// them (they must be freed with netImguiDelete, not delete).
+struct NetImguiDeleter {
+  template <typename T>
+  void operator()(T* ptr) const {
+    NetImgui::Internal::netImguiDelete(ptr);
+  }
+};
 
 // ImDrawData wrapper for receiving remote draw data.
 struct NetImguiImDrawData : ImDrawData {
@@ -72,6 +82,7 @@ class RemoteUi {
   };
 
   explicit RemoteUi(Callbacks& callbacks) : callbacks_(callbacks) {}
+  ~RemoteUi() { Shutdown(); }
 
   // (Re)connects to the UI WebSocket. Disconnects any existing socket first.
   void Connect(const std::string& url);
@@ -109,7 +120,7 @@ class RemoteUi {
   void Shutdown();
 
   // The latest assembled remote draw data, or nullptr before the first frame.
-  NetImguiImDrawData* RemoteDrawData() { return remote_draw_data_; }
+  NetImguiImDrawData* RemoteDrawData() { return remote_draw_data_.get(); }
 
   // Returns the bytes received since the last call and resets the counter.
   uint64_t ConsumeByteCount() {
@@ -142,17 +153,20 @@ class RemoteUi {
   // and the remote UI never appears. Mirrors mbCompressionSkipOncePending in
   // NetImguiServer RemoteClient.
   bool request_keyframe_ = true;
-  NetImgui::Internal::CmdDrawFrame* last_uncompressed_frame_ = nullptr;
+  std::unique_ptr<NetImgui::Internal::CmdDrawFrame, NetImguiDeleter>
+      last_uncompressed_frame_;
 
   // --- Session state. -------------------------------------------------------
 
-  NetImguiImDrawData* remote_draw_data_ = nullptr;
+  std::unique_ptr<NetImguiImDrawData, NetImguiDeleter> remote_draw_data_;
   std::unordered_map<ClientTextureID, uintptr_t> texture_map_;
 
   // CPU-side mirror of each texture's RGBA pixel data. Filament doesn't
   // support sub-region uploads (no glTexSubImage2D equivalent), so partial
   // updates from NetImgui must be patched into this buffer before
-  // re-uploading the full texture.
+  // re-uploading the full texture. Entries deliberately persist after upload
+  // (later partial updates patch them); they are erased on the client's
+  // Destroy command.
   struct TextureEntry {
     std::vector<uint8_t> pixels;  // Full RGBA pixel data
     uint32_t width = 0;

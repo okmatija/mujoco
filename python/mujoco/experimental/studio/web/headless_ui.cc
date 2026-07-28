@@ -242,9 +242,9 @@ class HeadlessUi {
         return false;
       }
 
-      bool newFrameResult = NetImgui::NewFrame(false);
-      is_drawing_remote_ = newFrameResult;
-      if (!newFrameResult) {
+      bool new_frame_result = NetImgui::NewFrame(false);
+      is_drawing_remote_ = new_frame_result;
+      if (!new_frame_result) {
         // Connected but NetImgui not ready for a draw — wait and retry.
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
         continue;
