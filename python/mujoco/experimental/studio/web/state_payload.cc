@@ -37,9 +37,7 @@ void AppendBytes(std::vector<std::byte>& buffer, const void* data,
   buffer.insert(buffer.end(), bytes, bytes + size);
 }
 
-// Appends a complete single-source block: [u32 tag][u32 size][payload].
-// Multi-source blocks (physics) append their parts directly instead of
-// staging them in a temporary.
+// Appends a complete [u32 tag][u32 size][payload] block.
 void AppendStateBlock(std::vector<std::byte>& buffer, uint32_t tag,
                       const void* data, size_t size) {
   StateBlockHeader block_header{tag, static_cast<uint32_t>(size)};
@@ -47,10 +45,7 @@ void AppendStateBlock(std::vector<std::byte>& buffer, uint32_t tag,
   AppendBytes(buffer, data, size);
 }
 
-// Serializes the render state directly into `ptr` (exactly kRenderStateSize
-// bytes): the fixed-size struct sequence documented in state_payload.h. The
-// total size is fixed (~1.5 KB) and independent of the model, making the
-// overhead negligible compared to the physics state.
+// Serializes the render state (exactly kRenderStateSize bytes) into `ptr`.
 void SerializeRenderStateInto(std::byte* ptr, const mjvCamera& camera,
                               const mjvPerturb& perturb,
                               const mjvOption& vis_options, const mjOption& opt,
@@ -105,15 +100,14 @@ std::vector<std::byte> SerializeStatePayload(
   header.model_crc32 = model_crc32;
   AppendBytes(buffer, &header, sizeof(header));
 
-  // Physics state: [i32 spec][mjtNum values...]. Two sources, so the block
-  // header and both parts are appended straight into the buffer.
+  // Physics state: [i32 spec][mjtNum values...].
   StateBlockHeader physics_header{
       kTagPhysicsState, static_cast<uint32_t>(sizeof(int32_t) + physics_bytes)};
   AppendBytes(buffer, &physics_header, sizeof(physics_header));
   AppendBytes(buffer, &physics_spec, sizeof(int32_t));
   AppendBytes(buffer, physics, physics_bytes);
 
-  // Render state: append the block header, then serialize into place.
+  // Render state, serialized into place.
   StateBlockHeader render_header{kTagRenderState,
                                  static_cast<uint32_t>(kRenderStateSize)};
   AppendBytes(buffer, &render_header, sizeof(render_header));

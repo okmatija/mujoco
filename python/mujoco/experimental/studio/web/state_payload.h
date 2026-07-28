@@ -12,30 +12,34 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// The web viewer's state payload: the wire format of the /state
-// WebSocket, serialized by the Python side (state_payload_py.cc) and parsed
-// by the browser (web_client_session.cc).
-//
-// The browser renders with the same call the native viewer makes each frame:
+// This file defines the serialization format for the web viewer's browser
+// client render payload containing the data needed so that the browser can
+// render the scene using the following call:
 //
 // Render(model, data, perturb, camera, vis_options, width, height, extra_geoms)
 //
-// width/height are the browser's own canvas size. The other arguments come
-// from the Python process, each sent in its cheapest form:
+// The arguments come from the Python process:
 //
 //   * model       : fetched once over HTTP as /model.mjb; its runtime-mutable
-//                   parts (opt/vis/stat) re-sent in the render state block.
+//                   parts (opt/vis/stat) are re-sent in the render state block.
 //   * data        : streamed as the physics state vector (mjSTATE_INTEGRATION);
 //                   the browser recomputes the rest via mj_setState/mj_forward.
+//   * width/height: the browser canvas size.
 //   * extra_geoms : optional variable-size kTagExtraGeoms block.
-//   * the rest    : the fixed-size render state block:
-//                   [mjvCamera][mjvPerturb][mjvOption][mjOption][mjVisual]
-//                   [mjStatistic][render_flags]
+//   * ...         : the rest of the arguments are sent as a fixed-size block
 //
-// The payload (see SerializeStatePayload below) is a sequence of tagged
-// blocks,
+// The payload (SerializeStatePayload) is a sequence of tagged blocks:
+//
 //   [StatePayloadHeader][u32 tag][u32 size][payload]...
-// and readers skip unknown tags, so new blocks don't break older clients.
+//
+// The payload is serialized by Python, sent over the /state WebSocket, and
+// parsed by the browser.
+//
+// TODO(matijak): Try shrinking the physics block: float32 (or quantized) values
+// instead of doubles, and/or delta-encoding against the client's last-acked
+// payload. The /state ack (web_server.py) tells the server which snapshot each
+// client last applied, which is the baseline that delta compression needs. For
+// 100humanoids.xml the payload is ~181 KB of doubles and dominates slow links.
 
 #ifndef MUJOCO_PYTHON_EXPERIMENTAL_STUDIO_WEB_STATE_PAYLOAD_H_
 #define MUJOCO_PYTHON_EXPERIMENTAL_STUDIO_WEB_STATE_PAYLOAD_H_
@@ -48,20 +52,9 @@
 
 namespace mujoco::studio {
 
-// The wire structs below are memcpy'd across platforms, so both sides must
-// agree on the exact layout; the static_asserts turn a layout divergence
-// (padding, packing) into a compile error on the offending platform — the
-// only place it can be fixed.
-
-// -----------------------------------------------------------------------------
-// Payload.
-// -----------------------------------------------------------------------------
-
-// Identifies the StateServer WebSocket payload header ("MJWS" as little-endian
-// bytes on the wire); helps detect malformed or misrouted messages. Built from
-// single-character literals so the byte order is explicit and well-defined (a
-// multicharacter literal like 'MJWS' would be implementation-defined, and on
-// gcc/clang big-endian-packed — the wrong wire bytes).
+// "MJWS" as little-endian bytes. This magic constant identifies the
+// StateServer WebSocket payload header and helps detect malformed or
+// misrouted messages.
 inline constexpr uint32_t kStatePayloadMagic =
     'M' | ('J' << 8) | ('W' << 16) | ('S' << 24);
 static_assert(kStatePayloadMagic == 0x53574A4Du);
@@ -80,13 +73,9 @@ struct StatePayloadHeader {
 };
 static_assert(sizeof(StatePayloadHeader) == 16);
 
-// -----------------------------------------------------------------------------
-// Blocks.
-// -----------------------------------------------------------------------------
-
 // Block tags. Readers must skip unknown tags.
 enum StateBlockTag : uint32_t {
-  kTagPhysicsState = 1,  // [i32 mjtState spec][mjtNum values...]
+  kTagPhysicsState = 1,  // [i32 mjtState spec signature][mjtNum values...]
   kTagRenderState = 2,   // fixed-size block of kRenderStateSize bytes
   kTagExtraGeoms = 3,    // n x mjvGeom (n = size / sizeof(mjvGeom))
 };
@@ -98,12 +87,9 @@ struct StateBlockHeader {
 static_assert(sizeof(StateBlockHeader) == 8);
 
 // Fixed byte size of the render state block appended after physics state.
-// These are plain C structs of int/float/double members — no pointers and no
-// types whose width varies by platform — and every ABI MuJoCo runs on
-// (Linux/macOS/Windows on x86_64 and arm64, Emscripten wasm32) lays them out
-// identically under natural alignment, so the size matches everywhere. If
-// the two sides still disagree (e.g. built from different MuJoCo versions),
-// ParseStatePayload rejects the block rather than misreading it.
+// These are plain C structs of int/float/double members whose total size is
+// fixed, independent of the model and generally negligible compared to the size
+// of the physics state
 inline constexpr size_t kRenderStateSize =
     sizeof(mjvCamera) + sizeof(mjvPerturb) + sizeof(mjvOption) +
     sizeof(mjOption) + sizeof(mjVisual) + sizeof(mjStatistic) + mjNRNDFLAG;
@@ -112,21 +98,11 @@ inline constexpr size_t kRenderStateSize =
 // memory buffer the StateServer allocates; WebViewer truncates longer lists.
 inline constexpr uint32_t kMaxExtraGeoms = 1024;
 
-// -----------------------------------------------------------------------------
-// Serialization API.
-// -----------------------------------------------------------------------------
-
 // Upper bound of a serialized payload, used to size the StateServer's shared
 // memory buffer. `physics_bytes` is mj_stateSize(...) * sizeof(mjtNum).
 size_t MaxStatePayloadSize(size_t physics_bytes);
 
 // Serialize the complete state payload sent over the state WebSocket.
-// TODO(matijak): Try shrinking the physics block: float32 (or quantized)
-// values instead of doubles, and/or delta-encoding against the client's
-// last-acked payload — the /state ack (web_server.py) tells the server
-// exactly which snapshot each client last applied, which is the baseline
-// game-style delta compression needs. At 100-humanoid scale the payload is
-// ~181 KB of doubles and dominates slow links.
 std::vector<std::byte> SerializeStatePayload(
     uint32_t model_crc32, int32_t physics_spec, const void* physics,
     size_t physics_bytes, const mjvCamera& camera, const mjvPerturb& perturb,
@@ -135,16 +111,14 @@ std::vector<std::byte> SerializeStatePayload(
     const mjvGeom* extra_geoms, size_t extra_geom_count);
 
 // Parsed view into a serialized payload. Pointers alias the input buffer and
-// are NOT guaranteed to be aligned — memcpy the data out before use.
+// are NOT guaranteed to be aligned; so you must memcpy the data out before use.
 struct StatePayloadView {
   uint32_t model_crc32 = 0;
   int32_t physics_spec = 0;
   const std::byte* physics = nullptr;
   size_t physics_bytes = 0;
-  // kRenderStateSize bytes when non-null.
-  const std::byte* render_state = nullptr;
-  // extra_geom_count * sizeof(mjvGeom) bytes.
-  const std::byte* extra_geoms = nullptr;
+  const std::byte* render_state = nullptr;  // kRenderStateSize bytes when non-null
+  const std::byte* extra_geoms = nullptr;   // extra_geom_count * sizeof(mjvGeom)
   size_t extra_geom_count = 0;
 };
 
