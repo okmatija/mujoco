@@ -155,7 +155,7 @@ else()
     netimgui
   )
 
-  mujoco_pybind11_module(state_payload state_payload.cc)
+  mujoco_pybind11_module(state_payload state_payload_py.cc)
   target_link_libraries(state_payload PRIVATE
     mujoco
     structs_header
