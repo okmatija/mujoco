@@ -39,6 +39,7 @@ endif()
 
 set(FILAMENT_ENABLE_EXPERIMENTAL_GCC_SUPPORT ON)
 set(FILAMENT_SKIP_SDL2 ON)
+set(FILAMENT_SKIP_SAMPLES ON)
 set(FILAMENT_USE_EXTERNAL_ABSL ON)
 set(FILAMENT_USE_EXTERNAL_BENCHMARK ON)
 set(FILAMENT_USE_EXTERNAL_GTEST ON)
@@ -48,7 +49,7 @@ if(WIN32)
 endif()
 
 set(FILAMENT_PATCH_COMMAND
-  git -c core.autocrlf=false -c core.whitespace=cr-at-eol apply --verbose --whitespace=fix --ignore-space-change ${mujoco_SOURCE_DIR}/cmake/filament-allow-clang-windows.patch
+  git --git-dir=. -c core.autocrlf=false -c core.whitespace=cr-at-eol apply --verbose --whitespace=fix --ignore-space-change ${mujoco_SOURCE_DIR}/cmake/filament-allow-clang-windows.patch
 )
 
 fetchpackage(

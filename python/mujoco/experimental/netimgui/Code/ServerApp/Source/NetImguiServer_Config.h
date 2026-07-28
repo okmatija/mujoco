@@ -1,4 +1,4 @@
-// Google3 modifications:
+// Google modifications:
 // - Added #include <chrono> for std::chrono::steady_clock::time_point
 
 #pragma once

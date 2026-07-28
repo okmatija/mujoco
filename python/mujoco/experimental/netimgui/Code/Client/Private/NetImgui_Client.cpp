@@ -1,4 +1,4 @@
-// Google3 modifications:
+// Google modifications:
 //  - Replaced yield() with sleep_for(1ms) in handshake wait loop to reduce
 //    CPU usage, and added a 5-second timeout to prevent infinite hangs when
 //    the server is unreachable.

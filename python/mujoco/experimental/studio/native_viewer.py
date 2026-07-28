@@ -21,7 +21,6 @@ to use these classes.
 from typing import Any
 
 import mujoco
-from mujoco.experimental.implot import implot
 from mujoco.experimental.studio import endpoints
 from mujoco.experimental.studio import native_viewer_cc as _viewer
 from mujoco.experimental.studio import ux
@@ -100,12 +99,8 @@ class NativeViewer(viewer_protocol.Viewer):
       self._viewer.InitRenderer(model)
       self._renderer_model_id = id(model)
 
-  def get_frame(self) -> bool:
-    """Advances the window and starts a frame.
-
-    Returns False when the window has been closed, flipping the running flag
-    so the loop exits and tears the viewer down on this thread.
-    """
+  def prepare_next_frame(self) -> bool:
+    """Advances to the next frame; returns False when the window is closed."""
     if not self._viewer.NewFrame():
       self._is_running = False
       return False

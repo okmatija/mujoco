@@ -1,4 +1,4 @@
-// Google3 modifications:
+// Google modifications:
 //  - Replaced select() with poll() to avoid FD_SETSIZE (1024) limit and
 //    a SIGSEGV caused by Linux select() writing to a const timeval placed
 //    in read-only memory by the compiler.

@@ -179,13 +179,6 @@ void ImguiBridge::Update() {
     PrepareRenderables(0);
     return;
   }
-  // Do NOT call commands->ScaleClipRects(scale): it mutates the draw data
-  // in place, and draw lists that persist across frames (the web client's
-  // streamed remote UI is rendered from the same lists until the next
-  // network frame arrives) would be scaled repeatedly — clip rects grow by
-  // the DPI scale on every re-render, intermittently clipping widgets out
-  // and letting scrolled-out content show. Clip rects are scaled locally
-  // in the per-command scissor computation below instead.
 
   // 2 floats for position, 2 floats for uv, 4 bytes for color.
   constexpr size_t kExpectedVertexSize =
@@ -267,14 +260,15 @@ void ImguiBridge::Update() {
       material.color_texture = GetTexture(command.GetTexID());
 
       material.decor_ux = true;
-      // Intersect the clip rect (scaled to physical pixels here, not via the
-      // mutating ScaleClipRects) with the viewport. Clip rects may extend
-      // slightly outside it (modal dialogs by design; bottom/right-docked
-      // windows by fractional DPI rounding, since width/height are truncated
-      // ints while the scaled clip rect is not), and filament's scissor test
-      // rejects out-of-window rects. Never substitute a full-window scissor
-      // for an out-of-range one: that disables clipping entirely and lets
-      // scrolled-out widgets paint over the rest of the UI.
+      // Scale clip rects to physical pixels here instead of using
+      // ScaleClipRects, which previously caused flickering and clipping bugs:
+      // it mutates draw data in place, so draw lists that are re-rendered
+      // across frames get scaled repeatedly (this happens in the web viewer,
+      // where the same draw lists are rendered until a new network frame
+      // arrives). We also clamp to the viewport because clip rects may extend
+      // slightly outside it (modal dialogs by design; fractional DPI rounding
+      // for bottom or right-docked windows), and filament rejects out-of-window
+      // scissor rects.
       const float clip_x0 = std::clamp(command.ClipRect.x * scale.x, 0.0f,
                                        static_cast<float>(width));
       const float clip_y0 = std::clamp(command.ClipRect.y * scale.y, 0.0f,
@@ -305,7 +299,8 @@ void ImguiBridge::PrepareRenderables(int count) {
     params.cast_shadows = false;
     params.receive_shadows = false;
     params.blend_order = static_cast<std::uint16_t>(renderables_.size() + 1);
-    auto& renderable = renderables_.emplace_back(CreateRenderable(ctx_, params));
+    auto& renderable =
+        renderables_.emplace_back(CreateRenderable(ctx_, params));
     mjrf_addRenderableToScene(scene_, renderable.get());
   }
   while (renderables_.size() > count) {

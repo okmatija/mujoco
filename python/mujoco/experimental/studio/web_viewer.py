@@ -321,7 +321,7 @@ class WebViewer(viewer_protocol.Viewer):
   # Viewer interface.
   # ---------------------------------------------------------------------------
 
-  def get_frame(self) -> bool:
+  def prepare_next_frame(self) -> bool:
     """Starts the headless ImGui frame; returns False if no browser is ready.
 
     When a browser is connected, injects its input (received via NetImgui) into

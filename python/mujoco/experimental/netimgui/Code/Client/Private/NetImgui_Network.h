@@ -1,5 +1,5 @@
-// Google3 modifications:
-// - Added #include <cstdint> for uint32_t (not implicitly available in google3)
+// Google modifications:
+// - Added #include <cstdint> for uint32_t (not implicitly available in Google)
 #pragma once
 
 #include <cstdint>

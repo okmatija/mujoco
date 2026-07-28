@@ -21,19 +21,13 @@ from mujoco.experimental.studio import messages
 from mujoco.experimental.studio import sim as _sim
 import numpy as np
 
-# Launcher-owned liveness probe: returns True while the viewer's container
-# is still alive. If the viewer runs in a separate thread this is
-# Thread.is_alive; if the viewer runs in a separate process (not implemented)
-# it is Process.is_alive. Lets the handle notice a viewer that died without
-# sending ExitEvent.
+# Launcher-owned liveness check: returns True while the viewer is still alive.
+# This enables the handle to notice a viewer died without sending ExitEvent.
 IsAliveFn = Callable[[], bool]
 
-# Launcher-owned shutdown hook: waits (up to the given timeout in seconds) for
-# the viewer to finish exiting. close() has already sent the ExitEvent that
-# tells the viewer to stop; this hook only waits. If the viewer runs in a
-# separate thread it is the thread's join; if it runs in a separate process
-# (not implemented) it joins the process. Waiting lets the viewer release its
-# resources before the interpreter starts tearing itself down.
+# Launcher-owned shutdown function: waits up to the given timeout (seconds) for
+# the viewer to finish after close() has sent the ExitEvent. Waiting lets the
+# viewer release its resources before the interpreter tears itself down.
 ShutdownFn = Callable[[float], None]
 
 
@@ -54,10 +48,9 @@ class ViewerHandle:
       sim_endpoint: The endpoint to use for communication with the viewer.
       handlers: Optional list of handler instances for sim-side processing,
         which are classes with methods decorated with ``@handler``.
-      is_alive_fn: Optional liveness probe; without one the viewer is assumed
-        to be running until ``close()`` is called.
-      shutdown_fn: Optional launcher-owned shutdown hook, called by
-        ``close()``.
+      is_alive_fn: Optional liveness check; without one the viewer is assumed to
+        be running until ``close()`` is called.
+      shutdown_fn: Optional launcher-owned shutdown hook, called by ``close()``.
     """
 
     self._sim_endpoint = sim_endpoint

@@ -1,4 +1,4 @@
-// Adapted for Google3: removed NETIMGUI_IMPLEMENTATION (sources compiled
+// Adapted for Google: removed NETIMGUI_IMPLEMENTATION (sources compiled
 // separately), updated include paths for third_party layout.
 
 //=================================================================================================

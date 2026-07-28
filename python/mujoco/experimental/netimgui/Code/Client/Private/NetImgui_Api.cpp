@@ -1,4 +1,4 @@
-// Google3 modifications:
+// Google modifications:
 //  - Adding missing headers.
 //  - Added logging for network events.
 #include "NetImgui_Shared.h"

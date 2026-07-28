@@ -1,5 +1,5 @@
-// Google3 modifications:
-//  - Updated stb_image include path for google3 third_party layout.
+// Google modifications:
+//  - Updated stb_image include path for Google third_party layout.
 #include "NetImguiServer_UI.h"
 
 #include <NetImgui_Api.h>

@@ -1,4 +1,4 @@
-// Google3 modifications:
+// Google modifications:
 //  - Added #ifndef guards around HAL_API_PLATFORM_* defines so they can be
 //    overridden from BUILD-level defines (-D flags).
 #pragma once

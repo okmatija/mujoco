@@ -1,5 +1,5 @@
-// Google3 modifications:
-//  - Updated nlohmann/json include path for google3 third_party layout.
+// Google modifications:
+//  - Updated nlohmann/json include path for Google third_party layout.
 #include "NetImguiServer_Config.h"
 
 #include <NetImgui_Api.h>
