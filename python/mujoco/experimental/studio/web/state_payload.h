@@ -55,10 +55,9 @@ namespace mujoco::studio {
 // "MJWS" as little-endian bytes. This magic constant identifies the
 // StateServer WebSocket payload header and helps detect malformed or
 // misrouted messages.
-inline constexpr uint32_t kStatePayloadMagic =
+constexpr uint32_t kStatePayloadMagic =
     'M' | ('J' << 8) | ('W' << 16) | ('S' << 24);
-static_assert(kStatePayloadMagic == 0x53574A4Du);
-inline constexpr uint16_t kStatePayloadVersion = 1;
+constexpr uint16_t kStatePayloadVersion = 1;
 
 struct StatePayloadHeader {
   uint32_t magic = kStatePayloadMagic;
@@ -90,13 +89,13 @@ static_assert(sizeof(StateBlockHeader) == 8);
 // These are plain C structs of int/float/double members whose total size is
 // fixed, independent of the model and generally negligible compared to the size
 // of the physics state
-inline constexpr size_t kRenderStateSize =
+constexpr size_t kRenderStateSize =
     sizeof(mjvCamera) + sizeof(mjvPerturb) + sizeof(mjvOption) +
     sizeof(mjOption) + sizeof(mjVisual) + sizeof(mjStatistic) + mjNRNDFLAG;
 
 // Maximum number of extra geoms serialized per frame. Bounds the shared
 // memory buffer the StateServer allocates; WebViewer truncates longer lists.
-inline constexpr uint32_t kMaxExtraGeoms = 1024;
+constexpr uint32_t kMaxExtraGeoms = 1024;
 
 // Upper bound of a serialized payload, used to size the StateServer's shared
 // memory buffer. `physics_bytes` is mj_stateSize(...) * sizeof(mjtNum).
