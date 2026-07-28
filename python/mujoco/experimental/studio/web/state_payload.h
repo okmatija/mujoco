@@ -66,11 +66,8 @@ struct StatePayloadHeader {
   // CRC32 of the model's MJB bytes. When this changes, the browser must
   // refetch /model.mjb before applying any further state.
   uint32_t model_crc32 = 0;
-  // Padding to 16 bytes; reserved for future flags so they can be added
-  // without a version bump (readers ignore it today).
-  uint32_t reserved = 0;
 };
-static_assert(sizeof(StatePayloadHeader) == 16);
+static_assert(sizeof(StatePayloadHeader) == 12);
 
 // Block tags. Readers must skip unknown tags.
 enum StateBlockTag : uint32_t {
