@@ -409,7 +409,9 @@ void RemoteUi::CaptureAndSendInput() {
       }
     }
 
-    // Only accumulate scroll when the local UI is NOT capturing mouse.
+    // Gate scroll ACCUMULATION on local capture (the freeze half of the
+    // wheel-total scheme; see the CmdInput wheel comment below). The totals
+    // themselves are still sent every frame.
     if (!localWantsMouse) {
       mouse_wheel_pos_[0] += io.MouseWheel;
       mouse_wheel_pos_[1] += io.MouseWheelH;
@@ -434,11 +436,16 @@ void RemoteUi::CaptureAndSendInput() {
   cmdInput.mCompressionUse = use_compression_;
   cmdInput.mCompressionSkip = request_keyframe_;
 
-  // Always send the absolute accumulated wheel counters. NetImgui derives
-  // scroll as (current - previous), so parking these at 0 while the local
-  // UI captures would reset the baseline: the remote side would then read a
-  // huge delta on the next real frame (wild zoom on expand, a jump back on
-  // collapse). A constant value keeps the delta at zero.
+  // NetImgui's wheel fields are lifetime running totals, not per-frame
+  // deltas: the receiving side derives each frame's scroll as
+  // (current total - previous total). So scroll is suppressed during local
+  // UI capture by FREEZING the totals (accumulation above is gated on
+  // !localWantsMouse), while still sending them every frame. Sending 0
+  // instead would rewind the receiver's baseline and produce two huge
+  // spurious deltas: -total when capture starts (wild zoom out as the local
+  // window expands) and +total when it ends (snap back on collapse).
+  // Note the deliberate asymmetry with the mouse position below, which IS
+  // per-frame absolute and can simply be parked while captured.
   cmdInput.mMouseWheelVert = mouse_wheel_pos_[0];
   cmdInput.mMouseWheelHoriz = mouse_wheel_pos_[1];
 
