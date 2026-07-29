@@ -26,6 +26,9 @@ using namespace NetImgui::Internal;
 
 namespace {
 
+// Delta-compress the GUI stream (relayed to the client via CmdInput).
+constexpr bool kUseCompression = true;
+
 void LogUnmappedTexture(
     RemoteUi::ClientTextureID client_tex_id, size_t map_size, uint32_t draw_idx,
     const std::unordered_map<RemoteUi::ClientTextureID, uintptr_t>& tex_map) {
@@ -411,8 +414,9 @@ void RemoteUi::ProcessCmdDrawFrame(CmdDrawFrame* cmd_draw_frame) {
 
   cmd_draw_frame->ToPointers();
 
-  NetImguiImDrawData* draw_data = netImguiNew<NetImguiImDrawData>();
-  draw_data->mFrameIndex = cmd_draw_frame->mFrameIndex;
+  RemoteDrawFrame* frame = netImguiNew<RemoteDrawFrame>();
+  frame->frame_index = cmd_draw_frame->mFrameIndex;
+  ImDrawData* draw_data = &frame->draw_data;
   draw_data->Valid = true;
   draw_data->TotalVtxCount =
       static_cast<int>(cmd_draw_frame->mTotalVerticeCount);
@@ -570,7 +574,7 @@ void RemoteUi::ProcessCmdDrawFrame(CmdDrawFrame* cmd_draw_frame) {
     LOG(Info, "First remote draw frame applied (%d cmds, %d vtx)",
         draw_data->CmdLists[0]->CmdBuffer.Size, draw_data->TotalVtxCount);
   }
-  remote_draw_data_.reset(draw_data);
+  remote_draw_data_.reset(frame);
 }
 
 
@@ -625,7 +629,7 @@ void RemoteUi::CaptureAndSendInput() {
   }
   cmd_input.mFontDPIScaling = 1.f;
   cmd_input.mDesiredFps = 60.0f;
-  cmd_input.mCompressionUse = use_compression_;
+  cmd_input.mCompressionUse = kUseCompression;
   cmd_input.mCompressionSkip = request_keyframe_;
 
   // NetImgui's wheel fields are lifetime running totals, not per-frame

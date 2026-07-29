@@ -543,8 +543,7 @@ void MainLoopImpl() {
   // local UI always renders on top of remote content.
   // ImGui::GetDrawData() is only valid after ImGui::Render() and until the next
   // call to ImGui::NewFrame().
-  mujoco::studio::NetImguiImDrawData* remote_draw_data =
-      g_app.remote_ui.RemoteDrawData();
+  ImDrawData* remote_draw_data = g_app.remote_ui.RemoteDrawData();
   if (remote_draw_data && remote_draw_data->Valid &&
       g_app.session.Role() == SessionRole::kControlling) {
     ImDrawData* local_draw_data = ImGui::GetDrawData();

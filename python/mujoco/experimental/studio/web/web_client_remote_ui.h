@@ -49,17 +49,19 @@ struct NetImguiDeleter {
   }
 };
 
-// ImDrawData wrapper for receiving remote draw data.
-struct NetImguiImDrawData : ImDrawData {
-  NetImguiImDrawData()
-      : mCommandList(ImGui::GetCurrentContext() ? ImGui::GetDrawListSharedData()
+// An assembled remote frame: an ImDrawData plus the single command list it
+// points at (a plain ImDrawData only references externally-owned lists).
+struct RemoteDrawFrame {
+  RemoteDrawFrame()
+      : command_list(ImGui::GetCurrentContext() ? ImGui::GetDrawListSharedData()
                                                 : nullptr) {
-    CmdLists.push_back(&mCommandList);
-    CmdListsCount = 1;
+    draw_data.CmdLists.push_back(&command_list);
+    draw_data.CmdListsCount = 1;
   }
-  ~NetImguiImDrawData() {}
-  ImDrawList mCommandList;
-  uint64_t mFrameIndex = 0;
+
+  ImDrawData draw_data;
+  ImDrawList command_list;
+  uint64_t frame_index = 0;
 };
 
 class RemoteUi {
@@ -67,6 +69,7 @@ class RemoteUi {
   using SocketInfo = NetImgui::Internal::Network::SocketInfo;
   using ReadyState = NetImgui::Internal::Network::ReadyState;
   using ClientTextureID = NetImgui::Internal::ClientTextureID;
+
   // The renderer-facing callbacks of the link; the app implements them once.
   // The link reaches the GPU only through it, so the protocol logic stays
   // renderer-agnostic.
@@ -86,11 +89,14 @@ class RemoteUi {
 
   // (Re)connects to the UI WebSocket. Disconnects any existing socket first.
   void Connect(const std::string& url);
+
   bool HasSocket() const { return socket_ != nullptr; }
+
   // Current socket state; browser WebSockets connect and close
   // asynchronously, so this can differ from HasSocket() (see
   // google/network_status.h).
   ReadyState ConnectionState() const;
+
   // The WebSocket close code once the socket has closed, else 0 (e.g.
   // 4001 = another browser holds the controller slot).
   int CloseCode() const;
@@ -120,7 +126,9 @@ class RemoteUi {
   void Shutdown();
 
   // The latest assembled remote draw data, or nullptr before the first frame.
-  NetImguiImDrawData* RemoteDrawData() { return remote_draw_data_.get(); }
+  ImDrawData* RemoteDrawData() {
+    return remote_draw_data_ ? &remote_draw_data_->draw_data : nullptr;
+  }
 
   // Returns the bytes received since the last call and resets the counter.
   uint64_t ConsumeByteCount() {
@@ -158,7 +166,7 @@ class RemoteUi {
 
   // --- Session state. -------------------------------------------------------
 
-  std::unique_ptr<NetImguiImDrawData, NetImguiDeleter> remote_draw_data_;
+  std::unique_ptr<RemoteDrawFrame, NetImguiDeleter> remote_draw_data_;
   std::unordered_map<ClientTextureID, uintptr_t> texture_map_;
 
   // CPU-side mirror of each texture's RGBA pixel data. Filament doesn't
@@ -180,8 +188,6 @@ class RemoteUi {
   float mouse_wheel_pos_[2] = {0.0f, 0.0f};
   uint16_t last_screen_size_[2] = {0, 0};
 
-  // Delta-compress the GUI stream (relayed to the client via CmdInput).
-  bool use_compression_ = true;
 
   // --- Telemetry. -----------------------------------------------------------
 
