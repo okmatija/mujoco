@@ -14,8 +14,6 @@
 
 #include "web_client_local_ui.h"
 
-#include <imgui.h>
-
 #include <algorithm>
 #include <cfloat>
 #include <cinttypes>
@@ -24,6 +22,7 @@
 #include <cstdio>
 #include <initializer_list>
 
+#include <imgui.h>
 #include "google/logging.h"
 
 namespace mujoco::studio {
@@ -244,7 +243,11 @@ void RoleWindow::DrawCollapsed(const SessionView& view) {
   } else {
     ImGui::TextColored(kConnectingColor, "CONNECTING");
   }
-  if (ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem)) {
+  // Keep the window expanded while focused or being dragged, so dragging out
+  // of the collapsed bounds doesn't instantly collapse it midway through
+  // a move (which drops drag capture in ImGui).
+  if (ImGui::IsWindowFocused() ||
+      ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem)) {
     mode_ = Mode::kExpanded;
   }
   UpdateSnap();
@@ -386,10 +389,6 @@ void RoleWindow::DrawControllerContents(const SessionView& view,
 void RoleWindow::UpdateCollapse() {
   const bool popup_open = ImGui::IsPopupOpen(
       "", ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel);
-  // Keep the window expanded while it is being dragged or holds focus, not
-  // only while hovered: collapsing mid-drag resizes the window out from
-  // under the mouse, drops ImGui's capture, and leaks the drag to the
-  // camera (or aborts a slider edit).
   if (popup_open || dragging_ ||
       ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) ||
       ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem)) {

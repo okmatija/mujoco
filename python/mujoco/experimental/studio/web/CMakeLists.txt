@@ -104,8 +104,9 @@ if(EMSCRIPTEN)
   # The Filament assets (materials, IBL) and UI fonts are served as plain files
   # under /assets (staged into dist/assets below). The page fetches them and
   # pushes them into the client via registerAsset() before startApp() runs (see
-  # index.html and web_client.cc's AssetRegistry). No --preload-file is used, so
-  # no web_client.data is produced.
+  # index.html and web_client.cc's AssetRegistry). Note: adding an asset? also
+  # update assetsToPrefetch in index.html. No --preload-file is used, so no
+  # web_client.data is produced.
   set(WEB_CLIENT_FILAMENT_ASSETS_DIR
       ${CMAKE_BINARY_DIR}/src/render/filament/assets
   )

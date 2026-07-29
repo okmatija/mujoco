@@ -24,8 +24,6 @@
 #ifndef MUJOCO_PYTHON_EXPERIMENTAL_STUDIO_WEB_WEB_CLIENT_REMOTE_UI_H_
 #define MUJOCO_PYTHON_EXPERIMENTAL_STUDIO_WEB_WEB_CLIENT_REMOTE_UI_H_
 
-#include <imgui.h>
-
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -33,9 +31,10 @@
 #include <unordered_map>
 #include <vector>
 
-#include "NetImgui_Api.h"
-#include "NetImgui_CmdPackets.h"
-#include "NetImgui_Network.h"
+#include <imgui.h>
+#include <NetImgui_Api.h>
+#include <NetImgui_CmdPackets.h>
+#include <NetImgui_Network.h>
 #include "google/network_status.h"
 
 namespace mujoco::studio {
@@ -69,7 +68,6 @@ class RemoteUi {
   using SocketInfo = NetImgui::Internal::Network::SocketInfo;
   using ReadyState = NetImgui::Internal::Network::ReadyState;
   using ClientTextureID = NetImgui::Internal::ClientTextureID;
-
   // The renderer-facing callbacks of the link; the app implements them once.
   // The link reaches the GPU only through it, so the protocol logic stays
   // renderer-agnostic.
@@ -89,14 +87,11 @@ class RemoteUi {
 
   // (Re)connects to the UI WebSocket. Disconnects any existing socket first.
   void Connect(const std::string& url);
-
   bool HasSocket() const { return socket_ != nullptr; }
-
   // Current socket state; browser WebSockets connect and close
   // asynchronously, so this can differ from HasSocket() (see
   // google/network_status.h).
   ReadyState ConnectionState() const;
-
   // The WebSocket close code once the socket has closed, else 0 (e.g.
   // 4001 = another browser holds the controller slot).
   int CloseCode() const;

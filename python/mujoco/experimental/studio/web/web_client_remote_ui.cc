@@ -43,8 +43,8 @@ void LogUnmappedTexture(
 }
 
 void LogCmdReceived(CmdHeader::eCommands cmd_type, uint32_t cmd_size,
-                      int draw_frames, int textures,
-                      const PendingCom& pending_receive) {
+                    int draw_frames, int textures,
+                    const PendingCom& pending_receive) {
   if (cmd_type == CmdHeader::eCommands::Version) {
     const CmdVersion* ver =
         reinterpret_cast<const CmdVersion*>(pending_receive.pCommand);
@@ -60,8 +60,8 @@ void LogCmdReceived(CmdHeader::eCommands cmd_type, uint32_t cmd_size,
   } else if (cmd_type != CmdHeader::eCommands::Count &&
              cmd_type != CmdHeader::eCommands::Clipboard &&
              cmd_type != CmdHeader::eCommands::Input) {
-    VLOG(2, "Received UNKNOWN cmd: type=%d, size=%u", static_cast<int>(cmd_type),
-         cmd_size);
+    VLOG(2, "Received UNKNOWN cmd: type=%d, size=%u",
+         static_cast<int>(cmd_type), cmd_size);
   }
 }
 
@@ -218,8 +218,7 @@ void RemoteUi::ReceiveAndProcessCommands(int frame) {
     total_cmds_received_++;
     CmdHeader::eCommands cmd_type = pending_receive_.pCommand->mType;
     LogCmdReceived(cmd_type, pending_receive_.pCommand->mSize,
-                     draw_frames_received_, textures_received_,
-                     pending_receive_);
+                   draw_frames_received_, textures_received_, pending_receive_);
 
     if (cmd_type == CmdHeader::eCommands::Count) {
       // CmdPendingRead sentinel — skip silently.
@@ -263,16 +262,17 @@ void RemoteUi::ProcessCmdTexture(CmdTexture* cmd_texture) {
   }
 
   ClientTextureID tex_id = cmd_texture->mTextureClientID;
-  VLOG(1,
-       "ProcessCmdTexture: client_tex_id=%lu, status=%d, size=%ux%u, format=%d, "
-       "offset=%u,%u, map_size=%zu",
-       static_cast<unsigned long>(tex_id),
-       static_cast<int>(cmd_texture->mStatus),
-       static_cast<uint32_t>(cmd_texture->mWidth),
-       static_cast<uint32_t>(cmd_texture->mHeight),
-       static_cast<int>(cmd_texture->mFormat),
-       static_cast<uint32_t>(cmd_texture->mOffsetX),
-       static_cast<uint32_t>(cmd_texture->mOffsetY), texture_map_.size());
+  VLOG(
+      1,
+      "ProcessCmdTexture: client_tex_id=%lu, status=%d, size=%ux%u, format=%d, "
+      "offset=%u,%u, map_size=%zu",
+      static_cast<unsigned long>(tex_id),
+      static_cast<int>(cmd_texture->mStatus),
+      static_cast<uint32_t>(cmd_texture->mWidth),
+      static_cast<uint32_t>(cmd_texture->mHeight),
+      static_cast<int>(cmd_texture->mFormat),
+      static_cast<uint32_t>(cmd_texture->mOffsetX),
+      static_cast<uint32_t>(cmd_texture->mOffsetY), texture_map_.size());
 
   uintptr_t& local_tex = texture_map_[tex_id];
 
@@ -297,13 +297,13 @@ void RemoteUi::ProcessCmdTexture(CmdTexture* cmd_texture) {
   const uint32_t patch_h = cmd_texture->mHeight;
   const size_t pixel_count = static_cast<size_t>(patch_w) * patch_h;
   const size_t data_size = cmd_texture->mSize >= sizeof(CmdTexture)
-                              ? cmd_texture->mSize - sizeof(CmdTexture)
-                              : 0;
+                               ? cmd_texture->mSize - sizeof(CmdTexture)
+                               : 0;
   const size_t expected_rgba = pixel_count * 4;
 
   // Detect actual format by data size, not format tag (which can be wrong).
   const bool is_a8 = (cmd_texture->mFormat == 1) ||
-                    (data_size == pixel_count && data_size != expected_rgba);
+                     (data_size == pixel_count && data_size != expected_rgba);
   const size_t needed = is_a8 ? pixel_count : expected_rgba;
   if (pixel_count == 0 || data_size < needed) {
     LOG(Warning,
@@ -395,8 +395,8 @@ void RemoteUi::ProcessCmdDrawFrame(CmdDrawFrame* cmd_draw_frame) {
     if (last_uncompressed_frame_ != nullptr &&
         (last_uncompressed_frame_->mFrameIndex + 1) ==
             cmd_draw_frame->mFrameIndex) {
-      CmdDrawFrame* uncompressed_frame =
-          DecompressCmdDrawFrame(last_uncompressed_frame_.get(), cmd_draw_frame);
+      CmdDrawFrame* uncompressed_frame = DecompressCmdDrawFrame(
+          last_uncompressed_frame_.get(), cmd_draw_frame);
       netImguiDeleteSafe(cmd_draw_frame);
       cmd_draw_frame = uncompressed_frame;
     } else {
@@ -420,7 +420,8 @@ void RemoteUi::ProcessCmdDrawFrame(CmdDrawFrame* cmd_draw_frame) {
   draw_data->Valid = true;
   draw_data->TotalVtxCount =
       static_cast<int>(cmd_draw_frame->mTotalVerticeCount);
-  draw_data->TotalIdxCount = static_cast<int>(cmd_draw_frame->mTotalIndiceCount);
+  draw_data->TotalIdxCount =
+      static_cast<int>(cmd_draw_frame->mTotalIndiceCount);
 
   draw_data->DisplayPos.x = cmd_draw_frame->mDisplayArea[0];
   draw_data->DisplayPos.y = cmd_draw_frame->mDisplayArea[1];
@@ -547,7 +548,7 @@ void RemoteUi::ProcessCmdDrawFrame(CmdDrawFrame* cmd_draw_frame) {
               static_cast<ImTextureID>(it->second);
         } else {
           LogUnmappedTexture(client_tex_id, texture_map_.size(), draw_idx,
-                               texture_map_);
+                             texture_map_);
           // Skip draw commands with unmapped textures.
           command_dst[draw_idx].ElemCount = 0;
         }
@@ -577,7 +578,6 @@ void RemoteUi::ProcessCmdDrawFrame(CmdDrawFrame* cmd_draw_frame) {
   remote_draw_data_.reset(frame);
 }
 
-
 void RemoteUi::CaptureAndSendInput() {
   if (!socket_) return;
 
@@ -600,14 +600,14 @@ void RemoteUi::CaptureAndSendInput() {
       const size_t added_char = io.InputQueueCharacters.size();
       if (added_char) {
         pending_input_chars_.resize(initial_size + added_char);
-        memcpy(&pending_input_chars_[initial_size], io.InputQueueCharacters.Data,
-               added_char * sizeof(ImWchar));
+        memcpy(&pending_input_chars_[initial_size],
+               io.InputQueueCharacters.Data, added_char * sizeof(ImWchar));
       }
     }
 
-    // Gate scroll ACCUMULATION on local capture (the freeze half of the
-    // wheel-total scheme; see the CmdInput wheel comment below). The totals
-    // themselves are still sent every frame.
+    // Gate scroll ACCUMULATION on local capture, the totals themselves are
+    // still sent every frame. This implements the "FREEZING" mentioned in the
+    // CmdInput wheel comment below.
     if (!local_wants_mouse) {
       mouse_wheel_pos_[0] += io.MouseWheel;
       mouse_wheel_pos_[1] += io.MouseWheelH;
@@ -632,20 +632,18 @@ void RemoteUi::CaptureAndSendInput() {
   cmd_input.mCompressionUse = kUseCompression;
   cmd_input.mCompressionSkip = request_keyframe_;
 
-  // NetImgui's wheel fields are lifetime running totals, not per-frame
-  // deltas: the receiving side derives each frame's scroll as
-  // (current total - previous total). So scroll is suppressed during local
-  // UI capture by FREEZING the totals (accumulation above is gated on
-  // !local_wants_mouse), while still sending them every frame. Sending 0
-  // instead would rewind the receiver's baseline and produce two huge
-  // spurious deltas: -total when capture starts (wild zoom out as the local
-  // window expands) and +total when it ends (snap back on collapse).
-  // Note the deliberate asymmetry with the mouse position below, which IS
-  // per-frame absolute and can simply be parked while captured.
+  // NetImgui wheel fields are lifetime running totals, not per-frame deltas:
+  // the receiving side derives each frame's scroll as the difference between
+  // the current total and the previous total. So scroll is suppressed during
+  // local UI capture by FREEZING the totals (accumulation above is gated on
+  // !local_wants_mouse), while still sending them every frame. Sending 0 instead
+  // would rewind the receiver's baseline and produce two huge spurious deltas:
+  // -total when capture starts (wild zoom out as the local window expands) and
+  // +total when it ends (snap back on collapse). Note the deliberate asymmetry
+  // with the mouse position below, which IS per-frame absolute and can simply
+  // be parked while captured.
   cmd_input.mMouseWheelVert = mouse_wheel_pos_[0];
   cmd_input.mMouseWheelHoriz = mouse_wheel_pos_[1];
-
-  // Send the mouse position only when the local UI is not capturing.
   if (!local_wants_mouse) {
     cmd_input.mMousePos[0] = static_cast<int16_t>(io.MousePos.x);
     cmd_input.mMousePos[1] = static_cast<int16_t>(io.MousePos.y);
@@ -758,7 +756,6 @@ void RemoteUi::CaptureAndSendInput() {
     request_keyframe_ = false;
   }
 }
-
 
 void RemoteUi::Shutdown() {
   remote_draw_data_.reset();

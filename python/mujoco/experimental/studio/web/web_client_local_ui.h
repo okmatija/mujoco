@@ -22,7 +22,6 @@
 #define MUJOCO_PYTHON_EXPERIMENTAL_STUDIO_WEB_WEB_CLIENT_LOCAL_UI_H_
 
 #include <imgui.h>
-
 #include "web_client_session.h"
 
 namespace mujoco::studio {

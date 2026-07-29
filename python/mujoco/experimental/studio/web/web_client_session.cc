@@ -23,9 +23,7 @@
 
 namespace mujoco::studio {
 
-// Session-channel messages, sent and received as text frames on the state
-// WebSocket. Keep in sync with _SessionMessage / _GRANT_MESSAGE /
-// _STATE_ACK_MESSAGE in web_server.py.
+// Session-channel messages sent/received as text frames on the state WebSocket.
 constexpr char kMsgRequestControl[] = "request_control";
 constexpr char kMsgLeaveQueue[] = "leave_queue";
 constexpr char kMsgForceControl[] = "force_control";

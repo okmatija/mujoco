@@ -20,14 +20,9 @@
 // wiring between the session (web_client_session.h), the remote UI stream
 // (web_client_remote_ui.h) and the Filament renderer.
 
-#include <SDL.h>
-#include <SDL_opengl.h>
 #include <emscripten.h>
 #include <emscripten/bind.h>
 #include <emscripten/fetch.h>
-#include <imgui.h>
-#include <implot.h>
-#include <mujoco/mujoco.h>
 #include <stdint.h>
 #include <stdio.h>
 
@@ -46,11 +41,16 @@
 #include <unordered_map>
 #include <vector>
 
-#include "NetImgui_Api.h"
+#include <SDL.h>
+#include <SDL_opengl.h>
+#include <imgui.h>
+#include <implot.h>
+#include <mujoco/mujoco.h>
 #include "experimental/platform/hal/renderer.h"
 #include "experimental/platform/hal/window.h"
 #include "experimental/platform/sim/model_holder.h"
 #include "experimental/platform/ux/interaction.h"
+#include <NetImgui_Api.h>
 #include "google/logging.h"
 #include "state_payload.h"
 #include "web_client_local_ui.h"
