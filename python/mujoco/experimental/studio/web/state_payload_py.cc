@@ -17,18 +17,16 @@
 // WebViewer serializes the /state WebSocket payload with this module each
 // frame; the browser parses it with the same header (web_client_session).
 
-#include "state_payload.h"
-
-#include <mujoco/mujoco.h>
-#include <pybind11/pybind11.h>
-#include <pybind11/stl.h>
-
 #include <cstddef>
 #include <cstdint>
 #include <string>
 #include <vector>
 
+#include <mujoco/mujoco.h>
+#include "state_payload.h"
 #include "structs.h"
+#include <pybind11/pybind11.h>
+#include <pybind11/stl.h>
 
 namespace py = pybind11;
 

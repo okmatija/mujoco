@@ -44,11 +44,11 @@
 #ifndef MUJOCO_PYTHON_EXPERIMENTAL_STUDIO_WEB_STATE_PAYLOAD_H_
 #define MUJOCO_PYTHON_EXPERIMENTAL_STUDIO_WEB_STATE_PAYLOAD_H_
 
-#include <mujoco/mujoco.h>
-
 #include <cstddef>
 #include <cstdint>
 #include <vector>
+
+#include <mujoco/mujoco.h>
 
 namespace mujoco::studio {
 

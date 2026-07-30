@@ -20,12 +20,12 @@
 
 #include "state_payload.h"
 
-#include <mujoco/mujoco.h>
-
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <vector>
+
+#include <mujoco/mujoco.h>
 
 namespace mujoco::studio {
 namespace {
