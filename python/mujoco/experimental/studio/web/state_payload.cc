@@ -78,6 +78,32 @@ void SerializeRenderStateInto(std::byte* ptr, const mjvCamera& camera,
 
 }  // namespace
 
+// Kept directly below SerializeRenderStateInto (above): the two must copy the
+// same fields in the same order.
+void ParseRenderState(const std::byte* data, RenderStateView* out) {
+  const std::byte* ptr = data;
+
+  memcpy(&out->camera, ptr, sizeof(mjvCamera));
+  ptr += sizeof(mjvCamera);
+
+  memcpy(&out->perturb, ptr, sizeof(mjvPerturb));
+  ptr += sizeof(mjvPerturb);
+
+  memcpy(&out->vis_options, ptr, sizeof(mjvOption));
+  ptr += sizeof(mjvOption);
+
+  memcpy(&out->opt, ptr, sizeof(mjOption));
+  ptr += sizeof(mjOption);
+
+  memcpy(&out->vis, ptr, sizeof(mjVisual));
+  ptr += sizeof(mjVisual);
+
+  memcpy(&out->stat, ptr, sizeof(mjStatistic));
+  ptr += sizeof(mjStatistic);
+
+  memcpy(out->render_flags, ptr, mjNRNDFLAG);
+}
+
 size_t MaxStatePayloadSize(size_t physics_bytes) {
   return sizeof(StatePayloadHeader) + 3 * sizeof(StateBlockHeader) +
          (sizeof(int32_t) + physics_bytes) + kRenderStateSize +

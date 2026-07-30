@@ -48,21 +48,9 @@ struct NetImguiDeleter {
   }
 };
 
-// An assembled remote frame: an ImDrawData plus the single command list it
-// points at (a plain ImDrawData only references externally-owned lists).
-struct RemoteDrawFrame {
-  RemoteDrawFrame()
-      : command_list(ImGui::GetCurrentContext() ? ImGui::GetDrawListSharedData()
-                                                : nullptr) {
-    draw_data.CmdLists.push_back(&command_list);
-    draw_data.CmdListsCount = 1;
-  }
-
-  ImDrawData draw_data;
-  ImDrawList command_list;
-  uint64_t frame_index = 0;
-};
-
+// The browser's end of the streamed Studio UI: connects to the UI WebSocket,
+// receives NetImgui draw frames and textures from the Python side, assembles
+// them into ImGui draw data for rendering, and sends the browser's input back.
 class RemoteUi {
  public:
   using SocketInfo = NetImgui::Internal::Network::SocketInfo;
@@ -137,6 +125,22 @@ class RemoteUi {
   void ProcessCmdTexture(NetImgui::Internal::CmdTexture* cmd);
 
  private:
+  // An assembled remote frame: an ImDrawData plus the single command list it
+  // points at (a plain ImDrawData only references externally-owned lists).
+  struct RemoteDrawFrame {
+    RemoteDrawFrame()
+        : command_list(ImGui::GetCurrentContext()
+                           ? ImGui::GetDrawListSharedData()
+                           : nullptr) {
+      draw_data.CmdLists.push_back(&command_list);
+      draw_data.CmdListsCount = 1;
+    }
+
+    ImDrawData draw_data;
+    ImDrawList command_list;
+    uint64_t frame_index = 0;
+  };
+
   Callbacks& callbacks_;
 
   float max_clip_[2] = {0.0f, 0.0f};

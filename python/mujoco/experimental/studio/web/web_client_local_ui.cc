@@ -23,6 +23,8 @@
 #include <initializer_list>
 
 #include <imgui.h>
+
+#include "experimental/platform/ux/imgui_widgets.h"
 #include "google/logging.h"
 
 namespace mujoco::studio {
@@ -34,28 +36,6 @@ const ImVec4 kControllingColor(0.3f, 0.9f, 0.4f, 1.0f);
 const ImVec4 kQueueColor(1.0f, 0.62f, 0.15f, 1.0f);
 const ImVec4 kConnectingColor(0.6f, 0.6f, 0.6f, 1.0f);
 
-// TODO(matijak): Move these centered-text helpers into
-// platform/ux/imgui_widgets.cc.
-void CenteredLine(const char* text, const ImVec4* color) {
-  ImGui::SetCursorPosX(std::max(
-      0.0f, (ImGui::GetWindowWidth() - ImGui::CalcTextSize(text).x) * 0.5f));
-  if (color != nullptr) {
-    ImGui::TextColored(*color, "%s", text);
-  } else {
-    ImGui::TextUnformatted(text);
-  }
-}
-
-// Large centered banner text (SPECTATING / CONTROLLING / DISCONNECTED).
-void CenteredBanner(const char* text, const ImVec4& color) {
-  ImGui::SetWindowFontScale(1.6f);
-  const float text_width = ImGui::CalcTextSize(text).x;
-  ImGui::SetCursorPosX(
-      std::max(0.0f, (ImGui::GetWindowWidth() - text_width) * 0.5f));
-  ImGui::TextColored(color, "%s", text);
-  ImGui::SetWindowFontScale(1.0f);
-}
-
 // Draws one screen-centered DISCONNECTED window.
 void DrawDisconnectWindow(const char* window_id,
                           std::initializer_list<const char*> lines) {
@@ -66,9 +46,9 @@ void DrawDisconnectWindow(const char* window_id,
   ImGui::Begin(window_id, nullptr,
                ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
                    ImGuiWindowFlags_NoMove | ImGuiWindowFlags_AlwaysAutoResize);
-  CenteredBanner("DISCONNECTED", ImVec4(1.0f, 0.3f, 0.3f, 1.0f));
+  platform::CenteredBanner("DISCONNECTED", ImVec4(1.0f, 0.3f, 0.3f, 1.0f));
   for (const char* line : lines) {
-    CenteredLine(line, nullptr);
+    platform::CenteredLine(line, nullptr);
   }
   ImGui::End();
 }
@@ -266,7 +246,7 @@ void RoleWindow::DrawExpanded(const SessionView& view,
   if (view.role == SessionRole::kClaiming) {
     // The first roster or /ui claim outcome resolves this within a few
     // hundred milliseconds of page load.
-    CenteredBanner("CONNECTING", kConnectingColor);
+    platform::CenteredBanner("CONNECTING", kConnectingColor);
     ImGui::Separator();
     DataRateLines(view);
   } else if (view.role == SessionRole::kSpectating) {
@@ -283,7 +263,7 @@ void RoleWindow::DrawExpanded(const SessionView& view,
 void RoleWindow::DrawSpectatorContents(const SessionView& view,
                                        SessionActions& actions) {
   // Control group.
-  CenteredBanner("SPECTATING", kSpectatingColor);
+  platform::CenteredBanner("SPECTATING", kSpectatingColor);
   char queue_text[64];
   if (view.queue_pos > 0) {
     snprintf(queue_text, sizeof(queue_text), "Control Queue: Position %d of %d",
@@ -294,7 +274,7 @@ void RoleWindow::DrawSpectatorContents(const SessionView& view,
   } else {
     snprintf(queue_text, sizeof(queue_text), "Control Queue: (empty)");
   }
-  CenteredLine(queue_text, nullptr);
+  platform::CenteredLine(queue_text, nullptr);
   if (view.queue_pos == 0) {
     if (ImGui::Button("Request control", kFullWidth)) {
       actions.RequestControl();
@@ -342,14 +322,14 @@ void RoleWindow::DrawSpectatorContents(const SessionView& view,
 void RoleWindow::DrawControllerContents(const SessionView& view,
                                         SessionActions& actions) {
   // Control group.
-  CenteredBanner("CONTROLLING", kControllingColor);
+  platform::CenteredBanner("CONTROLLING", kControllingColor);
   if (view.queue_len > 0) {
     char queue_text[64];
     snprintf(queue_text, sizeof(queue_text), ">> Control Queue: %d waiting <<",
              view.queue_len);
-    CenteredLine(queue_text, &kQueueColor);
+    platform::CenteredLine(queue_text, &kQueueColor);
   } else {
-    CenteredLine("Control Queue: (empty)", nullptr);
+    platform::CenteredLine("Control Queue: (empty)", nullptr);
   }
   if (ImGui::Button("Release control", kFullWidth)) {
     actions.ReleaseControl();

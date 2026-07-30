@@ -33,6 +33,27 @@
 
 namespace mujoco::platform {
 
+// Draws one line of text horizontally centered in the current window, in
+// `color` when given.
+inline void CenteredLine(const char* text, const ImVec4* color = nullptr) {
+  ImGui::SetCursorPosX(ImMax(
+      0.0f, (ImGui::GetWindowWidth() - ImGui::CalcTextSize(text).x) * 0.5f));
+  if (color != nullptr) {
+    ImGui::TextColored(*color, "%s", text);
+  } else {
+    ImGui::TextUnformatted(text);
+  }
+}
+
+// Large centered banner text (e.g. SPECTATING / CONTROLLING / DISCONNECTED).
+inline void CenteredBanner(const char* text, const ImVec4& color) {
+  ImGui::SetWindowFontScale(1.6f);
+  ImGui::SetCursorPosX(ImMax(
+      0.0f, (ImGui::GetWindowWidth() - ImGui::CalcTextSize(text).x) * 0.5f));
+  ImGui::TextColored(color, "%s", text);
+  ImGui::SetWindowFontScale(1.0f);
+}
+
 // Helper to get available content region width that does not change/reflow
 // when the vertical scrollbar appears or disappears.
 // Walks up the parent window chain to find the scroll-owning ancestor (the

@@ -228,35 +228,27 @@ void ApplyStatePayload(const StatePayloadView& view) {
   // (all input is forwarded to it and handled by the same code as the native
   // viewer); the browser just renders them.
   if (view.render_state != nullptr) {
-    const std::byte* vis_ptr = view.render_state;
+    // Decoded by state_payload.cc, next to the serializer, so the wire field
+    // order lives in one file.
+    mujoco::studio::RenderStateView rs;
+    mujoco::studio::ParseRenderState(view.render_state, &rs);
 
     // Spectators in a free camera mode keep their own local camera; everyone
     // else (the controller, and spectators in Follow Controller) mirrors the
     // controller's camera.
     if (g_app.session.Role() != SessionRole::kSpectating ||
         g_app.spectator_cam_mode == kSpecCamFollow) {
-      memcpy(&g_app.camera, vis_ptr, sizeof(mjvCamera));
+      g_app.camera = rs.camera;
     }
-    vis_ptr += sizeof(mjvCamera);
-
-    memcpy(&g_app.perturb, vis_ptr, sizeof(mjvPerturb));
-    vis_ptr += sizeof(mjvPerturb);
-
-    memcpy(&g_app.vis_options, vis_ptr, sizeof(mjvOption));
-    vis_ptr += sizeof(mjvOption);
-
-    memcpy(&model->opt, vis_ptr, sizeof(mjOption));
-    vis_ptr += sizeof(mjOption);
-
-    memcpy(&model->vis, vis_ptr, sizeof(mjVisual));
-    vis_ptr += sizeof(mjVisual);
-
-    memcpy(&model->stat, vis_ptr, sizeof(mjStatistic));
-    vis_ptr += sizeof(mjStatistic);
+    g_app.perturb = rs.perturb;
+    g_app.vis_options = rs.vis_options;
+    model->opt = rs.opt;
+    model->vis = rs.vis;
+    model->stat = rs.stat;
 
     // Apply render flags to the renderer's scene if available.
     if (g_app.renderer) {
-      memcpy(g_app.renderer->GetRenderFlags(), vis_ptr, mjNRNDFLAG);
+      memcpy(g_app.renderer->GetRenderFlags(), rs.render_flags, mjNRNDFLAG);
     }
   }
 

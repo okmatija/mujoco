@@ -68,7 +68,7 @@ EM_BOOL Session::OnWsOpen(int event_type,
                           const EmscriptenWebSocketOpenEvent* event,
                           void* user_data) {
   auto* session = static_cast<Session*>(user_data);
-  session->open_ = true;
+  session->connected_ = true;
   // server_close_code_ is NOT cleared here: a rejected connection also
   // fires open before the server's closing code arrives. It clears on the
   // first received message, which proves the server accepted us.
@@ -88,7 +88,7 @@ EM_BOOL Session::OnWsClose(int event_type,
                            void* user_data) {
   auto* session = static_cast<Session*>(user_data);
   LOG(Info, "State WebSocket closed (code=%d)", event->code);
-  session->open_ = false;
+  session->connected_ = false;
   // Codes 4000-4999 are deliberate server-side closes (e.g. 4002 =
   // session full). These conditions pass, so the GUI shows a notice while
   // the reconnect loop retries at a slower pace.
@@ -114,7 +114,7 @@ void Session::CloseSocket() {
   emscripten_websocket_set_onclose_callback(socket_, nullptr, nullptr);
   emscripten_websocket_delete(socket_);
   socket_ = 0;
-  open_ = false;
+  connected_ = false;
 }
 
 void Session::Connect(const std::string& url) {
@@ -139,7 +139,7 @@ void Session::Connect(const std::string& url) {
 }
 
 void Session::SendText(const char* text) {
-  if (socket_ && open_) {
+  if (socket_ && connected_) {
     emscripten_websocket_send_utf8_text(socket_, text);
   }
 }
@@ -273,12 +273,11 @@ void Session::HandleMessage(const uint8_t* data, uint32_t num_bytes) {
     return;
   }
 
-  if (!have_model_crc32_) {
+  if (!model_crc32_.has_value()) {
     model_crc32_ = view.model_crc32;
-    have_model_crc32_ = true;
-  } else if (view.model_crc32 != model_crc32_) {
+  } else if (view.model_crc32 != *model_crc32_) {
     LOG(Info, "Model changed on the Python side (ident %u -> %u); reloading",
-        model_crc32_, view.model_crc32);
+        *model_crc32_, view.model_crc32);
     reload_pending_ = true;
     EM_ASM({ setTimeout(function() { location.reload(); }, 0); });
     return;

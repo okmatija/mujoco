@@ -29,6 +29,7 @@
 #include <emscripten/websocket.h>
 
 #include <cstdint>
+#include <optional>
 #include <string>
 
 #include "state_payload.h"
@@ -131,10 +132,7 @@ class Session : public SessionActions {
   // that changed between the fetch and the first /state frame. Without this
   // the baseline is adopted from the first payload and such a race is never
   // detected. Must match zlib.crc32 (web_viewer.py's model_crc32).
-  void SetModelCrc32(uint32_t crc) {
-    model_crc32_ = crc;
-    have_model_crc32_ = true;
-  }
+  void SetModelCrc32(uint32_t crc) { model_crc32_ = crc; }
 
   // True while a connect attempt exists (possibly still in flight); used to
   // pace reconnects. emscripten_websocket_new returns a handle immediately,
@@ -142,7 +140,7 @@ class Session : public SessionActions {
   bool HasSocket() const { return socket_ != 0; }
 
   // True only while the WebSocket is actually open.
-  bool Connected() const { return open_; }
+  bool Connected() const { return connected_; }
 
   // True once a payload with a new model has scheduled a page reload; all
   // traffic is dropped from then on.
@@ -228,13 +226,12 @@ class Session : public SessionActions {
   Callbacks& callbacks_;
 
   EMSCRIPTEN_WEBSOCKET_T socket_ = 0;
-  bool open_ = false;
+  bool connected_ = false;
 
   // CRC32 of the model this page loaded (adopted from the first payload).
   // When the payload's crc changes, the Python side has swapped models:
   // reload the page, which refetches /model.mjb and reconnects everything.
-  uint32_t model_crc32_ = 0;
-  bool have_model_crc32_ = false;
+  std::optional<uint32_t> model_crc32_;
   bool reload_pending_ = false;
 
   int server_close_code_ = 0;
