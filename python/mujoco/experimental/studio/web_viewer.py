@@ -115,9 +115,9 @@ def _print_url_banner(host: str, port: int) -> None:
 
   width = max(len(line) for line in lines)
   banner = [
-      '╭' + '─' * (width + 2) + '╮',
-      *(f'│ {line.ljust(width)} │' for line in lines),
-      '╰' + '─' * (width + 2) + '╯',
+      '+' + '-' * (width + 2) + '+',
+      *(f'| {line.ljust(width)} |' for line in lines),
+      '+' + '-' * (width + 2) + '+',
   ]
   print('\n'.join(banner), flush=True)
 
