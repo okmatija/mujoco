@@ -124,7 +124,7 @@ if(EMSCRIPTEN)
         $<TARGET_FILE_DIR:web_client>/web_client.js
         $<TARGET_FILE_DIR:web_client>/web_client.wasm
         ${CMAKE_CURRENT_SOURCE_DIR}/index.html
-        ${CMAKE_CURRENT_SOURCE_DIR}/favicon.png
+        ${PROJECT_SOURCE_DIR}/src/experimental/studio/favicon.ico
         ${WEB_CLIENT_DIST_DIR}
     COMMAND ${CMAKE_COMMAND} -E copy_directory
         ${WEB_CLIENT_FILAMENT_ASSETS_DIR} ${WEB_CLIENT_DIST_DIR}/assets
@@ -153,6 +153,8 @@ else()
   mujoco_pybind11_module(headless_ui headless_ui.cc)
   target_link_libraries(headless_ui PRIVATE
     mujoco
+    # For the shared Studio font loading (platform/ux/fonts.h).
+    mujoco::platform
     mujoco::dep::implot
     netimgui
   )

@@ -27,42 +27,17 @@
 #include <pybind11/stl.h>
 
 #include <chrono>
-#include <cstddef>
 #include <cstdint>
-#include <cstring>
-#include <filesystem>  // NOLINT(build/c++17)
-#include <fstream>
 #include <string>
 #include <string_view>
 #include <thread>
 #include <vector>
 
+#include <mujoco/experimental/platform/ux/fonts.h>
 #include "NetImgui_Api.h"
 #include "google/logging.h"
 
 namespace py = pybind11;
-
-// Loads a font file from the given assets directory. Returns an empty vector
-// if the file cannot be read; fonts are optional and ImGui falls back to its
-// built-in font.
-static std::vector<std::byte> LoadFontAsset(const std::string& assets_dir,
-                                            std::string_view filename) {
-  if (assets_dir.empty()) return {};
-  const std::string file_path =
-      (std::filesystem::path(assets_dir) / filename).string();
-
-  std::ifstream file(file_path, std::ios::binary | std::ios::ate);
-  if (!file.is_open()) {
-    return {};
-  }
-  const std::streamsize file_size = file.tellg();
-  file.seekg(0, std::ios::beg);
-  std::vector<std::byte> buffer(file_size);
-  if (!file.read(reinterpret_cast<char*>(buffer.data()), file_size)) {
-    return {};
-  }
-  return buffer;
-}
 
 // Headless ImGui + netimgui viewer for the MuJoCo web viewer.
 //
@@ -111,28 +86,13 @@ static bool Client_Startup(ImGuiContext*& context,
 
   ImGui::StyleColorsLight();
 
-  const std::vector<std::byte> main_font_data =
-      LoadFontAsset(assets_dir, "AtkinsonHyperlegibleNext[wght].ttf");
-  const std::vector<std::byte> icon_font_data =
-      LoadFontAsset(assets_dir, "fontawesome-webfont.ttf");
-
-  // Font sizes match the native viewer (platform/hal/window.cc) so the UI
-  // has the same proportions in the browser as in native Studio.
-  if (!main_font_data.empty()) {
-    void* font_copy = ImGui::MemAlloc(main_font_data.size());
-    memcpy(font_copy, main_font_data.data(), main_font_data.size());
-    io.Fonts->AddFontFromMemoryTTF(font_copy, main_font_data.size(), 16.0f);
-  }
-
-  if (!icon_font_data.empty()) {
-    ImFontConfig icon_cfg;
-    icon_cfg.MergeMode = true;
-    constexpr ImWchar icon_ranges[] = {0xf000, 0xf3ff, 0x000};
-    void* icon_copy = ImGui::MemAlloc(icon_font_data.size());
-    memcpy(icon_copy, icon_font_data.data(), icon_font_data.size());
-    io.Fonts->AddFontFromMemoryTTF(icon_copy, icon_font_data.size(), 13.0f,
-                                   &icon_cfg, icon_ranges);
-  }
+  // The Studio font set shared with the native viewer and the browser client
+  // (platform/ux/fonts.cc); loading it through the shared helper keeps the
+  // filenames and sizes identical everywhere, so the streamed UI has the same
+  // proportions in the browser as in native Studio.
+  mujoco::platform::AddStudioFonts([&assets_dir](std::string_view filename) {
+    return mujoco::platform::LoadFontAsset(assets_dir, filename);
+  });
 
   // On ImGui 1.92+ NETIMGUI_IMGUI_TEXTURES_ENABLED is always set.
   // NetImgui::Startup() will set RendererHasTextures and the managed texture

@@ -71,15 +71,20 @@ set_target_properties(implot PROPERTIES
 
 # Workaround for duplicate symbol error (wp_fractional_scale_manager_v1_interface)
 # when linking both GLFW (via Filament) and SDL2 statically on Linux.
+# headless_ui is included because it links mujoco::platform (shared fonts),
+# whose interface pulls in both GLFW and SDL2.
 if(UNIX AND NOT APPLE)
   set(STUDIO_PY_MODULES
       native_viewer_cc
       renderer
       ux
       sim
+      headless_ui
   )
   foreach(target ${STUDIO_PY_MODULES})
-    target_link_options(${target} PRIVATE "-Wl,--allow-multiple-definition")
+    if(TARGET ${target})
+      target_link_options(${target} PRIVATE "-Wl,--allow-multiple-definition")
+    endif()
   endforeach()
 endif()
 
