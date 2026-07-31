@@ -21,11 +21,6 @@
 // 3. Receives input events from the remote viewer and injects them into
 //    the ImGui context.
 
-#include <imgui.h>
-#include <implot.h>
-#include <pybind11/pybind11.h>
-#include <pybind11/stl.h>
-
 #include <chrono>
 #include <cstdint>
 #include <string>
@@ -33,9 +28,13 @@
 #include <thread>
 #include <vector>
 
-#include <mujoco/experimental/platform/ux/fonts.h>
-#include "NetImgui_Api.h"
+#include <imgui.h>
+#include <implot.h>
+#include "experimental/platform/ux/fonts.h"
+#include <NetImgui_Api.h>
 #include "google/logging.h"
+#include <pybind11/pybind11.h>
+#include <pybind11/stl.h>
 
 namespace py = pybind11;
 
@@ -86,18 +85,10 @@ static bool Client_Startup(ImGuiContext*& context,
 
   ImGui::StyleColorsLight();
 
-  // The Studio font set shared with the native viewer and the browser client
-  // (platform/ux/fonts.cc); loading it through the shared helper keeps the
-  // filenames and sizes identical everywhere, so the streamed UI has the same
-  // proportions in the browser as in native Studio.
+  // The Studio font set shared with the native viewer and the browser client.
   mujoco::platform::AddStudioFonts([&assets_dir](std::string_view filename) {
     return mujoco::platform::LoadFontAsset(assets_dir, filename);
   });
-
-  // On ImGui 1.92+ NETIMGUI_IMGUI_TEXTURES_ENABLED is always set.
-  // NetImgui::Startup() will set RendererHasTextures and the managed texture
-  // system handles font atlas building and transfer automatically.
-  // Do NOT call io.Fonts->Build() here — it conflicts with RendererHasTextures.
 
   if (!NetImgui::Startup()) {
     LOG(Error, "NetImgui::Startup() failed");
@@ -178,9 +169,8 @@ class HeadlessUi {
     std::chrono::steady_clock::time_point last_signal_check =
         std::chrono::steady_clock::now();
     while (true) {
-      // Periodically check for Python signals so Ctrl+C interrupts a wait that
-      // runs on the main thread (a no-op on the daemon viewer thread, where
-      // shutdown instead arrives as an ExitEvent the caller's loop drains).
+      // While no browser is connected, periodically check for
+      // Python signals so Ctrl+C interrupts the wait instead of hanging.
       const std::chrono::steady_clock::time_point now =
           std::chrono::steady_clock::now();
       if (now - last_signal_check > std::chrono::milliseconds(200)) {
@@ -194,9 +184,7 @@ class HeadlessUi {
       Client_Connect(title_.c_str(), port_);
 
       if (!NetImgui::IsConnected()) {
-        // No browser connected: yield with no frame so the caller can drain
-        // messages and stop if asked. Sleeping first paces this poll (~10ms)
-        // instead of busy-spinning the caller's loop.
+        // Not connected; return false so the caller's loop is not blocked.
         is_drawing_remote_ = false;
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
         return false;

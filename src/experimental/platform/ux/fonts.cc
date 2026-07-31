@@ -76,11 +76,12 @@ std::vector<std::byte> LoadFontResource(std::string_view filename) {
     const std::byte* bytes = static_cast<const std::byte*>(data);
     buffer.assign(bytes, bytes + size);
   }
+  // Resource can be closed because the font atlas owns a copy of the data.
   mju_closeResource(resource);
   return buffer;
 }
 
-void AddStudioFonts(const FontLoader& load) {
+void AddStudioFonts(const FontLoaderFn& load) {
   const std::vector<std::byte> main_data = load(kMainFontFile);
   if (!main_data.empty()) {
     AddFontCopy(main_data, 16.0f);
