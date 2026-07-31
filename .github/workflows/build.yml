@@ -393,9 +393,6 @@ jobs:
         restore-keys: ${{ env.label }}-filament-
         max-size: "2.0G"
 
-    # Everything else is a build_steps.sh function so this job stays a thin
-    # wrapper around the shared build script (build_web_viewer runs the four
-    # host/wasm/gather/wheel steps in order).
     - name: Prepare toolchain and build web viewer wheel
       run: |
         bash ./.github/workflows/build_steps.sh prepare_linux

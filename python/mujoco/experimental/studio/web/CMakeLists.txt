@@ -12,19 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# MuJoCo web viewer.
-
 set(NETIMGUI_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../netimgui)
 
 if(EMSCRIPTEN)
-  # ---------------------------------------------------------------------------
-  # Browser WASM client (built from the main MuJoCo tree).
-  # ---------------------------------------------------------------------------
-  # netimgui always builds under Emscripten; if its target is somehow missing
-  # (a real misconfiguration) the target_link_libraries below fails loudly,
-  # which is what we want.
   add_subdirectory(${NETIMGUI_DIR} ${CMAKE_CURRENT_BINARY_DIR}/netimgui)
 
+  # Browser WASM client for the Web Viewer
   add_executable(web_client web_client.cc web_client_local_ui.cc
                  web_client_remote_ui.cc web_client_session.cc
                  state_payload.cc)
@@ -75,17 +68,14 @@ if(EMSCRIPTEN)
     -fexceptions
     # Filament's GL backend calls glGetError() on every draw call via
     # GLUtils::checkGLError/assertGLError, even in non-debug builds (the
-    # functions are compiled into the library unconditionally). In WebGL,
-    # each glGetError() forces a synchronous GPU pipeline flush across the
-    # JS-WASM bridge (~0.2ms each, hundreds per frame). Wrapping it at
-    # link time replaces all call sites with a no-op.
+    # functions are compiled into the library unconditionally). In WebGL, each
+    # glGetError() forces a synchronous GPU pipeline flush across the JS-WASM
+    # bridge (~0.2ms each, hundreds per frame). Wrapping it at link time
+    # replaces all call sites with a no-op.
     -Wl,--wrap=glGetError
   )
 
-  # Stage the three Studio UI fonts into their own directory so the browser's
-  # local ImGui (the Link window) can load them, matching the native viewer.
-  # They are fetched into _deps by the studio font dependencies; copy them
-  # here (the copy handles the [wght] brackets in the variable font's name).
+  # Stage the Studio fonts in WEB_CLIENT_FONTS_DIR so the browser can load them.
   set(WEB_CLIENT_FONTS_DIR ${CMAKE_CURRENT_BINARY_DIR}/web_fonts)
   add_custom_target(web_client_fonts
     COMMAND ${CMAKE_COMMAND} -E make_directory ${WEB_CLIENT_FONTS_DIR}
@@ -101,12 +91,9 @@ if(EMSCRIPTEN)
     COMMENT "Staging web viewer UI fonts"
   )
 
-  # The Filament assets (materials, IBL) and UI fonts are served as plain files
-  # under /assets (staged into dist/assets below). The page fetches them and
-  # pushes them into the client via registerAsset() before startApp() runs (see
-  # index.html and web_client.cc's AssetRegistry). Note: adding an asset? also
-  # update assetsToPrefetch in index.html. No --preload-file is used, so no
-  # web_client.data is produced.
+  # The fonts and Filament assets are served as plain files under dist/assets.
+  # The page fetches them and pushes them into the client via registerAsset()
+  # before startApp() runs (see index.html and web_client.cc).
   set(WEB_CLIENT_FILAMENT_ASSETS_DIR
       ${CMAKE_BINARY_DIR}/src/render/filament/assets
   )
@@ -133,12 +120,6 @@ if(EMSCRIPTEN)
     COMMENT "Staging web viewer artifacts + assets into ${WEB_CLIENT_DIST_DIR}"
   )
 else()
-  # ---------------------------------------------------------------------------
-  # headless_ui and state_payload pybind modules (built from the Python
-  # bindings build). Built on Linux, macOS and Windows: netimgui now provides a
-  # Winsock backend (see netimgui/CMakeLists.txt), so the previous Windows skip
-  # has been removed.
-  # ---------------------------------------------------------------------------
   if(NOT TARGET mujoco::dep::implot)
     message(WARNING "mujoco::dep::implot target not found. The web viewer "
                     "modules will not be built.")
@@ -153,8 +134,7 @@ else()
   mujoco_pybind11_module(headless_ui headless_ui.cc)
   target_link_libraries(headless_ui PRIVATE
     mujoco
-    # For the shared Studio font loading (platform/ux/fonts.h).
-    mujoco::platform
+    mujoco::platform  # for the shared Studio font loading (ux/fonts)
     mujoco::dep::implot
     netimgui
   )

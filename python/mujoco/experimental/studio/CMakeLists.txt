@@ -35,7 +35,6 @@ target_link_libraries(ux PRIVATE ${STUDIO_COMMON_LIBS})
 mujoco_pybind11_module(sim sim.cc)
 target_link_libraries(sim PRIVATE ${STUDIO_COMMON_LIBS})
 
-# Web viewer (headless NetImgui UI server streaming to the browser).
 add_subdirectory(web)
 
 set(MUJOCO_STUDIO_TARGETS
@@ -71,8 +70,6 @@ set_target_properties(implot PROPERTIES
 
 # Workaround for duplicate symbol error (wp_fractional_scale_manager_v1_interface)
 # when linking both GLFW (via Filament) and SDL2 statically on Linux.
-# headless_ui is included because it links mujoco::platform (shared fonts),
-# whose interface pulls in both GLFW and SDL2.
 if(UNIX AND NOT APPLE)
   set(STUDIO_PY_MODULES
       native_viewer_cc

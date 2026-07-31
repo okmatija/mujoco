@@ -106,43 +106,25 @@ emcmake cmake -B build -DMUJOCO_WASM_THREADS=ON && cmake --build build   # multi
 </details>
 
 <details>
-<summary><b>Build the self-contained web viewer wheel</b> (Linux)</summary>
+<summary><b>Build the self-contained web viewer wheel</b></summary>
 
-The Studio **web viewer** streams a running simulation to a browser. A
-self-contained wheel bundles both halves so it works straight after install:
+The Studio **web viewer** streams a running simulation to a browser.
 
-- the **server side** — compiled Python modules (`headless_ui`, `native_viewer_cc`,
-  `ux`, `sim`, …), which are native and therefore **per-platform** (Linux-only for
-  now);
-- the **browser client** — `web_client.wasm`/`.js` + Filament/font assets, staged
-  into `…/studio/web/dist/`. This half is **platform-independent** (it runs in the
-  browser), so a release process can build it once and bundle the same `web/dist`
-  into every per-platform wheel.
+- the **server side** compiled Python modules are native platform-specific;
+- the **browser client** is platform-independent, so a release process can build
+  it once and bundle the same `web/dist` into every per-platform wheel.
 
-With an active virtualenv, Emscripten (`setup_emsdk`) and Ninja in place, one
+With an active virtualenv, Emscripten (`setup_emsdk`) and Ninja in place, this
 command builds the wheel:
 
 ```sh
-bash .github/workflows/build_steps.sh build_web_viewer   # -> python/dist/*.whl
+bash .github/workflows/build_steps.sh build_web_viewer
 ```
 
-`build_web_viewer` is a wrapper that runs these four steps in order — call them
-individually when debugging a single stage:
-
-```sh
-bash .github/workflows/build_steps.sh build_web_viewer_native        # native MuJoCo+Studio+Filament -> build_host/
-bash .github/workflows/build_steps.sh build_web_viewer_wasm          # browser client -> .../web/dist/
-bash .github/workflows/build_steps.sh install_mujoco_for_web_viewer  # headers+libs the wheel compiles against -> build/mujoco_install/
-bash .github/workflows/build_steps.sh build_web_viewer_wheel         # -> python/dist/*.whl
-```
-
-Then install and run:
+Then install and run using:
 
 ```sh
 pip install python/dist/mujoco-*.whl
-python -m mujoco.experimental.studio.web_viewer     # open the printed URL in a browser
+python -m mujoco.experimental.studio.web_viewer  # then visit the printed URL
 ```
-
-CI runs exactly these steps in the `web_viewer` job of `build.yml` and uploads the
-wheel as an artifact.
 </details>
