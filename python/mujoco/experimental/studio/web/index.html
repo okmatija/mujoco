@@ -33,28 +33,34 @@ limitations under the License.
     </style>
   </head>
   <body>
-    <canvas
-      id="canvas"
-      oncontextmenu="event.preventDefault()"
-    ></canvas>
+    <canvas id="canvas" oncontextmenu="event.preventDefault()"></canvas>
     <script>
+      // Standard WebSocket close codes.
+      const WS_CLOSE_POLICY_VIOLATION = 1008;
+      const WS_CLOSE_MESSAGE_TOO_BIG = 1009;
+
+      // Our custom WebSocket close codes in range 4xxx.
+      const WS_CLOSE_CONTROLLER_TAKEN = 4001;
+      const WS_CLOSE_SESSION_FULL = 4002;
+      const WS_CLOSE_INACTIVE = 4003;
+      const WS_CLOSE_NOT_CONTROLLER = 4004;
+
       var Module = {
         canvas: (() => {
           const canvas = document.getElementById("canvas");
           return canvas;
         })(),
-        locateFile: function(path, prefix) {
-          if (path.endsWith('.data')) {
-            return 'web_client.data';
+        locateFile: function (path, prefix) {
+          if (path.endsWith(".data")) {
+            return "web_client.data";
           }
-          if (path.includes('assets/')) {
-            const filename = path.substring(path.lastIndexOf('/') + 1);
-            return 'assets/' + filename;
+          if (path.includes("assets/")) {
+            const filename = path.substring(path.lastIndexOf("/") + 1);
+            return "assets/" + filename;
           }
           return prefix + path;
         },
         onRuntimeInitialized: () => {
-          <!-- Keep in sync with assets staged in web/CMakeLists.txt -->
           const assetsToPrefetch = [
             "AtkinsonHyperlegibleNext[wght].ttf",
             "AtkinsonHyperlegibleMono-Regular.ttf",
@@ -82,8 +88,9 @@ limitations under the License.
             "decor.filamat",
             "unlit_depth.filamat",
             "unlit_segmentation.filamat",
-            "unlit_ui.filamat"
+            "unlit_ui.filamat",
           ];
+
           const assetPromises = assetsToPrefetch.map(async (filename) => {
             try {
               const response = await fetch("assets/" + filename);
@@ -100,7 +107,7 @@ limitations under the License.
           Promise.all(assetPromises).then(() => {
             Module.startApp();
           });
-        }
+        },
       };
       // Set only the CSS size; SDL owns canvas.width/height. Use whole
       // pixels: a fractional size (100vw/100vh under display scaling) makes
@@ -126,9 +133,7 @@ limitations under the License.
       window.addEventListener("drop", async (e) => {
         e.preventDefault();
         if (window.Module && Module.isSpectator) {
-          console.warn(
-            "Model drop ignored: only the controlling page can load models."
-          );
+          console.warn("Model drop ignored: only the controlling page can load models.");
           return;
         }
         // Capture entries synchronously: DataTransferItems are invalidated
@@ -146,9 +151,7 @@ limitations under the License.
             const reader = entry.createReader();
             for (;;) {
               // readEntries returns batches (<=100); loop until empty.
-              const batch = await new Promise((ok, err) =>
-                reader.readEntries(ok, err)
-              );
+              const batch = await new Promise((ok, err) => reader.readEntries(ok, err));
               if (!batch.length) break;
               for (const child of batch) {
                 await walk(child, prefix + entry.name + "/");
@@ -158,16 +161,15 @@ limitations under the License.
         }
         for (const entry of entries) await walk(entry, "");
         if (!files.length) return;
-        // The server caps each WebSocket message (see web_server.py's
-        // serve(max_size=...)); a single file above it would be closed with
-        // 1009 mid-upload and the drop discarded. Catch it here with a clear
-        // message instead of a silent failure.
+        // The server limits each WebSocket message size. If any file exceeds the limit, the server
+        // closes the connection with WS_CLOSE_MESSAGE_TOO_BIG mid-upload and the entire drop is
+        // discarded. Check client-side first to give a clear message, not a silent failure.
         const MAX_DROP_FILE_BYTES = 64 * 1024 * 1024;
         const tooBig = files.find((f) => f.file.size > MAX_DROP_FILE_BYTES);
         if (tooBig) {
           console.warn(
             `Model drop rejected: "${tooBig.path}" is larger than ` +
-              `${MAX_DROP_FILE_BYTES / (1024 * 1024)} MiB.`
+              `${MAX_DROP_FILE_BYTES / (1024 * 1024)} MiB.`,
           );
           return;
         }
@@ -185,23 +187,17 @@ limitations under the License.
         // The session id tells the server which page is dropping; it only
         // accepts drops from the controller.
         const sid = (window.Module && Module.sessionId) || "";
-        const ws = new WebSocket(
-          proto + location.host + "/drop?sid=" + encodeURIComponent(sid)
-        );
+        const ws = new WebSocket(proto + location.host + "/drop?sid=" + encodeURIComponent(sid));
         ws.binaryType = "arraybuffer";
         ws.onopen = () => {
           for (const frame of frames) ws.send(frame);
           ws.send(new Uint8Array(0)); // End marker; the server closes.
         };
         ws.onclose = (ev) => {
-          if (ev.code === 4004) {
-            console.warn(
-              "Model drop rejected: only the controlling page can load models."
-            );
-          } else if (ev.code === 1009) {
-            console.warn(
-              "Model drop rejected: a file exceeded the server's size limit."
-            );
+          if (ev.code === WS_CLOSE_NOT_CONTROLLER) {
+            console.warn("Model drop rejected: only the controlling page can load models.");
+          } else if (ev.code === WS_CLOSE_MESSAGE_TOO_BIG) {
+            console.warn("Model drop rejected: a file exceeded the server's size limit.");
           }
         };
       });

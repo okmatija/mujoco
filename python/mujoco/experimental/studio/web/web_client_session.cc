@@ -32,9 +32,9 @@ constexpr char kMsgStateAck[] = "state_ack";
 constexpr char kMsgGrant[] = "grant";
 constexpr char kMsgMaxSpectatorsPrefix[] = "max_spectators=";
 
-// Liveness heartbeat period. A hidden tab's rendering loop stops, so
-// Update() and the heartbeat stop with it — the server kicks spectators
-// (and releases a controller with a waiting queue) on silence.
+// Liveness heartbeat period. A hidden tab's rendering loop stops, so Update()
+// and the heartbeat stop with it. The server kicks spectators (and releases a
+// controller with a waiting queue) on silence.
 constexpr double kHeartbeatSec = 30.0;
 
 // Minimum time between /ui claim retries (and between role machine steps).
@@ -54,11 +54,10 @@ EM_BOOL Session::OnWsMessage(int event_type,
     session->OnSessionText(reinterpret_cast<const char*>(event->data));
   } else {
     session->HandleMessage(event->data, event->numBytes);
-    // Flow control: the server keeps at most one state payload in flight
-    // and sends the next (freshest) one only after this ack. Without it, a
-    // slow link (e.g. an SSH tunnel to a remote workstation) buffers
-    // seconds of stale payloads in the socket and the whole viewer lags by
-    // that queue.
+    // Flow control: the server keeps at most one state payload in flight and
+    // sends the next (freshest) one only after this ack. Without it, a slow
+    // link buffers seconds of stale payloads in the socket and the whole viewer
+    // lags by that queue.
     session->SendText(kMsgStateAck);
   }
   return EM_TRUE;
@@ -69,9 +68,9 @@ EM_BOOL Session::OnWsOpen(int event_type,
                           void* user_data) {
   auto* session = static_cast<Session*>(user_data);
   session->connected_ = true;
-  // server_close_code_ is NOT cleared here: a rejected connection also
-  // fires open before the server's closing code arrives. It clears on the
-  // first received message, which proves the server accepted us.
+  // server_close_code_ is NOT cleared here: a rejected connection also fires
+  // open before the server's closing code arrives. It clears on the first
+  // received message, which proves the server accepted us.
   LOG(Info, "State WebSocket connected");
   return EM_TRUE;
 }
@@ -89,20 +88,23 @@ EM_BOOL Session::OnWsClose(int event_type,
   auto* session = static_cast<Session*>(user_data);
   LOG(Info, "State WebSocket closed (code=%d)", event->code);
   session->connected_ = false;
-  // Codes 4000-4999 are deliberate server-side closes (e.g. 4002 =
-  // session full). These conditions pass, so the GUI shows a notice while
-  // the reconnect loop retries at a slower pace.
+
+  // Codes 4xxx are deliberate server-side closes (e.g. kWsCloseSessionFull).
+  // These conditions pass, so the GUI shows a notice while the reconnect loop
+  // retries at a slower pace.
   if (event->code >= 4000 && event->code <= 4999) {
     session->server_close_code_ = event->code;
     LOG(Info, "Server ended this connection (code=%d); retrying slowly.",
         event->code);
   }
-  // Free the handle; without this, every closed socket (including each
-  // failed reconnect) leaks its handle and callback registrations in
-  // Emscripten's socket table. Session (this) is a stable global, so the
-  // user_data of any already-queued event stays valid; detaching the
-  // callbacks first stops them firing on the freed handle.
+
+  // Free the handle; without this, every closed socket (including each failed
+  // reconnect) leaks its handle and callback registrations in Emscripten's
+  // socket table. Session (this) is a stable global, so the user_data of any
+  // already-queued event stays valid; detaching the callbacks first stops them
+  // firing on the freed handle.
   session->CloseSocket();
+
   return EM_TRUE;
 }
 
@@ -146,8 +148,7 @@ void Session::SendText(const char* text) {
 
 void Session::SetRole(SessionRole role) {
   role_ = role;
-  // The JS avoids operators that clang-format would reformat into invalid
-  // JavaScript (it once split a `!==` into `!= =`, breaking the build).
+  // Warning: clang-format splits `!==` into `!= =`, so avoid that syntax!
   EM_ASM(
       { Module.isSpectator = !!$0; },
       role == SessionRole::kControlling ? 0 : 1);
@@ -178,11 +179,11 @@ void Session::OnSessionText(const char* text) {
     }
     roster_ = roster;
     // The roster is authoritative about this page's role. Settling on it
-    // (rather than after several rejected /ui retries) makes the
-    // SPECTATING banner appear within the first roster (~200ms). Only
-    // while claiming with /ui closed: an in-flight claim must not be
-    // aborted, and an established controller is never demoted here (the
-    // 4001 close path handles that).
+    // (rather than after several rejected /ui retries) makes the SPECTATING
+    // banner appear within the first roster (~200ms). Only while claiming with
+    // /ui closed: an in-flight claim must not be aborted, and an established
+    // controller is never demoted here (the kWsCloseControllerTaken close path
+    // handles that).
     if (role_ == SessionRole::kClaiming && roster.spectator) {
       if (remote_ui_state_ == RemoteUiState::kNoSocket ||
           remote_ui_state_ == RemoteUiState::kClosedOrError) {
@@ -192,15 +193,15 @@ void Session::OnSessionText(const char* text) {
       }
     }
   } else if (strcmp(text, kMsgGrant) == 0) {
-    // Our turn: the controller slot is reserved for this page. The role
-    // flips to kControlling when the claim's socket opens.
+    // The controller slot is reserved for this page. The role flips to
+    // kControlling when the claim's socket opens.
     LOG(Info, "Control granted; claiming the controller slot");
     SetRole(SessionRole::kClaiming);
     ui_reject_count_ = 0;
     callbacks_.ConnectRemoteUi();
-    // Mark the claim in flight now: the roster broadcast right after the
-    // grant arrives before the next frame refreshes remote_ui_state_, and
-    // the settle rule above must not shut down the fresh claim.
+    // Mark the claim in flight now: the roster broadcast right after the grant
+    // arrives before the next frame refreshes remote_ui_state_, and the settle
+    // rule above must not shut down the fresh claim.
     remote_ui_state_ = RemoteUiState::kConnecting;
   }
 }
@@ -240,13 +241,14 @@ void Session::HandleRemoteUiState(RemoteUiState state, int close_code) {
     }
   } else if (state == RemoteUiState::kClosedOrError) {
     last_ui_retry_time_ = now;
-    // A 4001 close while kControlling means another page took the slot
-    // (Steal Control): settle instantly. A rejected claim (kClaiming)
-    // retries a few times first, because a reloading controller briefly
-    // races its own slot.
-    const bool ousted =
-        close_code == 4001 && role_ == SessionRole::kControlling;
-    if (ousted || (close_code == 4001 && ++ui_reject_count_ >= kMaxUiRejects)) {
+    // A kWsCloseControllerTaken close while kControlling means another page
+    // took the slot (Steal Control): settle instantly. A rejected claim
+    // (kClaiming) retries a few times first, because a reloading controller
+    // briefly races its own slot.
+    const bool ousted = close_code == kWsCloseControllerTaken &&
+                        role_ == SessionRole::kControlling;
+    if (ousted || (close_code == kWsCloseControllerTaken &&
+                   ++ui_reject_count_ >= kMaxUiRejects)) {
       LOG(Info, "Controller slot taken; spectating");
       SetRole(SessionRole::kSpectating);
       // Also drops the last received UI frame: a page forced out of the

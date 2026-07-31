@@ -36,6 +36,14 @@
 
 namespace mujoco::studio {
 
+// Our custom WebSocket close codes in range 4xxx. The client shows a notice
+// and retries slowly.
+constexpr int kWsCloseControllerTaken = 4001;  // /ui: another browser controls.
+constexpr int kWsCloseSessionFull = 4002;      // /state: spectator limit hit.
+constexpr int kWsCloseInactive = 4003;         // /state: hidden tab kicked.
+constexpr int kWsCloseNotController = 4004;    // /drop: only controller may
+                                               //   load models.
+
 // The page's role in the collaborative session. Every page starts by
 // claiming the controller slot; the claim either succeeds (kControlling)
 // or the page settles into spectating. A control grant puts a spectator
@@ -47,8 +55,6 @@ enum class SessionRole {
 };
 
 // Read-only snapshot of the session, passed to the local UI each frame.
-// The session fills the role and roster fields (FillView); the byte rates,
-// remote-frame flag and camera mode are the app's.
 struct SessionView {
   SessionRole role = SessionRole::kClaiming;
   int viewers = 0;
@@ -57,9 +63,8 @@ struct SessionView {
   int max_spectators = 0;
   uint64_t gui_bytes_per_sec = 0;
   uint64_t sim_bytes_per_sec = 0;
-  // False until the first remote Studio UI frame arrived (controller only).
   bool have_remote_frame = false;
-  int camera_mode = 0;  // A SpectatorCamMode value (see web_client.cc).
+  int camera_mode = 0;  // [SpectatorCamMode].
 };
 
 // User intent reported by the role window. Session implements this; the
@@ -71,7 +76,7 @@ class SessionActions {
   virtual void LeaveQueue() = 0;
   virtual void StealControl() = 0;
   virtual void ReleaseControl() = 0;
-  virtual void SetCameraMode(int mode) = 0;      // A SpectatorCamMode value.
+  virtual void SetCameraMode(int mode) = 0;      // mode is [SpectatorCamMode].
   virtual void SetMaxSpectators(int count) = 0;  // Already clamped by the UI.
 };
 
@@ -85,17 +90,14 @@ struct Roster {
   bool spectator = false;  // The server's view: true = not the controller.
   int queue_pos = 0;  // 1-based position in the control queue; 0 = unqueued.
   int queue_len = 0;
-  // Runtime spectator limit. Starts at the UI default; every parsed
-  // roster overwrites it.
-  int max_spectators = 8;
+  int max_spectators = 8;  // Runtime spectator limit.
 };
 
-// Parses a roster line; returns false when text is not a roster. (Keep
-// in sync: _roster_line in web_server.py.)
+// Parses a roster line; returns false when text is not a roster.
 bool ParseRoster(const char* text, Roster* roster);
 
 // The remote UI stream's connection state, reported to the role state
-// machine by the app once per frame (see Session::HandleRemoteUiState).
+// machine by the app once per frame.
 enum class RemoteUiState {
   kNoSocket = 0,   // No connection attempt exists.
   kConnecting,     // In flight (or closing); the machine waits.
@@ -105,21 +107,19 @@ enum class RemoteUiState {
 
 class Session : public SessionActions {
  public:
-  // Everything the session needs from the rest of the app; the app
-  // implements this once.
+  // Everything the session needs from the rest of the application.
   class Callbacks {
    public:
     virtual ~Callbacks() = default;
     // Payloads are dropped until this returns true (model loaded).
     virtual bool ReadyForPayload() = 0;
-    // Applies a parsed payload to the app (physics + render state + geoms).
+    // Applies a parsed payload to the application.
     virtual void OnPayload(const StatePayloadView& view) = 0;
-    // Role transitions drive the remote UI stream through these two:
-    // (re)claim the controller slot / drop the stream when settling into
-    // spectating.
+    // Role transition: claim the controller slot.
     virtual void ConnectRemoteUi() = 0;
+    // Role transition: drop the stream when spectating
     virtual void ShutdownRemoteUi() = 0;
-    // The one role-window intent that is not session business.
+    // Spectator camera mode change.
     virtual void SetCameraMode(int mode) = 0;
   };
 
@@ -127,16 +127,13 @@ class Session : public SessionActions {
 
   void Connect(const std::string& url);
 
-  // Records the CRC32 of the model this page actually loaded (from the
-  // fetched /model.mjb bytes), so the first payload already reveals a model
-  // that changed between the fetch and the first /state frame. Without this
-  // the baseline is adopted from the first payload and such a race is never
-  // detected. Must match zlib.crc32 (web_viewer.py's model_crc32).
+  // Records the CRC32 of the model this page actually loaded.
+  // Must match zlib.crc32 (used to compute model_crc32 in web_viewer.py).
   void SetModelCrc32(uint32_t crc) { model_crc32_ = crc; }
 
-  // True while a connect attempt exists (possibly still in flight); used to
-  // pace reconnects. emscripten_websocket_new returns a handle immediately,
-  // so this is NOT the same as Connected().
+  // True while a connect attempt exists; used to pace reconnects.
+  // emscripten_websocket_new returns a handle immediately, so this is NOT the
+  // same as Connected().
   bool HasSocket() const { return socket_ != 0; }
 
   // True only while the WebSocket is actually open.
@@ -146,11 +143,10 @@ class Session : public SessionActions {
   // traffic is dropped from then on.
   bool ReloadPending() const { return reload_pending_; }
 
-  // The close code from the server deliberately ending this connection
-  // (codes 4000-4999, e.g. 4002 = session full), else 0. Such conditions
-  // are transient (a slot frees up, the user returns to the tab), so the
-  // page shows a notice and retries slowly; the code clears when a
-  // connection opens again.
+  // The close code from the server deliberately ending this connection (codes
+  // 4000-4999, e.g. kWsCloseSessionFull), else 0. Such conditions are transient
+  // (a slot frees up, the user returns to the tab), so the page shows a notice
+  // and retries slowly; the code clears when a connection opens again.
   int ServerCloseCode() const { return server_close_code_; }
 
   // Returns the bytes received since the last call and resets the counter.
@@ -160,34 +156,31 @@ class Session : public SessionActions {
     return bytes;
   }
 
-  // Wall-clock seconds of the last received message, or 0 before the first
-  // one. Payloads stream at ~60Hz while the Python side is alive, so
-  // staleness here means the server is gone — even if the socket still
-  // looks open (a suspended process keeps its sockets established).
+  // Wall-clock seconds of the last received message, or 0 before the first one.
+  // Payloads stream at ~60Hz while the Python side is alive, so staleness here
+  // means the server is gone, even if the socket still looks open (a suspended
+  // process keeps its sockets established).
   double LastMessageTime() const { return last_message_time_; }
 
   SessionRole Role() const { return role_; }
 
-  // Fills the role and roster fields of the view; the rest is the app's.
+  // Fills the role and roster fields of the view.
   void FillView(SessionView* view) const;
 
-  // Periodic session upkeep (the ~30s liveness heartbeat); call once per
-  // frame.
+  // Periodic session upkeep (the ~30s liveness heartbeat); call once per frame.
   void Update();
 
-  // Feeds the role state machine the remote UI stream's connection state;
-  // call once per frame. Owns claim retry pacing, promotion to kControlling
-  // when a claim opens, instant settling when an open stream closes with
-  // 4001 (ousted by Steal Control), and the retries-then-settle rule for
-  // rejected claims.
+  // Feeds the role state machine the remote UI stream's connection state; call
+  // once per frame. Owns claim retry pacing, promotion to kControlling when a
+  // claim opens, instant settling when an open stream closes with
+  // kWsCloseControllerTaken (ousted by Steal Control), and the retries then
+  // settle rule for rejected claims.
   void HandleRemoteUiState(RemoteUiState state, int close_code);
 
-  // Parses one WebSocket message and applies the model-change/reload
-  // policy; public for tests.
+  // Parses one WebSocket message and applies the model-change/reload policy.
   void HandleMessage(const uint8_t* data, uint32_t num_bytes);
 
-  // SessionActions (the role window reports intent straight into the
-  // session; see the app's RoleWindow::Draw call).
+  // SessionActions (used to implement the role window UI).
   void RequestControl() override;
   void LeaveQueue() override;
   void StealControl() override;
@@ -199,12 +192,12 @@ class Session : public SessionActions {
   // Detaches callbacks and frees socket_ (if any), resetting to disconnected.
   void CloseSocket();
 
-  // Sends a session message (control requests, acks, activity reports) to
-  // the server as a text frame. Dropped silently while not connected.
+  // Sends a session message (control requests, acks, activity reports) to the
+  // server as a text frame. Dropped silently while not connected.
   void SendText(const char* text);
 
-  // Updates the role and mirrors it into JS (Module.isSpectator), which
-  // gates controller-only page behavior (model drag-and-drop upload).
+  // Updates the role and mirrors it into JS (Module.isSpectator), which gates
+  // controller-only page behavior (model drag-and-drop upload).
   void SetRole(SessionRole role);
 
   // Routes a session text frame: roster updates, control grants.
@@ -228,9 +221,9 @@ class Session : public SessionActions {
   EMSCRIPTEN_WEBSOCKET_T socket_ = 0;
   bool connected_ = false;
 
-  // CRC32 of the model this page loaded (adopted from the first payload).
-  // When the payload's crc changes, the Python side has swapped models:
-  // reload the page, which refetches /model.mjb and reconnects everything.
+  // CRC32 of the model this page loaded. When the payload's crc changes, the
+  // Python side has swapped models so reload the page; this refetches
+  // /model.mjb and reconnects everything.
   std::optional<uint32_t> model_crc32_;
   bool reload_pending_ = false;
 
@@ -239,12 +232,12 @@ class Session : public SessionActions {
   uint64_t bytes_accum_ = 0;
   double last_message_time_ = 0;
 
-  // Role state machine + roster (all from the session text channel and
-  // HandleRemoteUiState; see web_server.py for the wire formats).
+  // Role state machine and roster.
   SessionRole role_ = SessionRole::kClaiming;
   Roster roster_;
-  // Consecutive rejected /ui claims; after enough, the page stops claiming
-  // and settles into spectating.
+
+  // Consecutive rejected /ui claims; the page eventually stops claiming and
+  // settles into spectating.
   int ui_reject_count_ = 0;
   RemoteUiState remote_ui_state_ = RemoteUiState::kNoSocket;
   double last_ui_retry_time_ = 0;

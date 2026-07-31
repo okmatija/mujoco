@@ -46,6 +46,7 @@ void AppendStateBlock(std::vector<std::byte>& buffer, uint32_t tag,
 }
 
 // Serializes the render state (exactly kRenderStateSize bytes) into `ptr`.
+// Must copy the same fields in the same order as ParseRenderState.
 void SerializeRenderStateInto(std::byte* ptr, const mjvCamera& camera,
                               const mjvPerturb& perturb,
                               const mjvOption& vis_options, const mjOption& opt,
@@ -78,8 +79,8 @@ void SerializeRenderStateInto(std::byte* ptr, const mjvCamera& camera,
 
 }  // namespace
 
-// Kept directly below SerializeRenderStateInto (above): the two must copy the
-// same fields in the same order.
+// Parses a render state block produced by SerializeStatePayload.
+// Must copy the same fields in the same order as SerializeRenderStateInto.
 void ParseRenderState(const std::byte* data, RenderStateView* out) {
   const std::byte* ptr = data;
 

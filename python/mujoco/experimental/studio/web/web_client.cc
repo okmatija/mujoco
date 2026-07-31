@@ -12,13 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// NetImgui WASM Viewer — renders remote ImGui draw data in a browser.
-// Bridges the NetImgui server protocol to a WebGL/SDL2/Emscripten rendering
-// context.
-//
-// This file is the Emscripten glue: app/scene state, the main loop, and the
-// wiring between the session (web_client_session.h), the remote UI stream
-// (web_client_remote_ui.h) and the Filament renderer.
+// This file implements the Web Viewer Browser Client. NetImgui is used to
+// transmit remote ImGui draw data in a browser and the filament renderer is
+// used to render the UI and the 3D scene.
 
 #include <emscripten.h>
 #include <emscripten/bind.h>
@@ -93,19 +89,16 @@ struct Telemetry {
   uint64_t sim_bytes_per_sec = 0;
 };
 
-// The app's single implementation of every interface the session and the
-// remote UI stream call back into: one object, a member of App below, wired
-// into both at construction. Method bodies live near the code they call,
-// after the free functions they use (search for "AppCallbacks::").
+// The implementation of every interface needed by the session and remote UI.
 class AppCallbacks final : public RemoteUi::Callbacks,
                            public Session::Callbacks {
  public:
-  // RemoteUi::Callbacks (the renderer-facing side).
+  // RemoteUi::Callbacks
   uintptr_t UploadTexture(uintptr_t current, const std::byte* rgba,
                           uint32_t width, uint32_t height) override;
   bool GpuReady() override;
 
-  // Session::Callbacks (payloads in, remote UI stream control out).
+  // Session::Callbacks
   bool ReadyForPayload() override;
   void OnPayload(const StatePayloadView& view) override;
   void ConnectRemoteUi() override;
@@ -121,14 +114,14 @@ struct App {
   mjvCamera camera;
   mjvOption vis_options;
 
-  // Spectator camera (combo order matches SpectatorCamMode).
+  // Spectator camera
   int spectator_cam_mode = kSpecCamTumble;
   float spectator_cam_speed = 0.001f;  // WASD speed; accelerates while held.
 
   Telemetry telemetry;
 
-  // Main loop frame counters (MainLoopImpl): reconnect pacing for the
-  // state WebSocket. (The session paces its own /ui claims by time.)
+  // Main loop frame counters (MainLoopImpl): reconnect pacing for the state
+  // WebSocket. (The session paces its own /ui claims by time.)
   int frame_count = 0;
   int last_state_retry_frame = 0;
 
@@ -137,12 +130,9 @@ struct App {
   int backend_state_sig = 0;
   bool backend_state_dirty = false;
 
-  // User-injected geoms (Viewer.extra_geoms) received with the state payload.
+  // User-injected geoms received with the state payload.
   std::vector<mjvGeom> extra_geoms;
 
-  // The machinery the app owns: the callbacks object, the session and the
-  // remote UI stream wired to it, and the local UI. Declaration order
-  // matters — the session and stream bind callbacks at construction.
   AppCallbacks callbacks;
   RemoteUi remote_ui{callbacks};
   Session session{callbacks};
@@ -168,15 +158,12 @@ std::string GetWsBaseUrl() {
   return url;
 }
 
-// Stable per-tab id sent with every WebSocket connect (?sid=...), letting
-// the server tie this page's /ui and /state connections together. It lives
-// in sessionStorage so it survives page reloads: on a model change every
-// page reloads and the server restarts with the controller slot reserved
-// for the previous controller's sid — a reload-stable id is what lets the
-// controller keep control. (crypto.randomUUID would need a secure context,
-// which plain http on a LAN is not, hence the homegrown id. Duplicating a
-// tab copies sessionStorage, so twin tabs share a sid and the server sees
-// them as one viewer — a known cosmetic edge case.)
+// Stable per-tab id sent with every WebSocket connect (?sid=...), letting the
+// server tie this page's /ui and /state connections together. It lives in
+// sessionStorage so it survives page reloads: on a model change every page
+// reloads and the server restarts with the controller slot reserved for the
+// previous controller's sid, a reload-stable id is what lets the controller
+// keep control.
 std::string GetSessionId() {
   static const std::string sid = emscripten_run_script_string(
       "(function() {"
@@ -201,15 +188,13 @@ bool IsFilamentReady() {
   return g_app.renderer && g_app.model_holder && g_app.model_holder->ok();
 }
 
-// Applies a parsed state payload to the app. Wired as
-// g_app.session.on_payload; runs only after the model-change/reload policy
-// has accepted the payload.
+// Applies a parsed state payload to the app. Called via AppCallbacks::OnPayload
+// after Session validates model CRC and payload readiness.
 void ApplyStatePayload(const StatePayloadView& view) {
   mjModel* model = g_app.model_holder->model();
 
   // Physics state. Guard against a size mismatch (e.g. a stale packet from
-  // before a model change) — mj_setState with a wrong-sized vector would
-  // corrupt mjData.
+  // before a model change).
   if (view.physics != nullptr) {
     const size_t expected_bytes =
         mj_stateSize(model, view.physics_spec) * sizeof(mjtNum);
@@ -228,8 +213,6 @@ void ApplyStatePayload(const StatePayloadView& view) {
   // (all input is forwarded to it and handled by the same code as the native
   // viewer); the browser just renders them.
   if (view.render_state != nullptr) {
-    // Decoded by state_payload.cc, next to the serializer, so the wire field
-    // order lives in one file.
     mujoco::studio::RenderStateView rs;
     mujoco::studio::ParseRenderState(view.render_state, &rs);
 
@@ -240,6 +223,7 @@ void ApplyStatePayload(const StatePayloadView& view) {
         g_app.spectator_cam_mode == kSpecCamFollow) {
       g_app.camera = rs.camera;
     }
+
     g_app.perturb = rs.perturb;
     g_app.vis_options = rs.vis_options;
     model->opt = rs.opt;
@@ -252,8 +236,7 @@ void ApplyStatePayload(const StatePayloadView& view) {
     }
   }
 
-  // Extra geoms (Viewer.extra_geoms on the Python side). The payload data is
-  // not guaranteed to be aligned; memcpy into the vector.
+  // Extra geoms. memcpy since the payload data is not guaranteed to be aligned.
   g_app.extra_geoms.resize(view.extra_geom_count);
   if (view.extra_geom_count > 0) {
     memcpy(g_app.extra_geoms.data(), view.extra_geoms,
@@ -261,8 +244,6 @@ void ApplyStatePayload(const StatePayloadView& view) {
   }
 }
 
-// Switches the spectator camera mode, re-seeding the local camera when
-// entering a free mode so the view starts from the current pose.
 void SetSpectatorCameraMode(int mode) {
   if (mode == g_app.spectator_cam_mode) {
     return;
@@ -284,10 +265,9 @@ void SetSpectatorCameraMode(int mode) {
 
 // Local camera control for a spectating page in a free camera mode. The
 // controller's input goes to the headless viewer instead (CaptureAndSendInput),
-// which streams its camera back over the state WebSocket. Mirrors the
-// mouse/WASD camera handling in src/experimental/studio/app.cc.
+// which streams its camera back over the state WebSocket.
 // TODO(matijak): Share the camera handling code with the studio app (e.g. in
-// platform/ux/interaction.cc) instead of mirroring it here.
+// platform/ux/interaction.cc) instead of duplicating it here.
 void HandleSpectatorCameraInput() {
   if (g_app.spectator_cam_mode == kSpecCamFollow) {
     return;
@@ -434,11 +414,11 @@ void BuildBrowserGui() {
 //=================================================================================================
 void MainLoopImpl();
 
-// An exception escaping the RAF callback kills the main loop silently (the
-// canvas freezes on the last rendered frame and input capture stops, with
-// only an opaque "Uncaught <ptr>" in the console). Catch, log, and stop
-// explicitly instead.
 void MainLoop() {
+  // An exception escaping the requestAnimationFrame callback kills the main
+  // loop silently causing the canvas to freeze on the last rendered frame and
+  // input capture to stop with only an opaque "Uncaught <ptr>" in the console.
+  // Here we catch, log, and stop explicitly instead.
   try {
     MainLoopImpl();
   } catch (const std::exception& e) {
@@ -456,11 +436,10 @@ void MainLoopImpl() {
   // Session upkeep (the liveness heartbeat).
   g_app.session.Update();
 
-  // Reconnect the state WebSocket if it dropped — e.g. the Python side
-  // restarted its servers after a model change. Receiving a payload with a
-  // different model identity then triggers a page reload (Session).
-  // Deliberate server closes (session full, inactivity) are transient;
-  // retry them too, just at a gentler pace.
+  // Reconnect the state WebSocket if it dropped. Receiving a payload with a
+  // different model identity then triggers a page reload (Session). Deliberate
+  // server closes (session full, inactivity) are transient; retry them too,
+  // using a gentler pace.
   const int state_retry_interval =
       g_app.session.ServerCloseCode() != 0 ? 300 : 60;
   if (!g_app.session.HasSocket() && !g_app.session.ReloadPending() &&
@@ -471,11 +450,10 @@ void MainLoopImpl() {
     g_app.session.Connect(WsUrl("/state"));
   }
 
-  // Feed the role state machine the remote UI stream's connection state;
-  // the session owns claim retry pacing and role transitions (reconnects
-  // come back through AppCallbacks::ConnectRemoteUi). Reconnects matter
-  // beyond claims: the proxy tears the bridge down whenever its
-  // headless-side TCP connection cycles (server restart).
+  // Pass the remote UI (/ui) WebSocket state to the session state machine.
+  // The session uses this to manage attempts to claim the single controller
+  // slot, handle retry pacing if a claim is rejected or dropped, and drive role
+  // transitions (Controlling vs Spectating).
   RemoteUiState ui_state = RemoteUiState::kNoSocket;
   if (g_app.remote_ui.HasSocket()) {
     switch (g_app.remote_ui.ConnectionState()) {
@@ -504,7 +482,7 @@ void MainLoopImpl() {
   // Event loop and ImGui NewFrame via window abstraction.
   mujoco::platform::Window::Status status = g_app.window->NewFrame();
   if (status == mujoco::platform::Window::kQuitting) {
-    // NewFrame() started an ImGui frame — end it before bailing out.
+    // NewFrame() started an ImGui frame; end it before bailing out.
     ImGui::EndFrame();
     emscripten_cancel_main_loop();
     return;
@@ -512,11 +490,10 @@ void MainLoopImpl() {
 
   // For the controller, all scene interaction (camera orbit/zoom, perturbation,
   // picking) is handled by the headless viewer: CaptureAndSendInput()
-  // forwards this frame's input over NetImgui, the headless ViewerApp runs
-  // the same event handlers as the native viewer, and the resulting
-  // camera/perturb state streams back over the state WebSocket (see
-  // ApplyStatePayload). Spectators have no input channel; in a free camera
-  // mode they drive their local camera directly.
+  // forwards this frame's input over NetImgui, and the resulting camera/perturb
+  // state streams back over the state WebSocket (see ApplyStatePayload).
+  // Spectators have no input channel; in a free camera mode they drive their
+  // local camera directly.
   g_app.remote_ui.CaptureAndSendInput();
   if (g_app.session.Role() == SessionRole::kSpectating) {
     HandleSpectatorCameraInput();
@@ -532,7 +509,7 @@ void MainLoopImpl() {
   // Inject remote draw lists into the local ImDrawData so that Filament's
   // ImguiBridge renders them alongside the local UI. Remote lists are inserted
   // first (background) and local lists are re-added after (foreground), so the
-  // local UI always renders on top of remote content.
+  // local UI always renders on top of remote content. Note that
   // ImGui::GetDrawData() is only valid after ImGui::Render() and until the next
   // call to ImGui::NewFrame().
   ImDrawData* remote_draw_data = g_app.remote_ui.RemoteDrawData();
@@ -565,8 +542,7 @@ void MainLoopImpl() {
     }
   }
 
-  // Filament render — scene + all ImGui (local + remote). Filament manages
-  // its own clear, framebuffer, and GL state.
+  // Render the scene and all ImGui UI (local and remote).
   if (g_app.renderer && g_app.model_holder && g_app.model_holder->ok()) {
     // Apply backend state if available.
     if (g_app.backend_state_dirty) {
@@ -660,9 +636,7 @@ void OnFetchError(emscripten_fetch_t* fetch) {
   LOG(Error, "Failed to fetch model.mjb, status: %d; retrying", fetch->status);
   emscripten_fetch_close(fetch);
   // The most likely cause is the Python side restarting its server after a
-  // model change, so retry rather than leaving the page permanently blank
-  // (nothing else re-triggers the fetch — the state link is only connected
-  // on fetch success).
+  // model change, so retry rather than leaving the page permanently blank.
   emscripten_async_call([](void*) { StartModelFetch(); }, nullptr, 1000);
 }
 
@@ -673,14 +647,12 @@ void StartModelFetch() {
   attr.attributes = EMSCRIPTEN_FETCH_LOAD_TO_MEMORY;
   attr.onsuccess = OnFetchSuccess;
   attr.onerror = OnFetchError;
-  // Relative URL — the browser resolves this against the page origin,
-  // so it works regardless of hostname, protocol, or port.
   emscripten_fetch(&attr, "/model.mjb");
 }
 
-// Holds assets (Filament materials/IBL, local ImGui UI fonts) that the page
-// fetches and pushes in via the registerAsset() binding before startApp()
-// runs, so the resource providers below can resolve them without a filesystem.
+// Holds assets (Filament assets and local ImGui fonts) that the page fetches
+// and pushes in via the registerAsset() binding before startApp() runs, so the
+// resource providers below can resolve them without a filesystem.
 class AssetRegistry {
  public:
   static AssetRegistry& Instance() {
@@ -709,9 +681,8 @@ void RegisterAsset(std::string filename, std::string contents) {
                                           std::move(contents));
 }
 
-// Registers resource providers so that "filament:" (renderer materials/IBL)
-// and "font:" (the local ImGui UI fonts) asset requests resolve from the
-// AssetRegistry populated by registerAsset().
+// Registers resource providers so that "filament:" and "font:" asset requests
+// resolve from the AssetRegistry populated by registerAsset().
 static void RegisterAssetProviders() {
   mjpResourceProvider resource_provider;
   mjp_defaultResourceProvider(&resource_provider);
@@ -734,15 +705,15 @@ static void RegisterAssetProviders() {
 }
 
 // Starts the viewer once the page has registered every asset. Exposed to JS
-// (see EMSCRIPTEN_BINDINGS) and called from index.html after the fetches
-// complete. emscripten_set_main_loop with simulate_infinite_loop=1 never
-// returns, so there is no post-loop cleanup.
+// and called from index.html after the fetches complete. Note that calling
+// emscripten_set_main_loop with simulate_infinite_loop=1 never returns, so
+// there is no post-loop cleanup.
 void StartApp() {
   mujoco::platform::Window::Config config;
   config.gfx_mode = mujoco::platform::GraphicsMode::FilamentWebGl;
   // Load the Studio UI fonts for the browser's local ImGui (the role window);
   // the "font:" resource provider above resolves them from the AssetRegistry.
-  // (The streamed Studio UI carries its own font atlas separately.)
+  // (The streamed/remote UI carries its own font atlas separately.)
   config.load_fonts = true;
 
   g_app.window = std::make_unique<mujoco::platform::Window>("MuJoCo Web Viewer",

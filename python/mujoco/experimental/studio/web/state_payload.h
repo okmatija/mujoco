@@ -123,9 +123,7 @@ struct StatePayloadView {
 // with unknown tags are skipped.
 bool ParseStatePayload(const void* data, size_t size, StatePayloadView* out);
 
-// A decoded render state block. The field order mirrors the wire layout;
-// the serializer and ParseRenderState both live in state_payload.cc so the
-// order is maintained in one place.
+// A decoded render state block.
 struct RenderStateView {
   mjvCamera camera;
   mjvPerturb perturb;

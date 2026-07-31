@@ -578,6 +578,8 @@ void RemoteUi::ProcessCmdDrawFrame(CmdDrawFrame* cmd_draw_frame) {
   remote_draw_data_.reset(frame);
 }
 
+// Keep in sync with CaptureImguiInput in the vendored
+// netimgui/Code/ServerApp/Source/NetImguiServer_RemoteClient.cpp
 void RemoteUi::CaptureAndSendInput() {
   if (!socket_) return;
 
@@ -636,12 +638,12 @@ void RemoteUi::CaptureAndSendInput() {
   // the receiving side derives each frame's scroll as the difference between
   // the current total and the previous total. So scroll is suppressed during
   // local UI capture by FREEZING the totals (accumulation above is gated on
-  // !local_wants_mouse), while still sending them every frame. Sending 0 instead
-  // would rewind the receiver's baseline and produce two huge spurious deltas:
-  // -total when capture starts (wild zoom out as the local window expands) and
-  // +total when it ends (snap back on collapse). Note the deliberate asymmetry
-  // with the mouse position below, which IS per-frame absolute and can simply
-  // be parked while captured.
+  // !local_wants_mouse), while still sending them every frame. Sending 0
+  // instead would rewind the receiver's baseline and produce two huge spurious
+  // deltas: -total when capture starts (wild zoom out as the local window
+  // expands) and +total when it ends (snap back on collapse). Note the
+  // deliberate asymmetry with the mouse position below, which IS per-frame
+  // absolute and can simply be parked while captured.
   cmd_input.mMouseWheelVert = mouse_wheel_pos_[0];
   cmd_input.mMouseWheelHoriz = mouse_wheel_pos_[1];
   if (!local_wants_mouse) {

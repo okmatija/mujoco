@@ -23,7 +23,6 @@
 #include <initializer_list>
 
 #include <imgui.h>
-
 #include "experimental/platform/ux/imgui_widgets.h"
 #include "google/logging.h"
 
@@ -60,9 +59,9 @@ void DisconnectNotice::Draw(int server_close_code,
                             bool reload_pending) {
   if (server_close_code != 0) {
     const char* reason = "Disconnected by the viewer.";
-    if (server_close_code == 4002) {
+    if (server_close_code == kWsCloseSessionFull) {
       reason = "Session is full: too many viewers connected.";
-    } else if (server_close_code == 4003) {
+    } else if (server_close_code == kWsCloseInactive) {
       reason = "Disconnected after inactivity.";
     }
     DrawDisconnectWindow("##disconnected_by_server",
