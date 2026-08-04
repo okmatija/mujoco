@@ -3429,6 +3429,15 @@ Enables or disables the light.
 
 Sets the intensity of the light, in candela.
 
+.. _mjrf_setLightShadowMapSize:
+
+`mjrf_setLightShadowMapSize <#mjrf_setLightShadowMapSize>`__
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. mujoco-include:: mjrf_setLightShadowMapSize
+
+Sets the resolution of the light's shadow map, in texels.
+
 .. _mjrf_setLightColor:
 
 `mjrf_setLightColor <#mjrf_setLightColor>`__
@@ -5305,6 +5314,15 @@ Set actuator to velocity servo; return error if any.
 .. mujoco-include:: mjs_setToOrientation
 
 Set actuator to orientation servo.
+
+.. _mjs_setToPID:
+
+`mjs_setToPID <#mjs_setToPID>`__
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. mujoco-include:: mjs_setToPID
+
+Set actuator to PID controller.
 
 .. _mjs_setToDamper:
 

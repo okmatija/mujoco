@@ -66,6 +66,17 @@ class mjXReader : public mjXBase {
   void Sensor(tinyxml2::XMLElement* section);                          // sensor section
   void Keyframe(tinyxml2::XMLElement* section);                        // keyframe section
 
+  // table-driven attribute reading: the mechanical attributes of an element,
+  // driven by its generated mjXAttr rows (see mjcf_read_table.inc). The
+  // static core handles everything except element names; the member wrapper
+  // adds kName handling and defaults-context awareness.
+  void ReadAttrTable(tinyxml2::XMLElement* elem, void* obj, mjsElement* el,
+                     const struct mjXAttr* rows, int nrow);
+  static void ReadAttrTableCore(tinyxml2::XMLElement* elem, void* obj,
+                                const struct mjXAttr* rows, int nrow,
+                                bool skipnodefault,
+                                const void* authored = nullptr);
+
   // single element parsers, used in defaults and main body
   void OneFlex(tinyxml2::XMLElement* elem, mjsFlex* pflex);
   void OneMesh(tinyxml2::XMLElement* elem, mjsMesh* pmesh, const mjVFS* vfs);
@@ -101,8 +112,10 @@ class mjXReader : public mjXBase {
   mujoco::user::FilePath texturedir_;
 };
 
-// MJCF schema
-#define nMJCF 249
-extern std::vector<const char*> MJCF[nMJCF];
+// MJCF schema table, generated from mjcf.schema into mjcf_table.inc
+extern const int nMJCF;
+extern std::vector<const char*> MJCF[];
+extern const mjXConstraintDef MJCF_constraints[];
+extern const int nMJCF_constraints;
 
 #endif  // MUJOCO_SRC_XML_XML_NATIVE_READER_H_

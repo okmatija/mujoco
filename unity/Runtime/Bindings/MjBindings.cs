@@ -276,7 +276,8 @@ public enum mjtDyn : int{
   mjDYN_FILTEREXACT = 3,
   mjDYN_MUSCLE = 4,
   mjDYN_DCMOTOR = 5,
-  mjDYN_USER = 6,
+  mjDYN_PID = 6,
+  mjDYN_USER = 7,
 }
 public enum mjtGain : int{
   mjGAIN_FIXED = 0,
@@ -284,7 +285,8 @@ public enum mjtGain : int{
   mjGAIN_MUSCLE = 2,
   mjGAIN_DCMOTOR = 3,
   mjGAIN_SO3 = 4,
-  mjGAIN_USER = 5,
+  mjGAIN_PID = 5,
+  mjGAIN_USER = 6,
 }
 public enum mjtBias : int{
   mjBIAS_NONE = 0,
@@ -297,6 +299,11 @@ public enum mjtBias : int{
 public enum mjtCtrlChart : int{
   mjCHART_EXPMAP = 1,
   mjCHART_QUAT = 2,
+}
+public enum mjtCtrlInput : int{
+  mjINPUT_POS = 1,
+  mjINPUT_VEL = 2,
+  mjINPUT_FF = 4,
 }
 public enum mjtObj : int{
   mjOBJ_UNKNOWN = 0,
@@ -5888,9 +5895,6 @@ public unsafe struct mjData_ {
   public int* efm_K_colind;
   public double* efm_K_val;
   public int* efm_dofid;
-  public int* efm_L_rownnz;
-  public int* efm_L_rowadr;
-  public int* efm_L_colind;
   public double* efm_L;
   public double* efc_b;
   public double* iefc_aref;

@@ -1842,6 +1842,154 @@ static void stretchK_dense(mjModel* m, mjData* d, mjtNum* K, int nv,
   }
 }
 
+// The same frame mismatch seen through the derivative: mjd_flexBend_mul is the
+// Jacobian of the bending force only if operator and force agree on the frame.
+// An unrotated flex cannot catch it, because the stencil is one scalar per
+// vertex pair applied coordinate-wise and so commutes with a rotation shared by
+// every vertex. The pin also covers the zero-dof vertex path, where body_dofadr
+// is negative and an unguarded stencil indexes out of bounds.
+TEST_F(DerivativeTest, FlexBendDerivativesRotated) {
+  static const char* const kXml = R"(
+  <mujoco>
+    <option integrator="implicitfast" solver="CG"/>
+    <worldbody>
+      <body name="turned" euler="90 35 20">
+        <flexcomp name="rot" type="grid" count="3 3 1" spacing="0.1 0.1 0.1"
+                  radius=".01" dim="2" mass="1">
+          <pin id="0"/>
+          <contact selfcollide="none" contype="0" conaffinity="0"/>
+          <elasticity young="1e4" poisson="0.3" thickness="0.01"
+                      elastic2d="bend" damping="0"/>
+        </flexcomp>
+      </body>
+      <flexcomp name="flat" type="grid" count="3 3 1" spacing="0.1 0.1 0.1"
+                radius=".01" dim="2" mass="1" pos="1 0 0">
+        <pin id="0"/>
+          <contact selfcollide="none" contype="0" conaffinity="0"/>
+        <elasticity young="1e4" poisson="0.3" thickness="0.01"
+                    elastic2d="bend" damping="0"/>
+      </flexcomp>
+    </worldbody>
+  </mujoco>
+  )";
+
+  char error[1024];
+  MjModelPtr model = LoadModelFromString(kXml, error, sizeof(error));
+  ASSERT_THAT(model.get(), NotNull()) << error;
+  int nv = model->nv;
+  ASSERT_EQ(model->nq, nv);  // all slide dofs
+  ASSERT_EQ(model->nflex, 2);
+  MjDataPtr data = MakeData(model);
+
+  // deform both flexes out of plane so the bending stencil carries real force
+  for (int i = 0; i < nv; i++) {
+    data->qpos[i] += 2e-3 * (mju_Halton(i, 2) - 0.5);
+  }
+  mj_forward(model.get(), data.get());
+
+  std::vector<mjtNum> vec(nv), res(nv, 0);
+  for (int i = 0; i < nv; i++) {
+    vec[i] = mju_Halton(i, 3) - 0.5;
+  }
+  mjd_flexBend_mul(model.get(), data.get(), res.data(), vec.data(), 1, 0);
+
+  mjtNum eps = MjTol(1e-7, 1e-4);
+  mjData* perturbed = mj_copyData(NULL, model.get(), data.get());
+  mju_addToScl(perturbed->qpos, vec.data(), eps, nv);
+  mj_forward(model.get(), perturbed);
+
+  // check each flex on its own: the unrotated one is the control that isolates
+  // the rotation
+  for (int f = 0; f < model->nflex; f++) {
+    SCOPED_TRACE(model->names + model->name_flexadr[f]);
+    mjtNum max_err = 0, scale = 0;
+    for (int k = 0; k < model->flex_vertnum[f]; k++) {
+      int body = model->flex_vertbodyid[model->flex_vertadr[f] + k];
+      int adr = model->body_dofadr[body];
+      for (int x = 0; x < model->body_dofnum[body]; x++) {
+        mjtNum fd = -(perturbed->qfrc_passive[adr+x] -
+                      data->qfrc_passive[adr+x]) / eps;
+        max_err = mju_max(max_err, mju_abs(res[adr+x] - fd));
+        scale = mju_max(scale, mju_abs(fd));
+      }
+    }
+    // bending is linear in position, so the difference is exact up to roundoff
+    EXPECT_GT(scale, 1e-3)
+        << "test should exercise nontrivial bending stiffness";
+    EXPECT_LT(max_err, MjTol(1e-4, 1e-2) * scale)
+        << "mjd_flexBend_mul is not the Jacobian of the flex bending force";
+  }
+  mj_deleteData(perturbed);
+}
+
+// K_stretch must be the full Hessian of the stretch force, not just its Gauss-Newton part: the
+// geometric (stress-proportional) term is what makes it the Jacobian at finite strain. Uniformly
+// dilating the mesh puts every edge in tension, so the tensile clamp is inactive and the operator
+// is exact -- with only the Gauss-Newton term the finite-difference error is a large fraction of
+// the force. FlexStretchDerivatives covers the near-rest limit, where the two agree anyway.
+TEST_F(DerivativeTest, FlexStretchDerivativesTensile) {
+  static const char* const kXml = R"(
+  <mujoco>
+    <option integrator="implicit"/>
+    <worldbody>
+      <flexcomp name="cloth" type="grid" count="4 4 1" spacing="0.1 0.1 0.1"
+                radius=".01" dim="2" mass="1" pos="0 0 1">
+        <contact selfcollide="none" contype="0" conaffinity="0"/>
+        <elasticity young="1e4" poisson="0.3" thickness="0.01"
+                    elastic2d="stretch" damping="0"/>
+      </flexcomp>
+    </worldbody>
+  </mujoco>
+  )";
+
+  char error[1024];
+  MjModelPtr model = LoadModelFromString(kXml, error, sizeof(error));
+  ASSERT_THAT(model.get(), NotNull()) << error;
+  int nv = model->nv;
+  ASSERT_EQ(model->nq, nv);  // all slide dofs
+  MjDataPtr data = MakeData(model);
+  mj_forward(model.get(), data.get());
+
+  // dilate about the flex centroid: every edge stretches by 5%, so every Me is strictly positive
+  mjtNum centroid[3] = {0, 0, 0};
+  int nvert = model->flex_vertnum[0];
+  for (int v = 0; v < nvert; v++) {
+    mju_addTo3(centroid, data->flexvert_xpos + 3*v);
+  }
+  mju_scl3(centroid, centroid, 1.0/nvert);
+  for (int v = 0; v < nvert; v++) {
+    int body = model->flex_vertbodyid[model->flex_vertadr[0] + v];
+    int adr = model->body_dofadr[body];
+    for (int x = 0; x < 3; x++) {
+      data->qpos[adr+x] += 0.05*(data->flexvert_xpos[3*v+x] - centroid[x]);
+    }
+  }
+  mj_forward(model.get(), data.get());
+
+  std::vector<mjtNum> vec(nv), res(nv, 0);
+  for (int i = 0; i < nv; i++) {
+    vec[i] = mju_Halton(i, 2) - 0.5;
+  }
+  mjd_flexStretch_mul(model.get(), data.get(), res.data(), vec.data(), 1, 0);
+
+  mjtNum eps = MjTol(1e-7, 1e-4);
+  mjData* perturbed = mj_copyData(NULL, model.get(), data.get());
+  mju_addToScl(perturbed->qpos, vec.data(), eps, nv);
+  mj_forward(model.get(), perturbed);
+
+  mjtNum max_err = 0, scale = 0;
+  for (int i = 0; i < nv; ++i) {
+    mjtNum fd = -(perturbed->qfrc_passive[i] - data->qfrc_passive[i]) / eps;
+    max_err = mju_max(max_err, mju_abs(res[i] - fd));
+    scale = mju_max(scale, mju_abs(fd));
+  }
+  mj_deleteData(perturbed);
+
+  EXPECT_GT(scale, 1e-3) << "test should exercise nontrivial stretch stiffness";
+  EXPECT_LT(max_err, MjTol(1e-4, 1e-3) * scale)
+      << "mjd_flexStretch_mul is not the Jacobian of the flex stretch force";
+}
+
 // verify mjd_flexStretch_mul (Gauss-Newton Hessian of the standard-flex
 // stretch force) against finite differences of qfrc_passive, plus symmetry,
 // positive semi-definiteness and (s1, s2) scale linearity. The model covers
@@ -1876,9 +2024,9 @@ TEST_F(DerivativeTest, FlexStretchDerivatives) {
 
   MjDataPtr data = MakeData(model);
 
-  // deform both flexes deterministically. Keep the strain small: the operator
-  // is the Gauss-Newton Hessian, exact to O(strain) (the geometric term is
-  // dropped, see FlexInterpDerivativesDeformed for the analogous property).
+  // deform both flexes deterministically, at small strain. FlexStretchDerivativesTensile
+  // covers finite strain, where the geometric term of K_stretch is what carries the accuracy;
+  // the solid (dim=3) flex below has no such term, so the tolerance stays loose here.
   for (int i = 0; i < nv; i++) {
     data->qpos[i] += 5e-4 * (mju_Halton(i, 2) - 0.5);
   }
@@ -1899,9 +2047,8 @@ TEST_F(DerivativeTest, FlexStretchDerivatives) {
     mj_forward(model.get(), data_perturbed);
 
     // qfrc_passive = -dV/dq  =>  -(qfrc_new - qfrc)/eps ~= K * vec.
-    // Compare max error against the force scale: the operator omits the
-    // geometric (stress-proportional) term, so the residual is O(strain) of
-    // the overall scale and individual near-zero entries are not meaningful.
+    // Compare max error against the force scale rather than entrywise: individual near-zero
+    // entries are not meaningful, and the dim=3 flex still carries a Gauss-Newton residual.
     mjtNum max_err = 0, scale = 0;
     for (int i = 0; i < nv; ++i) {
       mjtNum fd =
@@ -2104,9 +2251,11 @@ TEST_F(DerivativeTest, FlexStiffAssembleInterp) {
   }
 }
 
-// mjd_effSolve: exact-preconditioner fast path solves (M+K)x = b directly; the general
-// refinement path stays within its tolerance when exactness does not hold
-TEST_F(DerivativeTest, EffSolveExact) {
+// mjd_effSolve drives (M+K)x = b to opt.tolerance on the relative residual,
+// for every metric coverage case. It is a PCG whose preconditioner
+// (mjd_effPrec) is only approximate, so the accuracy comes from the iteration
+// and not from the preconditioner being exact.
+TEST_F(DerivativeTest, EffSolve) {
   // relative residual of (M+K)x - b after mjd_effSolve
   auto solve_residual = [](const mjModel* m, mjData* d) {
     int nv = m->nv;
@@ -2142,8 +2291,7 @@ TEST_F(DerivativeTest, EffSolveExact) {
   ASSERT_GE(data->efm_active, 1);
   EXPECT_GT(data->nefmK, 0);
   EXPECT_GT(data->nefmdof, 0);
-  EXPECT_EQ(data->efm_active, 2);
-  EXPECT_LT(solve_residual(model.get(), data.get()), MjTol(1e-10, 1e-6));
+  EXPECT_LT(solve_residual(model.get(), data.get()), MjTol(1e-8, 1e-4));
 
   // bending-only cloth: no CSR or per-step factor, constant factor covers, exact
   static const char* const kXmlBend = R"(
@@ -2166,8 +2314,7 @@ TEST_F(DerivativeTest, EffSolveExact) {
   EXPECT_EQ(data->nefmK, 0);
   EXPECT_EQ(data->nefmdof, 0);
   EXPECT_GT(model->nefm0dof, 0);
-  EXPECT_EQ(data->efm_active, 2);
-  EXPECT_LT(solve_residual(model.get(), data.get()), MjTol(1e-10, 1e-6));
+  EXPECT_LT(solve_residual(model.get(), data.get()), MjTol(1e-8, 1e-4));
 
   // cloth under a jointed parent: M couples across the covered block, not exact,
   // the refinement path must still meet its tolerance
@@ -2192,8 +2339,89 @@ TEST_F(DerivativeTest, EffSolveExact) {
   data = MakeData(model);
   mj_forward(model.get(), data.get());
   ASSERT_GE(data->efm_active, 1);
-  EXPECT_EQ(data->efm_active, 1);
   EXPECT_LT(solve_residual(model.get(), data.get()), 1e-4);
+}
+
+// A cloth with per-step stretch stiffness, used by the two tests below.
+static const char* const kStretchCloth = R"(
+<mujoco>
+  <option solver="CG" integrator="implicitfast"/>
+  <worldbody>
+    <body name="base" pos="0 0 1">
+      <joint type="slide" axis="0 0 1"/>
+      <geom type="sphere" size=".01" mass="1" contype="0" conaffinity="0"/>
+      <flexcomp name="cloth" type="grid" count="6 6 1" spacing="0.05 0.05 0.05"
+                radius=".005" dim="2" mass="0.5" pos="0 0 0" dof="full">
+        <contact selfcollide="none" contype="0" conaffinity="0"/>
+        <elasticity young="1e3" poisson="0.2" damping="0.1" elastic2d="both"
+                    thickness="0.01"/>
+      </flexcomp>
+    </body>
+  </worldbody>
+</mujoco>
+)";
+
+// A metric too ill-conditioned for the 3x3 blocks exhausts mjd_effSolve's
+// iteration budget; it must report that rather than return an under-converged
+// qacc_smooth silently. Forced by conditioning rather than by an unreachable
+// opt.tolerance, which cannot be expressed in single precision: there the
+// residual reaches exactly zero and CG breaks down on a converged solve.
+TEST_F(DerivativeTest, EffSolveCapWarns) {
+  static const char* const kStiffCloth = R"(
+  <mujoco>
+    <option solver="CG" integrator="implicitfast"/>
+    <worldbody>
+      <body name="base" pos="0 0 1">
+        <joint type="slide" axis="0 0 1"/>
+        <geom type="sphere" size=".01" mass="1" contype="0" conaffinity="0"/>
+        <flexcomp name="cloth" type="grid" count="24 24 1" dim="2"
+                  spacing="0.02 0.02 0.02" radius=".002" mass="0.02" dof="full">
+          <contact selfcollide="none" contype="0" conaffinity="0"/>
+          <elasticity young="1e9" poisson="0.45" damping="0" elastic2d="both"
+                      thickness="0.02"/>
+        </flexcomp>
+      </body>
+    </worldbody>
+  </mujoco>
+  )";
+  char error[1024];
+  MjModelPtr model = LoadModelFromString(kStiffCloth, error, sizeof(error));
+  ASSERT_THAT(model.get(), NotNull()) << error;
+  MjDataPtr data = MakeData(model);
+
+  MockWarningHandler warning_handler;
+  // both: the specific cause, then the mjWARN_INERTIA it is reported through
+  warning_handler.ExpectWarnings("Flex stiffness is too ill-conditioned");
+  warning_handler.ExpectWarnings("Inertia matrix is too close to singular");
+  mj_forward(model.get(), data.get());
+  testing::Mock::VerifyAndClearExpectations(&warning_handler);
+}
+
+// PCG requires a symmetric preconditioner. mjd_effPrec must satisfy
+// u.P(v) == v.P(u); it did not when the covered and uncovered dofs shared a
+// kinematic tree, which is what the flex-under-a-slider model here exercises.
+TEST_F(DerivativeTest, EffPrecIsSymmetric) {
+  char error[1024];
+  MjModelPtr model = LoadModelFromString(kStretchCloth, error, sizeof(error));
+  ASSERT_THAT(model.get(), NotNull()) << error;
+  MjDataPtr data = MakeData(model);
+  mj_forward(model.get(), data.get());
+  ASSERT_GE(data->efm_active, 1);
+
+  int nv = model->nv;
+  std::vector<mjtNum> u(nv), v(nv), Pu(nv), Pv(nv);
+  for (int trial = 0; trial < 5; trial++) {
+    for (int i = 0; i < nv; i++) {
+      u[i] = mju_Halton(i + trial*nv, 2) - 0.5;
+      v[i] = mju_Halton(i + trial*nv, 5) - 0.5;
+    }
+    mjd_effPrec(model.get(), data.get(), Pu.data(), u.data());
+    mjd_effPrec(model.get(), data.get(), Pv.data(), v.data());
+    mjtNum a = mju_dot(v.data(), Pu.data(), nv);
+    mjtNum b = mju_dot(u.data(), Pv.data(), nv);
+    EXPECT_THAT(a, MjNear(b, 1e-10, 1e-4))
+        << "preconditioner is not symmetric, trial " << trial;
+  }
 }
 
 }  // namespace

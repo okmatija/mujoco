@@ -6025,6 +6025,12 @@ struct MjsActuator {
   void set_ctrlspec(int value) {
     ptr_->ctrlspec = value;
   }
+  emscripten::val velrange() const {
+    return emscripten::val(emscripten::typed_memory_view(2, ptr_->velrange));
+  }
+  emscripten::val ffrange() const {
+    return emscripten::val(emscripten::typed_memory_view(2, ptr_->ffrange));
+  }
   mjtBool actearly() const {
     return ptr_->actearly;
   }
@@ -7313,15 +7319,6 @@ struct MjData {
   }
   emscripten::val efm_dofid() const {
     return emscripten::val(emscripten::typed_memory_view(ptr_->nefmdof, ptr_->efm_dofid));
-  }
-  emscripten::val efm_L_rownnz() const {
-    return emscripten::val(emscripten::typed_memory_view(ptr_->nefmdof, ptr_->efm_L_rownnz));
-  }
-  emscripten::val efm_L_rowadr() const {
-    return emscripten::val(emscripten::typed_memory_view(ptr_->nefmdof, ptr_->efm_L_rowadr));
-  }
-  emscripten::val efm_L_colind() const {
-    return emscripten::val(emscripten::typed_memory_view(ptr_->nefmL, ptr_->efm_L_colind));
   }
   emscripten::val efm_L() const {
     return emscripten::val(emscripten::typed_memory_view(ptr_->nefmL, ptr_->efm_L));

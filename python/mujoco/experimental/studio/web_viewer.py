@@ -42,7 +42,6 @@ from typing import Any
 import zlib
 
 import mujoco
-from mujoco.experimental.implot import implot
 from mujoco.experimental.studio import endpoints
 from mujoco.experimental.studio import messages
 from mujoco.experimental.studio import ux
@@ -53,8 +52,9 @@ from mujoco.experimental.studio.web import web_server
 import numpy as np
 
 from mujoco.experimental.dear_imgui import dear_imgui as imgui
+from mujoco.experimental.implot import implot
 
-# File extensions a dropped file may load as a model (see _pick_drop_root).
+# File extensions a dropped file may load as a model.
 _MODEL_EXTENSIONS = ('.xml', '.urdf', '.mjb', '.mjz', '.zip')
 
 
@@ -70,71 +70,60 @@ def _find_assets_dir() -> str:
   return ''
 
 
-def _lan_ips() -> tuple[str | None, str | None]:
-  """Returns this machine's outbound-interface (IPv6, IPv4) addresses.
-
-  These are the addresses other machines on the same network can reach the
-  viewer at. A None entry means that family has no shareable address.
-  """
-
-  def probe(family: socket.AddressFamily, dest: tuple[str, int]) -> str | None:
-    try:
-      with socket.socket(family, socket.SOCK_DGRAM) as s:
-        s.connect(dest)
-        return s.getsockname()[0]
-    except OSError:
-      return None
-
-  ipv6 = probe(socket.AF_INET6, ('2001:4860:4860::8888', 80))
-  if ipv6 and ipv6.startswith(('fe80', '::1')):
-    ipv6 = None
-  ipv4 = probe(socket.AF_INET, ('8.8.8.8', 80))
-  if ipv4 and ipv4.startswith('127.'):
-    ipv4 = None
-  return ipv6, ipv4
-
-
 def _print_url_banner(host: str, port: int) -> None:
   """Prints a prominent boxed banner with the URLs browsers can use."""
-  rows = [('local', f'http://localhost:{port}')]
+  rows = []
   if host in ('::', '0.0.0.0'):
-    # Shareable with other machines on the same network. Both families are
-    # always listed: a visitor may only be reachable over one of them, and
-    # an explicit "(unavailable)" beats a silently missing row. IPv6
-    # literals must be bracketed in URLs.
-    ipv6, ipv4 = _lan_ips()
-    rows.append(('network (IPv6)',
-                 f'http://[{ipv6}]:{port}' if ipv6 else '(unavailable)'))
-    rows.append(('network (IPv4)',
-                 f'http://{ipv4}:{port}' if ipv4 else '(unavailable)'))
+    fqdn = socket.getfqdn()
+    rows.append(('Remote:', f'http://{fqdn}:{port}/'))
+  rows.append(('Local:', f'http://localhost:{port}/'))
 
   label_width = max(len(label) for label, _ in rows)
-  lines = ['MuJoCo Web Viewer running at:', '']
-  lines += [f'  {label.ljust(label_width)}  {url}' for label, url in rows]
-  lines += ['', 'Ctrl+C to quit']
+  lines_plain = ['MuJoCo Web Viewer running at:', '']
+  lines_plain += [f'  {label.ljust(label_width)}  {url}' for label, url in rows]
+  lines_plain += ['', 'Ctrl+C to quit']
 
-  width = max(len(line) for line in lines)
-  banner = [
-      '+' + '-' * (width + 2) + '+',
-      *(f'| {line.ljust(width)} |' for line in lines),
-      '+' + '-' * (width + 2) + '+',
+  width = max(len(line) for line in lines_plain)
+
+  def _hyperlink(url: str) -> str:
+    return f'\033]8;;{url}\033\\{url}\033]8;;\033\\'
+
+  lines_formatted = ['MuJoCo Web Viewer running at:', '']
+  lines_formatted += [
+      f'  {label.ljust(label_width)}  {_hyperlink(url)}' for label, url in rows
   ]
+  lines_formatted += ['', 'Ctrl+C to quit']
+
+  banner = ['+' + '-' * (width + 2) + '+']
+  for plain, formatted in zip(lines_plain, lines_formatted):
+    padding = ' ' * (width - len(plain))
+    banner.append(f'| {formatted}{padding} |')
+  banner.append('+' + '-' * (width + 2) + '+')
   print('\n'.join(banner), flush=True)
 
 
 def _pick_drop_root(paths: list[str]) -> str | None:
   """Picks the model file to load from a dropped set of files.
 
-  Rules, in order: the only loadable file wins; otherwise, among the
-  loadable files at the shallowest directory depth, prefer one named after
-  its folder (the mjz convention, e.g. cards/cards.xml), then scene.xml
-  (the mujoco_menagerie convention), then the alphabetically first.
+  Rules, in order: the only loadable file wins; otherwise, among the loadable
+  files at the shallowest directory depth, prefer one named after its folder
+  (the mjz convention, e.g. cards/cards.xml), then scene.xml (the
+  mujoco_menagerie convention), then the alphabetically first.
+
+  Args:
+    paths: A list of relative file paths.
+
+  Returns:
+    The path to the model file to load, or None if no model file was found.
   """
   candidates = [p for p in paths if p.lower().endswith(_MODEL_EXTENSIONS)]
+
   if not candidates:
     return None
+
   if len(candidates) == 1:
     return candidates[0]
+
   depth = min(p.count('/') for p in candidates)
   shallow = sorted(p for p in candidates if p.count('/') == depth)
   for path in shallow:
@@ -142,17 +131,12 @@ def _pick_drop_root(paths: list[str]) -> str | None:
     stem = os.path.splitext(parts[-1])[0]
     if len(parts) > 1 and stem == parts[-2]:
       return path
+
   for path in shallow:
     if os.path.basename(path) == 'scene.xml':
       return path
+
   return shallow[0]
-
-
-def _serialize_model(model: mujoco.MjModel) -> bytes:
-  """Serializes a compiled model to MJB bytes (served as /model.mjb)."""
-  buffer = np.empty(mujoco.mj_sizeModel(model), np.uint8)
-  mujoco.mj_saveModel(model, None, buffer)
-  return buffer.tobytes()
 
 
 class WebViewer(viewer_protocol.Viewer):
@@ -188,15 +172,15 @@ class WebViewer(viewer_protocol.Viewer):
       perturb: Perturbation parameters. Internal object is created if None.
       render_flags: Render flags. Internal object is created if None.
       extra_geoms: List of extra geoms. Internal list is created if None.
-      host: Public interface the server binds to. The default "::" accepts
-        both IPv6 and IPv4 connections (IPv4-only where IPv6 is unavailable).
-      http_port: The single public port: page, WASM, /model.mjb, and the
-        /ui and /state WebSocket paths. None falls back to config.http_port;
-        0 picks the first free port starting at 8080, so several viewers can
-        run side by side.
-      ui_tcp_port: Loopback TCP port the headless NetImgui client connects
-        to. 0 (the default) uses an OS-assigned ephemeral port — both
-        endpoints live in this process tree, so no fixed number is needed.
+      host: Public interface the server binds to. The default "::" accepts both
+        IPv6 and IPv4 connections (IPv4-only where IPv6 is unavailable).
+      http_port: The single public port: page, WASM, /model.mjb, and the /ui and
+        /state WebSocket paths. None falls back to config.http_port; 0 picks the
+        first free port starting at 8080, so several viewers can run side by
+        side.
+      ui_tcp_port: Loopback TCP port the headless NetImgui client connects to. 0
+        (the default) uses an OS-assigned ephemeral port — both endpoints live
+        in this process tree, so no fixed number is needed.
     """
     super().__init__(
         config,
@@ -243,17 +227,20 @@ class WebViewer(viewer_protocol.Viewer):
     # whenever the model changes.
     self._web_server: web_server.WebServer | None = None
     self._model_crc32 = 0
-    # Files dropped onto the browser page arrive here from the server child
-    # as a dict of relative path -> bytes; owned by the viewer so it
-    # survives server restarts.
+
+    # Files dropped onto the browser page arrive here from the server child as a
+    # dict of relative path -> bytes; owned by the viewer so it survives server
+    # restarts.
     self._drop_queue = multiprocessing.get_context('fork').Queue()
-    # The controlling page's session id, written by the server child. Owned
-    # by the viewer so a fresh server (model change restarts it) can reserve
-    # the controller slot for the same page instead of letting whichever
-    # page reconnects first win it.
+
+    # The controlling page's session id, written by the server child. Owned by
+    # the viewer so a fresh server (model change restarts it) can reserve the
+    # controller slot for the same page instead of letting whichever page
+    # reconnects first win it.
     self._controller_sid = multiprocessing.get_context('fork').Array('c', 64)
-    # Temp dir holding the most recent drop's files; removed when the next
-    # drop supersedes it (its model is already parsed) and on close.
+
+    # Temp dir holding the most recent drop's files; removed when the next drop
+    # supersedes it (its model is already parsed) and on close.
     self._drop_dir = None
     self._start_servers()
     _print_url_banner(self._host, self._http_port)
@@ -265,23 +252,24 @@ class WebViewer(viewer_protocol.Viewer):
   # Server lifecycle.
   # ---------------------------------------------------------------------------
 
-  def _state_signature_and_size(self) -> tuple[int, int]:
-    """Returns the physics state signature and its size in doubles."""
-    sig = int(mujoco.mjtState.mjSTATE_INTEGRATION)
-    return sig, mujoco.mj_stateSize(self.model, sig)
-
   def _start_servers(self) -> None:
     """Starts (or restarts) the web server, serving the current model."""
     self._stop_servers()
 
-    mjb_data = _serialize_model(self.model)
+    # Serialize the compiled model to MJB bytes (served as /model.mjb).
+    buffer = np.empty(mujoco.mj_sizeModel(self.model), np.uint8)
+    mujoco.mj_saveModel(self.model, None, buffer)
+    mjb_data = buffer.tobytes()
+
     # Identity of the served model, included in every state payload. When it
     # changes, the browser refetches /model.mjb by reloading the page.
     self._model_crc32 = zlib.crc32(mjb_data)
 
-    _, state_size = self._state_signature_and_size()
-    max_payload = state_payload.max_state_payload_size(state_size *
-                                                       np.float64().itemsize)
+    state_sig = int(mujoco.mjtState.mjSTATE_INTEGRATION)
+    state_size = mujoco.mj_stateSize(self.model, state_sig)
+    max_payload = state_payload.max_state_payload_size(
+        state_size * np.float64().itemsize
+    )
 
     self._web_server = web_server.WebServer(
         http_sock=self._http_sock,
@@ -322,31 +310,26 @@ class WebViewer(viewer_protocol.Viewer):
   # ---------------------------------------------------------------------------
 
   def prepare_next_frame(self) -> bool:
-    """Starts the headless ImGui frame; returns False if no browser is ready.
-
-    When a browser is connected, injects its input (received via NetImgui) into
-    the ImGui context and paces to the browser's frame rate. When no browser is
-    connected, returns False (no frame) after a short wait, so the loop keeps
-    draining messages and can stop on an ExitEvent.
-    """
+    """Advances to the next headless frame; returns False when disconnected."""
     return self._headless_ui.new_frame()
 
   def sync(self) -> None:
     """Streams state to the browser and ends the headless ImGui frame."""
     if self._web_server is not None:
-      sig, state_size = self._state_signature_and_size()
+      state_sig = int(mujoco.mjtState.mjSTATE_INTEGRATION)
+      state_size = mujoco.mj_stateSize(self.model, state_sig)
       state = np.empty(state_size, np.float64)
-      mujoco.mj_getState(self.model, self.data, state, sig)
+      mujoco.mj_getState(self.model, self.data, state, state_sig)
       payload = state_payload.serialize_state_payload(
           self._model_crc32,
-          sig,
+          state_sig,
           state.tobytes(),
           self.camera,
           self.perturb,
           self.vis_options,
           self.model,
           list(self.render_flags.flags),
-          self.extra_geoms[:state_payload.MAX_EXTRA_GEOMS],
+          self.extra_geoms[: state_payload.MAX_EXTRA_GEOMS],
       )
       self._web_server.update_state(payload)
 
@@ -376,6 +359,7 @@ class WebViewer(viewer_protocol.Viewer):
       files = self._drop_queue.get_nowait()
     except queue.Empty:
       return ''
+
     # TODO(matijak): This could work without disk access: mjVFS can hold the
     # dropped files in memory (mj_addBufferVFS) and mj_parse resolves
     # includes/assets from it (ModelHolder::InitFromBuffer already covers
@@ -404,12 +388,14 @@ class WebViewer(viewer_protocol.Viewer):
       print(
           'Dropped file(s) contain no loadable model '
           f'({", ".join(_MODEL_EXTENSIONS)}).',
-          flush=True)
+          flush=True,
+      )
       return ''
     return os.path.join(drop_dir, *root.split('/'))
 
-  def upload_image(self, tex_id: int, img: str | bytes, width: int, height: int,
-                   bpp: int) -> int:
+  def upload_image(
+      self, tex_id: int, img: str | bytes, width: int, height: int, bpp: int
+  ) -> int:
     """Uploads an image to the browser over the NetImgui texture channel."""
     if isinstance(img, str):
       img = img.encode('latin-1')

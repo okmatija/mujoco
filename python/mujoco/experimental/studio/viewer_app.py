@@ -15,6 +15,7 @@
 
 import copy
 import dataclasses
+
 import mujoco
 from mujoco.experimental.studio import messages
 from mujoco.experimental.studio import parser

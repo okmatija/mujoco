@@ -14,17 +14,23 @@
 # ==============================================================================
 """Tests that the API reference documentation is complete and up to date."""
 
+import os
 import re
 
-import os
 import sys
 import unittest as googletest
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 _REPO_ROOT = os.path.dirname(os.path.dirname(_SCRIPT_DIR))
 sys.path.insert(0, os.path.join(_REPO_ROOT, 'doc', 'generate'))
 import generate_api_header
+import generate_default_table
 import generate_functions
+import generate_mjcf_map
+import generate_mjcf_table
+import generate_read_table
 import generate_schema
+import generate_xsd
+import mjcf_schema
 
 # Functions in headers that are intentionally not in functions.rst.
 _FUNCTIONS_TO_SKIP = set()
@@ -69,38 +75,198 @@ _EXTRA_DOCUMENTED_TYPES = {
 }
 
 
+def _get_path(*path_parts: str) -> str:
+  """Returns absolute path for a repository-relative path."""
+  return os.path.join(_REPO_ROOT, *path_parts)
+
+
+def _check_up_to_date(test_case, rel_path, generated_content):
+  """Checks that a generated file matches the checked-in version."""
+  path = _get_path(*rel_path.split('/'))
+  with open(path, 'r', encoding='utf-8') as file:
+    current = file.read()
+  if generated_content != current:
+    filename = os.path.basename(rel_path)
+    test_case.fail(f"The file '{filename}' needs to be updated.")
+
+
 class DocTest(googletest.TestCase):
 
   def test_api_header(self):
     """Checks that references.h matches the generated output."""
-    header_file = os.path.join(_REPO_ROOT, 'doc', 'includes', 'references.h')
     source = generate_api_header.generate_reference_header(
         generate_api_header.read_headers()
     )
-    with open(header_file, 'r', encoding='utf-8') as file:
-      if source != file.read():
-        self.fail("The file 'references.h' needs to be updated.")
+    _check_up_to_date(self, 'doc/includes/references.h', source)
+
+  def test_mjcf_table(self):
+    """Checks that mjcf_table.inc matches the schema-generated output."""
+    _check_up_to_date(
+        self,
+        'src/xml/generated/mjcf_table.inc',
+        generate_mjcf_table.generate(),
+    )
+
+  def test_default_table(self):
+    """Checks that mjcf_default_table.inc matches the schema-generated output."""
+    _check_up_to_date(
+        self,
+        'src/xml/generated/mjcf_default_table.inc',
+        generate_default_table.generate(),
+    )
+
+  def test_mjcf_map(self):
+    """Checks that mjcf_map.h matches the schema-generated output."""
+    _check_up_to_date(
+        self, 'src/xml/generated/mjcf_map.h', generate_mjcf_map.generate()
+    )
+
+  def test_read_table(self):
+    """Checks that mjcf_read_table.inc matches the schema-generated output."""
+    _check_up_to_date(
+        self,
+        'src/xml/generated/mjcf_read_table.inc',
+        generate_read_table.generate(),
+    )
+
+  def test_xsd(self):
+    """Checks that mjcf.xsd matches the schema-generated output."""
+    _check_up_to_date(
+        self,
+        'src/xml/generated/mjcf.xsd',
+        generate_xsd.generate(),
+    )
+
+  def test_read_table_consumed(self):
+    """Checks that every generated row array is consumed, and none is stale.
+
+    Elements are auto-included in the read table unless excluded by
+    NOT_TABLE_DRIVEN, so a new bound element whose OneX() reader was never
+    migrated would get rows that nothing reads; unused inline constexpr
+    arrays do not even warn. Conversely, a stale NOT_TABLE_DRIVEN entry
+    (e.g. after an element rename) silently stops excluding.
+    """
+    schema = mjcf_schema.parse_file(_get_path('src/xml/mjcf.schema'))
+    sources = ''
+    for filename in ('xml_native_reader.cc', 'xml_native_writer.cc'):
+      path = _get_path('src/xml', filename)
+      with open(path, 'r', encoding='utf-8') as file:
+        sources += file.read()
+    errors = []
+    dispatched = set(generate_read_table.SENSOR_DISPATCH)
+    for name in generate_read_table.table_driven_elements(schema):
+      if name in dispatched:
+        continue  # consumed through kSensorDispatch
+      array = generate_read_table.array_name(name)
+      if array not in sources:
+        errors.append(
+            f"array '{array}' for element '{name}' is generated but never "
+            'consumed: migrate its reader to ReadAttrTable or add the '
+            'element to NOT_TABLE_DRIVEN'
+        )
+    if 'kSensorDispatch' not in sources:
+      errors.append("'kSensorDispatch' is never consumed")
+    for _, array in generate_read_table.EMIT_GROUPS.values():
+      if array not in sources:
+        errors.append(
+            f"group array '{array}' is generated but never consumed"
+        )
+    stale = generate_read_table.NOT_TABLE_DRIVEN - set(schema.elements)
+    for name in sorted(stale):
+      errors.append(
+          f"NOT_TABLE_DRIVEN entry '{name}' does not name a schema element"
+      )
+    if errors:
+      self.fail('read-table coverage:\n' + '\n'.join(errors))
+
+  def test_schema_enum_coverage(self):
+    """Checks schema enums against the C enums they bind.
+
+    Every schema constant must be a member of the bound C enum, and every C
+    member must be a schema keyword, a count sentinel (mjN*), or a documented
+    exemption -- so adding a C enum member without updating the schema fails
+    here.
+    """
+    # C members deliberately not exposed as XML keywords
+    exempt = {
+        'bodysleep': {  # resolved states of 'auto', not settable
+            'mjSLEEP_AUTO_ALLOWED',
+            'mjSLEEP_AUTO_NEVER',
+        },
+        'geomtype': {  # rendering-only types and the missing-geom sentinel
+            'mjGEOM_ARROW',
+            'mjGEOM_ARROW1',
+            'mjGEOM_ARROW2',
+            'mjGEOM_LINE',
+            'mjGEOM_LINEBOX',
+            'mjGEOM_FLEX',
+            'mjGEOM_SKIN',
+            'mjGEOM_LABEL',
+            'mjGEOM_TRIANGLE',
+            'mjGEOM_NONE',
+        },
+        'texrole': {  # not settable from XML
+            'mjTEXROLE_USER'
+        },
+    }
+    # deliberately partial: keywords are a documented subset of the C enum
+    partial = {'frameobj'}
+
+    enums_c = {}
+    for name in ('mjtype.h', 'mjspec.h'):
+      path = _get_path('include', 'mujoco', name)
+      with open(path, 'r', encoding='utf-8') as file:
+        content = file.read()
+      for m in re.finditer(
+          r'typedef enum (mjt\w+)\s*\{(.*?)\}\s*\1;', content, re.S
+      ):
+        enums_c[m.group(1)] = re.findall(
+            r'^\s*(mj[A-Z]\w+)', m.group(2), re.M
+        )
+
+    schema_path = _get_path('src/xml/mjcf.schema')
+    schema = mjcf_schema.parse_file(schema_path)
+    errors = []
+    for name, enum in schema.enums.items():
+      if not enum.ctype:
+        continue
+      if enum.ctype not in enums_c:
+        errors.append(f'  {name}: C enum {enum.ctype} not found in headers')
+        continue
+      members = set(enums_c[enum.ctype])
+      constants = {value for _, value in enum.items}
+      for bad in sorted(constants - members):
+        errors.append(f'  {name}: {bad} is not a member of {enum.ctype}')
+      if name in partial:
+        continue
+      uncovered = {
+          m
+          for m in members - constants
+          if not re.search(r'^mjN[A-Z]', m)
+      } - exempt.get(name, set())
+      for miss in sorted(uncovered):
+        errors.append(
+            f'  {name}: {enum.ctype} member {miss} has no keyword (add it to'
+            ' the schema or to the exemptions here)'
+        )
+    if errors:
+      self.fail('schema enum coverage:\n' + '\n'.join(errors))
 
   def test_schema(self):
     """Checks that XMLschema.rst matches the generated output."""
-    schema_file = os.path.join(_REPO_ROOT, 'doc', 'XMLschema.rst')
-    source = generate_schema.generate()
-    with open(schema_file, 'r', encoding='utf-8') as file:
-      if source != file.read():
-        self.fail("The file 'XMLschema.rst' needs to be updated.")
+    _check_up_to_date(self, 'doc/XMLschema.rst', generate_schema.generate())
 
   def test_functions(self):
     """Checks that functions.rst matches the generated output."""
-    functions_file = os.path.join(_REPO_ROOT, 'doc', 'APIreference', 'functions.rst')
-    source = generate_functions.generate()
-    with open(functions_file, 'r', encoding='utf-8') as file:
-      if source != file.read():
-        self.fail("The file 'functions.rst' needs to be updated.")
+    _check_up_to_date(
+        self,
+        'doc/APIreference/functions.rst',
+        generate_functions.generate(),
+    )
 
   def test_all_functions_included(self):
     """Checks that every public C function has an entry in functions.rst."""
-
-    functions_file = os.path.join(_REPO_ROOT, 'doc', 'APIreference', 'functions.rst')
+    functions_file = _get_path('doc/APIreference/functions.rst')
     with open(functions_file, 'r', encoding='utf-8') as file:
       content = file.read()
 
@@ -109,7 +275,9 @@ class DocTest(googletest.TestCase):
     )
 
     api = generate_api_header.read_headers()
-    header_funcs = {token for token, d in api.items() if d.c_type == 'FUNCTION'}
+    header_funcs = {
+        token for token, d in api.items() if d.c_type == 'FUNCTION'
+    }
 
     errors = []
     for token in sorted(header_funcs - documented - _FUNCTIONS_TO_SKIP):
@@ -124,8 +292,7 @@ class DocTest(googletest.TestCase):
 
   def test_all_types_included(self):
     """Checks that every public struct and enum has an entry in APItypes.rst."""
-
-    types_file = os.path.join(_REPO_ROOT, 'doc', 'APIreference', 'APItypes.rst')
+    types_file = _get_path('doc/APIreference/APItypes.rst')
     with open(types_file, 'r', encoding='utf-8') as file:
       content = file.read()
 
@@ -150,6 +317,47 @@ class DocTest(googletest.TestCase):
     if errors:
       msg = 'APItypes.rst mismatches:\n' + '\n'.join(errors)
       self.fail(msg)
+
+  def test_element_constraints_diamond_inheritance(self):
+    con = mjcf_schema.Constraint(
+        kind='exclusive', bundles=(('a',), ('b',)), doc=None, line=1
+    )
+    common_group = mjcf_schema.Group(
+        name='common', variant=False, members=[con], doc=None, line=1
+    )
+    group1 = mjcf_schema.Group(
+        name='group1',
+        variant=False,
+        members=[mjcf_schema.Use(group='common', line=1)],
+        doc=None,
+        line=1,
+    )
+    group2 = mjcf_schema.Group(
+        name='group2',
+        variant=False,
+        members=[mjcf_schema.Use(group='common', line=1)],
+        doc=None,
+        line=1,
+    )
+    elem = mjcf_schema.Element(
+        name='elem',
+        spec=None,
+        facets={},
+        members=[
+            mjcf_schema.Use(group='group1', line=1),
+            mjcf_schema.Use(group='group2', line=1),
+        ],
+        doc=None,
+        line=1,
+    )
+    schema = mjcf_schema.Schema(
+        enums={},
+        groups={'common': common_group, 'group1': group1, 'group2': group2},
+        elements={'elem': elem},
+        path='<test>',
+    )
+    cons = generate_mjcf_table._element_constraints(schema, elem)
+    self.assertEqual(len(cons), 1)  # pylint: disable=g-generic-assert
 
 
 if __name__ == '__main__':

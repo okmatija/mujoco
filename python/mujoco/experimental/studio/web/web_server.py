@@ -11,34 +11,29 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Single-port web server for the MuJoCo web viewer.
+"""Python web server for the MuJoCo Web Viewer.
 
-This server runs in a child process with one asyncio loop on a single
-public port:
+This server runs in a child process with one asyncio loop on a single public
+port:
 
-  * Plain HTTP GET     serves static files (index.html, WASM, assets) and
-                       /model.mjb.
-  * WebSocket /ui      serves the bridge to the headless NetImgui client, which
-                       connects over loopback TCP (see headless_ui.cc).
-  * WebSocket /state   serves the latest-wins state payload broadcast at ~60Hz
-                       (payload format: see state_payload.h) as binary frames,
-                       and session roster updates as text frames.
-  * WebSocket /drop    receives models dragged onto the page (one binary
-                       frame per file, controller only; see drop_handler).
+  * Plain HTTP GET   serves static files (index.html, WASM, assets), /model.mjb.
+  * WebSocket /ui    serves the bridge to the headless NetImgui client, which
+                     connects over loopback TCP (see headless_ui.cc).
+  * WebSocket /state serves the latest-wins state payload broadcast at ~60Hz
+                     (see state_payload.h) as binary frames, and session roster
+                     updates as text frames.
+  * WebSocket /drop  receives models dragged onto the page (one binary frame per
+                     file, controller only; see drop_handler).
 
-Because everything is served through one port, a single firewall rule,
-port-forward, or HTTPS tunnel exposes the whole viewer. The browser derives its
-WebSocket URLs from the page origin, so no client configuration is needed.
+Because everything is served through one port, one firewall rule, port-forward,
+or HTTPS tunnel exposes the whole viewer. The browser derives its WebSocket URLs
+from the page origin so no client configuration is needed.
 
-One browser at a time controls the interactive session (it owns the /ui
-bridge); later browsers are rejected from /ui with WebSocket close code 4001
-and spectate instead: they receive the state broadcast and render the scene,
-and can take the controller slot once it frees up (see
-web_client_session.cc). /state connections beyond the spectator limit are
-closed with code 4002.
-
-Development: Set MUJOCO_WEB_VIEWER_DIST to point to a custom Emscripten build
-directory to serve a locally-built web_client without reinstalling the package.
+One browser at a time controls the interactive session (it owns the /ui bridge);
+later browsers are rejected from /ui with WebSocket close code
+_WS_CLOSE_CONTROLLER_TAKEN and can take the controller slot once it frees up.
+/state connections beyond the spectator limit are closed with close code
+_WS_CLOSE_SESSION_FULL.
 """
 
 import asyncio
@@ -55,46 +50,25 @@ import socket
 import struct
 import sys
 import threading
-from typing import Awaitable, Callable, Optional
+from typing import Any, Awaitable, Callable, Optional, cast
 
 from websockets.asyncio.server import serve
 from websockets.asyncio.server import ServerConnection
 from websockets.datastructures import Headers
 from websockets.exceptions import ConnectionClosed
+from websockets.frames import CloseCode
 from websockets.http11 import Request
 from websockets.http11 import Response
 
-# Deliberate WebSocket close codes. Codes in the 4xxx range tell the
-# browser not to reconnect (see web_client_session.cc).
-_WS_CLOSE_CONTROLLER_TAKEN = 4001  # /ui: another browser is controlling.
+# Our custom WebSocket close codes in range 4xxx. The client shows a notice
+# and retries slowly (see web_client_session.cc / web_client.cc).
+_WS_CLOSE_CONTROLLER_TAKEN = 4001  # /ui:    another browser is controlling.
 _WS_CLOSE_SESSION_FULL = 4002  # /state: the spectator limit is reached.
-_WS_CLOSE_INACTIVE = 4003  # /state: hidden tab kicked to free a viewer slot.
+_WS_CLOSE_INACTIVE = 4003  # /state: hidden tab kicked to free a slot.
 _WS_CLOSE_NOT_CONTROLLER = 4004  # /drop: only the controller may load models.
-
-# Controller-only message carrying the new spectator limit, e.g.
-# "max_spectators=4" (keep in sync: web_client_session.cc).
-_MAX_SPECTATORS_PREFIX = "max_spectators="
 
 # Upper bound on the runtime-editable spectator limit.
 _MAX_SPECTATOR_HARD_CAP = 32
-
-# A granted control claim must arrive within this window, else the grant
-# moves on down the queue.
-_GRANT_EXPIRY_SEC = 5.0
-
-# After a model-change restart, the controller slot stays reserved for the
-# page that was controlling until it has had time to reload and reconnect;
-# unclaimed, the slot then opens to everyone.
-_RESTART_RESERVE_SEC = 10.0
-
-# A controller whose tab stops running (hidden or closed without a clean
-# disconnect) is released once someone is waiting for control. Detected by
-# silence: a live controller tab sends input packets every frame.
-_CONTROLLER_SILENT_RELEASE_SEC = 90.0
-
-# Spectators are kicked after this much heartbeat silence (their tab is
-# hidden or gone), freeing a viewer slot. Live tabs heartbeat every ~30s.
-_SPECTATOR_SILENT_KICK_SEC = 300.0
 
 # How many browsers may watch in addition to the controller; the controller can
 # change it at runtime (up to _MAX_SPECTATOR_HARD_CAP). The limit is about
@@ -103,27 +77,12 @@ _SPECTATOR_SILENT_KICK_SEC = 300.0
 # 60Hz, serialized once and sent per viewer, so even a full session costs
 # only a few Mbit/s of upload. There is deliberately no config or CLI
 # option (spectating exposes nothing that controlling does not).
-_DEFAULT_MAX_SPECTATORS = 8
+_MAX_SPECTATORS_DEFAULT = 8
 
-# Default public port, and how many consecutive ports to try when it is
-# taken (e.g. by another running viewer).
-_DEFAULT_HTTP_PORT = 8080
-_PORT_SCAN_COUNT = 20
-
-# NetImgui's CmdVersion handshake packet is always 120 bytes.
-_CMD_VERSION_SIZE = 120
-
-# How long a browser holding the controller slot waits for the headless
-# NetImgui client to (re)connect over loopback before the slot is released.
-# The client reconnects within ~1s in the normal case; this only bounds the
-# pathological one where it never appears (e.g. the headless UI failed to
-# start), so a stuck controller cannot lock every other browser out forever.
-_UI_TCP_WAIT_SEC = 15.0
-
-# Sent to the page whose control claim the controller slot is reserved for
-# (keep in sync: web_client_session.cc).
+# Controller-only message prefix carrying the new spectator limit.
+_MAX_SPECTATORS_PREFIX = "max_spectators="
+# Sent to the page whose control claim the controller slot is reserved for.
 _GRANT_MESSAGE = "grant"
-
 # Sent by the browser after applying each state payload (keep in sync:
 # web_client_session.cc). Flow control for the /state stream: at most one
 # payload is in flight per client, so a slow link carries the freshest state
@@ -133,6 +92,38 @@ _STATE_ACK_MESSAGE = "state_ack"
 # A lost ack must not stall the stream forever; after this long the next
 # payload is sent unacked.
 _STATE_ACK_TIMEOUT_SEC = 2.0
+
+# A control grant must arrive within this window, else it moves down the queue.
+_GRANT_EXPIRY_SEC = 5.0
+
+# After a model-change restart, the controller slot stays reserved for the page
+# that was controlling until it has had time to reload and reconnect; unclaimed,
+# the slot then opens to everyone.
+_RESTART_RESERVE_SEC = 10.0
+
+# A controller whose tab stops running (hidden or closed without a clean
+# disconnect) is released once someone is waiting for control. Detected by
+# silence: a live controller tab sends input packets every frame.
+_CONTROLLER_SILENT_KICK_SEC = 90.0
+
+# Spectators are kicked after this much heartbeat silence (their tab is hidden
+# or gone), freeing a viewer slot. Live tabs heartbeat every ~30s.
+_SPECTATOR_SILENT_KICK_SEC = 300.0
+
+# Default public port, and how many consecutive ports to try when it is taken
+# (e.g. by another running viewer).
+_DEFAULT_HTTP_PORT = 8080
+_PORT_SCAN_COUNT = 20
+
+# NetImgui's CmdVersion handshake packet is always 120 bytes.
+_NETIMGUI_CMD_VERSION_SIZE = 120
+
+# How long a browser holding the controller slot waits for the headless NetImgui
+# client to (re)connect over loopback before the slot is released. The client
+# reconnects within ~1s in the normal case; this only bounds the pathological
+# one where it never appears (e.g., the headless UI failed to start), so a stuck
+# controller cannot lock every other browser out forever.
+_UI_TCP_WAIT_SEC = 15.0
 
 # Content types for the static files the HTTP handler serves.
 _CONTENT_TYPES = {
@@ -147,8 +138,7 @@ _CONTENT_TYPES = {
 
 
 class _SessionMessage(enum.StrEnum):
-  """Text messages browsers send on /state (keep in sync:
-  web_client_session.cc)."""
+  """Text messages browsers send on /state."""
 
   REQUEST_CONTROL = "request_control"
   LEAVE_QUEUE = "leave_queue"
@@ -165,15 +155,26 @@ def _roster_line(
 ) -> str:
   """Builds a roster line, the membership broadcast every browser receives.
 
-  The roster is sent as a text frame on /state whenever the session
-  changes (a viewer joins or leaves, queues for control, or control
-  moves). It tells each browser how many viewers are connected, which
-  role the server currently assigns it, and where it stands in the
-  control queue. (Keep in sync: ParseRoster in web_client_session.cc.)
+  The roster is sent as a text frame on /state whenever the session changes (a
+  viewer joins or leaves, queues for control, or control moves). It tells each
+  browser how many viewers are connected, which role the server has currently
+  assigned it, and where it stands in the control queue.
+
+  Args:
+    viewers: The number of viewers connected to the server.
+    is_controller: Whether the browser is the controller.
+    queue_pos: The browser's position in the control queue (0 if not queued).
+    queue_len: The number of browsers in the queue.
+    max_spectators: The maximum number of spectators allowed.
+
+  Returns:
+    A string representing the roster line.
   """
   role = "controller" if is_controller else "spectator"
-  return (f"viewers={viewers};role={role};queue_pos={queue_pos};"
-          f"queue_len={queue_len};max_spectators={max_spectators}")
+  return (
+      f"viewers={viewers};role={role};queue_pos={queue_pos};"
+      f"queue_len={queue_len};max_spectators={max_spectators}"
+  )
 
 
 class _WebServerFormatter(logging.Formatter):
@@ -193,16 +194,17 @@ logger = logging.getLogger("WebServer")
 
 
 class _HandshakeNoiseFilter(logging.Filter):
-  """Drops handshake-failure logs from connections that simply went away.
+  """Removes handshake-failure logs from connections that simply went away.
 
-  Two routine cases produce them: browsers speculatively open spare
-  connections and close them unused, and a page reload races the
-  model-change server restart, tearing connections down mid-handshake. The
-  websockets library logs each as an opening-handshake failure — an
-  ERROR-level record with a full traceback. Raising the log level would
-  hide real handshake errors too, hence a filter matching exactly these
-  signatures. (Filters do not inherit down the logger tree, so it must be
-  attached to "websockets.server" itself.)
+  Handshake failure are produced by two routine cases:
+
+  1. browsers speculatively open spare connections and close them unused
+  2. a page reload races the model-change server restart, tearing connections
+     down mid-handshake.
+
+  The websockets library logs each as an opening-handshake failure as at ERROR
+  level with a full traceback. Raising the log level would hide real handshake
+  errors too, hence a filter matching exactly these signatures.
   """
 
   def filter(self, record: logging.LogRecord) -> bool:
@@ -234,6 +236,8 @@ def _configure_logging() -> None:
   # listening", "connection rejected (200 OK)" for every HTTP request); keep
   # it to warnings and errors.
   logging.getLogger("websockets").setLevel(logging.WARNING)
+  # Filters do not inherit down the logger tree, so it must be attached to
+  # "websockets.server" itself.
   logging.getLogger("websockets.server").addFilter(_HandshakeNoiseFilter())
 
 
@@ -243,16 +247,19 @@ _configure_logging()
 def bind_public_socket(host: str, port: int = 0) -> socket.socket:
   """Binds (but does not listen on) the public HTTP listening socket.
 
-  The socket is bound in the viewer process and inherited by each server
-  child, so the port stays stable across server restarts (model changes) and
-  bind conflicts surface here, synchronously, instead of inside the child.
+  The socket is bound in the viewer process and inherited by each server child,
+  so the port stays stable across server restarts (model changes) and bind
+  conflicts surface here, synchronously, instead of inside the child.
 
   Args:
-    host: Interface to bind. "::" (the default) binds a dual-stack socket
-      that accepts both IPv6 and IPv4 connections, falling back to IPv4-only
-      when the machine has no IPv6 support.
+    host: Interface to bind. "::" (the default) binds a dual-stack socket that
+      accepts both IPv6 and IPv4 connections, falling back to IPv4-only when the
+      machine has no IPv6 support.
     port: A specific port, or 0 to take the first free port starting at
       _DEFAULT_HTTP_PORT (so several viewers can run side by side).
+
+  Returns:
+    The bound socket.
 
   Raises:
     RuntimeError: If the requested port (or every scanned port) is taken.
@@ -264,8 +271,11 @@ def bind_public_socket(host: str, port: int = 0) -> socket.socket:
       host = "0.0.0.0"
   family = socket.AF_INET6 if ":" in host else socket.AF_INET
 
-  candidates = ([port] if port else range(
-      _DEFAULT_HTTP_PORT, _DEFAULT_HTTP_PORT + _PORT_SCAN_COUNT))
+  candidates = (
+      [port]
+      if port
+      else range(_DEFAULT_HTTP_PORT, _DEFAULT_HTTP_PORT + _PORT_SCAN_COUNT)
+  )
   for candidate in candidates:
     sock = socket.socket(family, socket.SOCK_STREAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -279,19 +289,27 @@ def bind_public_socket(host: str, port: int = 0) -> socket.socket:
       sock.close()
   if port:
     raise RuntimeError(
-        f"Port {port} is already in use — is another web viewer running? "
-        "Pass a different --port, or 0 to pick one automatically.")
+        f"Port {port} is already in use, is another web viewer running? "
+        "Pass a different --port, or 0 to pick one automatically."
+    )
   raise RuntimeError(
       f"Ports {_DEFAULT_HTTP_PORT}-{_DEFAULT_HTTP_PORT + _PORT_SCAN_COUNT - 1} "
-      "are all in use — are that many web viewers running?")
+      "are all in use, are that many web viewers running?"
+  )
 
 
 def bind_loopback_socket(port: int = 0) -> socket.socket:
   """Binds the loopback socket the headless NetImgui client connects to.
 
-  Defaults to an OS-assigned ephemeral port: both endpoints live in this
-  process tree, so no fixed number is needed and collisions between viewer
-  instances are impossible.
+  Defaults to an OS-assigned ephemeral port: both endpoints live in this process
+  tree, so no fixed number is needed and collisions between viewer instances are
+  impossible.
+
+  Args:
+    port: A specific port, or 0 to take the first free port.
+
+  Returns:
+    The bound socket.
   """
   sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
   sock.bind(("127.0.0.1", port))
@@ -308,13 +326,18 @@ def _session_id(ws: ServerConnection) -> str:
   return f"anon-{id(ws)}"
 
 
-def _terminate_process(proc: multiprocessing.process.BaseProcess,
-                       timeout: float = 2.0) -> None:
+def _terminate_process(
+    proc: multiprocessing.process.BaseProcess, timeout: float = 2.0
+) -> None:
   """Terminates a server process, escalating to SIGKILL if it hangs.
 
-  A wedged child that outlives stop() keeps its sockets alive, which
-  prevents the C++ NetImgui client from ever noticing the disconnect and
-  reconnecting to the replacement server.
+  A wedged child that outlives stop() keeps its sockets alive, which prevents
+  the C++ NetImgui client from ever noticing the disconnect and reconnecting to
+  the replacement server.
+
+  Args:
+    proc: The process to terminate.
+    timeout: The timeout for each termination step.
   """
   # Grace period first: the child normally exits on its own (lifeline EOF),
   # and signalling a process mid-exit makes it print noise on stderr.
@@ -323,17 +346,16 @@ def _terminate_process(proc: multiprocessing.process.BaseProcess,
     proc.terminate()
     proc.join(timeout=timeout)
   if proc.is_alive():
-    logger.warning(f"[Http] Process {proc.pid} ignored SIGTERM; killing.")
+    logger.warning("[Http] Process %s ignored SIGTERM; killing.", proc.pid)
     proc.kill()
     proc.join(timeout=timeout)
 
 
 def _find_static_files_dir() -> Optional[str]:
-  """Locate the web viewer static files (index.html, WASM).
+  """Locate the web viewer static files.
 
   The `dist` directory next to this file is populated by the Emscripten build
-  of the `web_client` target (web_client.js/.wasm/.data, index.html and the
-  Filament assets). This is the default for packaged installations.
+  of the `web_client` target. This is the default for packaged installations.
 
   Development option: Set MUJOCO_WEB_VIEWER_DIST to serve from a different
   directory (e.g. a local Emscripten build tree). This allows rapid iteration
@@ -344,7 +366,8 @@ def _find_static_files_dir() -> Optional[str]:
     if os.path.isdir(env_dir):
       return env_dir
     logger.warning(
-        f"[Http] MUJOCO_WEB_VIEWER_DIST is not a directory: {env_dir}")
+        "[Http] MUJOCO_WEB_VIEWER_DIST is not a directory: %s", env_dir
+    )
 
   dist_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dist")
   if os.path.isdir(dist_dir):
@@ -371,16 +394,17 @@ def _run_cancellable(main_loop_func: Callable[[], Awaitable[None]]) -> None:
     except asyncio.CancelledError:
       pass
     finally:
-      # Detach the handlers (and asyncio's signal wakeup pipe) before the
-      # loop closes: a signal landing afterwards would try to write to the
-      # closed pipe and print "Exception ignored ... BrokenPipeError".
+      # Detach the handlers (and asyncio's signal wakeup pipe) before the loop
+      # closes: a signal landing afterwards would try to write to the closed
+      # pipe and print "Exception ignored ... BrokenPipeError".
       loop.remove_signal_handler(signal.SIGINT)
       loop.remove_signal_handler(signal.SIGTERM)
 
   try:
     asyncio.run(_wrapped())
   except Exception as e:  # pylint: disable=broad-exception-caught
-    logger.error(f"[{main_loop_func.__name__}] Unexpected error: {e}")
+    func_name = getattr(main_loop_func, "__name__", "main_loop_func")
+    logger.error("[%s] Unexpected error: %s", func_name, e)
 
 
 def _run_server(
@@ -393,9 +417,8 @@ def _run_server(
     shm_array: Optional[ctypes.Array],
     shm_capacity: int,
     generation: multiprocessing.sharedctypes.Synchronized,
-    drop_queue: Optional[multiprocessing.queues.Queue],
-    controller_sid_shared: Optional[
-        multiprocessing.sharedctypes.SynchronizedString],
+    drop_queue: Optional[multiprocessing.queues.Queue[Any]],
+    controller_sid_shared: Optional[Any],
 ) -> None:
   """The server process: HTTP + /ui + /state on one port, one event loop."""
 
@@ -406,8 +429,9 @@ def _run_server(
 
   static_root = os.path.realpath(static_dir) if static_dir else None
 
-  def _http_headers(content_type: str, content_length: int,
-                    cacheable: bool) -> Headers:
+  def _http_headers(
+      content_type: str, content_length: int, cacheable: bool
+  ) -> Headers:
     headers = Headers()
     headers["Content-Type"] = content_type
     headers["Content-Length"] = str(content_length)
@@ -427,31 +451,39 @@ def _run_server(
         return Response(404, "Not Found", Headers(), b"no model\n")
       # The model changes on hot-swap; never serve a cached copy.
       headers = _http_headers(
-          "application/octet-stream", len(mjb_data), cacheable=False)
+          "application/octet-stream", len(mjb_data), cacheable=False
+      )
       return Response(200, "OK", headers, mjb_data)
 
     if static_root is None:
       return Response(503, "Service Unavailable", Headers(), b"no dist dir\n")
 
     rel = path.lstrip("/") or "index.html"
-    full = os.path.realpath(os.path.join(static_root, rel))
-    if full != static_root and not full.startswith(static_root + os.sep):
+    norm_static_root = os.path.normpath(static_root)
+    full = os.path.normpath(os.path.join(norm_static_root, rel))
+    if full != norm_static_root and not full.startswith(
+        norm_static_root + os.sep
+    ):
       return Response(403, "Forbidden", Headers(), b"forbidden\n")
     if not os.path.isfile(full):
-      return Response(404, "Not Found", Headers(), b"not found\n")
+      wasm_full = os.path.normpath(os.path.join(norm_static_root, "wasm", rel))
+      if os.path.isfile(wasm_full):
+        full = wasm_full
+      else:
+        return Response(404, "Not Found", Headers(), b"not found\n")
 
     with open(full, "rb") as f:
       body = f.read()
     content_type = _CONTENT_TYPES.get(
-        os.path.splitext(full)[1], "application/octet-stream")
-    return Response(200, "OK",
-                    _http_headers(content_type, len(body), cacheable=True),
-                    body)
+        os.path.splitext(full)[1], "application/octet-stream"
+    )
+    return Response(
+        200, "OK", _http_headers(content_type, len(body), cacheable=True), body
+    )
 
   async def main_loop() -> None:
-    # The NetImgui client connection (from HeadlessUi, loopback
-    # TCP). The client retries every second, so after a teardown a fresh
-    # connection shows up quickly.
+    # The NetImgui client connection (from HeadlessUi, loopback TCP). The client
+    # retries every second, so after a teardown a fresh connection is fast.
     tcp_reader = None
     tcp_writer = None
     tcp_connected = asyncio.Event()
@@ -461,15 +493,20 @@ def _run_server(
     active_ui_ws = None
     controller_sid: Optional[str] = None
     state_clients: dict[str, ServerConnection] = {}
+
     # Control handoff: spectators queue for the controller slot; when it frees,
     # the head of the queue is granted a short exclusive claim window.
     control_queue: list[str] = []
     pending_grant_sid: Optional[str] = None
+    broadcast_roster: Any = None
+    grant_next: Any = None
+
     # Strong references to fire-and-forget tasks (the grant-expiry watchdog):
     # asyncio holds only a weak reference, so without this a task can be
     # garbage-collected mid-sleep and never run.
-    background_tasks: set[asyncio.Task] = set()
-    max_spectators = _DEFAULT_MAX_SPECTATORS
+    background_tasks: set[asyncio.Task[Any]] = set()
+    max_spectators = _MAX_SPECTATORS_DEFAULT
+
     # Liveness by absence of traffic: a hidden tab's rendering loop stops,
     # so it cannot report anything — silence is the signal.
     last_heartbeat: dict[str, float] = {}
@@ -479,35 +516,38 @@ def _run_server(
     def remember_controller(sid: str) -> None:
       """Records the controlling page's sid in viewer-owned shared memory.
 
-      Written on every claim (never cleared: teardown paths must not wipe
-      it) so that the next server, after a model-change restart, can
-      reserve the slot for the page that was controlling.
+      Written on every claim (never cleared: teardown paths must not wipe it) so
+      that the next server, after a model-change restart, can reserve the slot
+      for the page that was controlling.
       """
       if controller_sid_shared is not None:
         controller_sid_shared.value = sid.encode("utf-8", "replace")[:63]
 
-    # Reserve the controller slot for the previous controller across a
-    # restart. Session ids survive page reloads (sessionStorage, see
-    # web_client.cc), so the reloaded controller page claims /ui with the
-    # same sid; other pages are rejected until then via pending_grant_sid.
+    # Reserve the controller slot for the previous controller across a restart.
+    # Session ids survive page reloads (sessionStorage, see web_client.cc), so
+    # the reloaded controller page claims /ui with the same sid; other pages are
+    # rejected until then via pending_grant_sid.
     if controller_sid_shared is not None and controller_sid_shared.value:
       pending_grant_sid = controller_sid_shared.value.decode("utf-8")
       logger.debug(
-          "[Session] Controller slot reserved for the previous controller")
+          "[Session] Controller slot reserved for the previous controller"
+      )
 
       async def expire_restart_reserve(reserved: str) -> None:
-        nonlocal pending_grant_sid
-        # grant_next/broadcast_roster are defined below; by the time this
-        # timer fires they exist.
+        nonlocal pending_grant_sid, grant_next, broadcast_roster
+        # grant_next/broadcast_roster are defined below; by the time this timer
+        # fires they exist.
         await asyncio.sleep(_RESTART_RESERVE_SEC)
         if pending_grant_sid == reserved and active_ui_ws is None:
           logger.debug("[Session] Restart reservation expired; slot open")
           pending_grant_sid = None
-          await grant_next()
-          await broadcast_roster()
+          if grant_next and broadcast_roster:
+            await grant_next()
+            await broadcast_roster()
 
       reserve_task = asyncio.create_task(
-          expire_restart_reserve(pending_grant_sid))
+          expire_restart_reserve(pending_grant_sid)
+      )
       background_tasks.add(reserve_task)
       reserve_task.add_done_callback(background_tasks.discard)
 
@@ -527,7 +567,8 @@ def _run_server(
                   queue_pos=pos,
                   queue_len=len(control_queue),
                   max_spectators=max_spectators,
-              ))
+              )
+          )
         except (ConnectionClosed, ConnectionError):
           pass
 
@@ -536,6 +577,7 @@ def _run_server(
       nonlocal pending_grant_sid
       if active_ui_ws is not None:
         return
+
       if pending_grant_sid is None:
         while control_queue:
           candidate = control_queue.pop(0)
@@ -544,18 +586,20 @@ def _run_server(
             break
       if pending_grant_sid is None:
         return
+
       client = state_clients.get(pending_grant_sid)
       if client is None:
         pending_grant_sid = None
         await grant_next()
         return
+
       try:
         await client.send(_GRANT_MESSAGE)
       except (ConnectionClosed, ConnectionError):
         pending_grant_sid = None
         await grant_next()
         return
-      logger.info(f"[Session] Control granted to {pending_grant_sid}")
+      logger.info("[Session] Control granted to %s", pending_grant_sid)
       await broadcast_roster()
 
       async def expire(granted: str) -> None:
@@ -584,15 +628,16 @@ def _run_server(
           await broadcast_roster()
       elif text == _SessionMessage.FORCE_CONTROL:
         if sid != controller_sid:
-          logger.info(f"[Session] {sid} forces control")
+          logger.info("[Session] %s forces control", sid)
           if sid in control_queue:
             control_queue.remove(sid)
           pending_grant_sid = sid
           if active_ui_ws is not None:
-            # The bridge teardown frees the slot and grant_next honors
-            # the pending claim; the ousted page settles into spectating.
-            await active_ui_ws.close(_WS_CLOSE_CONTROLLER_TAKEN,
-                                     "control taken")
+            # The bridge teardown frees the slot and grant_next honors the
+            # pending claim; the ousted page settles into spectating.
+            await active_ui_ws.close(
+                _WS_CLOSE_CONTROLLER_TAKEN, "control taken"
+            )
           else:
             await grant_next()
       elif text == _SessionMessage.HEARTBEAT:
@@ -601,11 +646,11 @@ def _run_server(
         if sid != controller_sid:
           return  # Only the controller sets the limit.
         try:
-          value = int(text[len(_MAX_SPECTATORS_PREFIX):])
+          value = int(text[len(_MAX_SPECTATORS_PREFIX) :])
         except ValueError:
           return
         max_spectators = max(0, min(_MAX_SPECTATOR_HARD_CAP, value))
-        logger.info(f"[Session] Spectator limit set to {max_spectators}")
+        logger.info("[Session] Spectator limit set to %s", max_spectators)
         # Enforce the new limit immediately, kicking the newest spectators
         # first. A kicked page shows the session-full notice and retries,
         # so it walks back in when a slot frees up.
@@ -617,7 +662,7 @@ def _run_server(
             continue
           client = state_clients.get(kick_sid)
           if client is not None:
-            logger.info(f"[Session] Kicking spectator over the new limit")
+            logger.info("[Session] Kicking spectator over the new limit")
             try:
               await client.close(_WS_CLOSE_SESSION_FULL, "session full")
             except (ConnectionClosed, ConnectionError):
@@ -630,9 +675,12 @@ def _run_server(
       while True:
         await asyncio.sleep(5.0)
         now = loop_time()
-        if (active_ui_ws is not None and last_controller_input[0] > 0 and
-            now - last_controller_input[0] > _CONTROLLER_SILENT_RELEASE_SEC and
-            (control_queue or pending_grant_sid)):
+        if (
+            active_ui_ws is not None
+            and last_controller_input[0] > 0
+            and now - last_controller_input[0] > _CONTROLLER_SILENT_KICK_SEC
+            and (control_queue or pending_grant_sid)
+        ):
           logger.info("[Session] Releasing control from an inactive controller")
           await active_ui_ws.close(_WS_CLOSE_CONTROLLER_TAKEN, "inactive")
         for sid, client in list(state_clients.items()):
@@ -640,14 +688,15 @@ def _run_server(
             continue
           seen = last_heartbeat.get(sid, now)
           if now - seen > _SPECTATOR_SILENT_KICK_SEC:
-            logger.info(f"[Session] Kicking inactive spectator {sid}")
+            logger.info("[Session] Kicking inactive spectator %s", sid)
             try:
               await client.close(_WS_CLOSE_INACTIVE, "inactive")
             except (ConnectionClosed, ConnectionError):
               pass
 
-    async def handle_tcp_client(reader: asyncio.StreamReader,
-                                writer: asyncio.StreamWriter) -> None:
+    async def handle_tcp_client(
+        reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+    ) -> None:
       nonlocal tcp_reader, tcp_writer
       if tcp_writer is not None:
         logger.debug("[UiBridge] Replacing previous NetImgui TCP connection")
@@ -726,14 +775,24 @@ def _run_server(
           await broadcast_roster()
         await ws.close(_WS_CLOSE_CONTROLLER_TAKEN, "controller unavailable")
         return
-      my_reader, my_writer = tcp_reader, tcp_writer
+      if tcp_reader is None or tcp_writer is None:
+        logger.debug("[UiBridge] NetImgui reader/writer None; releasing slot")
+        if active_ui_ws is ws:
+          active_ui_ws = None
+          controller_sid = None
+          await grant_next()
+          await broadcast_roster()
+        await ws.close(_WS_CLOSE_CONTROLLER_TAKEN, "controller unavailable")
+        return
+      my_reader = cast(asyncio.StreamReader, tcp_reader)
+      my_writer = cast(asyncio.StreamWriter, tcp_writer)
 
       try:
         # Handshake: browser CmdVersion -> client; client CmdVersion -> browser.
         browser_version = await ws.recv()
         my_writer.write(browser_version)
         await my_writer.drain()
-        server_version = await my_reader.readexactly(_CMD_VERSION_SIZE)
+        server_version = await my_reader.readexactly(_NETIMGUI_CMD_VERSION_SIZE)
         await ws.send(server_version)
         logger.debug("[UiBridge] Handshake complete. Bridging.")
 
@@ -768,7 +827,8 @@ def _run_server(
         logger.debug("[UiBridge] Bridge closed.")
         # Tear down this bridge's TCP connection so the NetImgui client
         # reconnects and re-sends everything to the next browser.
-        my_writer.close()
+        if my_writer is not None:
+          my_writer.close()
         if tcp_writer is my_writer:
           tcp_reader = None
           tcp_writer = None
@@ -783,17 +843,17 @@ def _run_server(
 
     async def state_handler(ws: ServerConnection) -> None:
       sid = _session_id(ws)
-      # A page reconnecting after a network blip keeps its sid; its stale
-      # entry (dead socket, not yet cleaned up) must not count against the
-      # limit, since installing the new socket merely replaces it. Only a
-      # genuinely new sid consumes a slot.
+      # A page reconnecting after a network blip keeps its sid; its stale entry
+      # (dead socket, not yet cleaned up) must not count against the limit,
+      # since installing the new socket merely replaces it. Only a genuinely new
+      # sid consumes a slot.
       if sid not in state_clients and len(state_clients) > max_spectators:
         logger.info("[StateWS] Session full; rejecting browser")
         await ws.close(_WS_CLOSE_SESSION_FULL, "session full")
         return
       state_clients[sid] = ws
       last_heartbeat[sid] = loop_time()
-      logger.info(f"[StateWS] Browser connected ({len(state_clients)} total)")
+      logger.info("[StateWS] Browser connected (%d total)", len(state_clients))
       await broadcast_roster()
 
       def read_state() -> Optional[tuple[int, bytes]]:
@@ -810,15 +870,15 @@ def _run_server(
           (used,) = struct.unpack("<I", bytes(shm_array[:4]))
           if used == 0 or used > shm_capacity:
             return None
-          data = bytes(shm_array[4:4 + used])
+          data = bytes(shm_array[4 : 4 + used])
           if generation.value == gen_before:
             return gen_before, data
         return None
 
-      # See _STATE_ACK_MESSAGE: one payload in flight at a time, so the
-      # latest-wins read below always ships the freshest state a slow link
-      # can carry (the camera rides this stream, so socket buffering shows
-      # up directly as input latency).
+      # See _STATE_ACK_MESSAGE: one payload in flight at a time, so the latest
+      # wins read below always ships the freshest state a slow link can carry
+      # (the camera rides this stream, so socket buffering shows up directly as
+      # input latency).
       payload_acked = asyncio.Event()
       payload_acked.set()
 
@@ -830,7 +890,8 @@ def _run_server(
             continue
           try:
             await asyncio.wait_for(
-                payload_acked.wait(), timeout=_STATE_ACK_TIMEOUT_SEC)
+                payload_acked.wait(), timeout=_STATE_ACK_TIMEOUT_SEC
+            )
           except asyncio.TimeoutError:
             pass  # Lost ack; send anyway rather than stalling forever.
           result = read_state()
@@ -844,9 +905,10 @@ def _run_server(
         async for message in ws:
           if isinstance(message, str):
             if message == _STATE_ACK_MESSAGE:
-              # Deliberately does NOT count as liveness: acks keep flowing
-              # from hidden tabs (WebSocket events are not rAF-gated), and
-              # the inactivity policy must still see those tabs as silent.
+              # Deliberately does NOT count as liveness: acks keep flowing from
+              # hidden tabs (WebSocket events are not requestAnimationFrame
+              # gated), and the inactivity policy must still see those tabs as
+              # silent.
               payload_acked.set()
               continue
             await handle_session_message(sid, message)
@@ -866,27 +928,57 @@ def _run_server(
       except (ConnectionClosed, ConnectionError):
         pass
       finally:
-        # Only tear down if this socket is still the one registered for sid:
-        # a reconnect may have already replaced it, and that newer connection
-        # now owns the queue and heartbeat entries.
+        # Only tear down if this socket is still the one registered for sid: a
+        # reconnect may have already replaced it, and that newer connection now
+        # owns the queue and heartbeat entries.
         if state_clients.get(sid) is ws:
           del state_clients[sid]
           if sid in control_queue:
             control_queue.remove(sid)
           last_heartbeat.pop(sid, None)
           logger.info(
-              f"[StateWS] Browser disconnected ({len(state_clients)} total)")
+              "[StateWS] Browser disconnected (%d total)", len(state_clients)
+          )
           await broadcast_roster()
 
     # --- Dispatch ----------------------------------------------------------
 
-    def process_request(connection: ServerConnection,
-                        request: Request) -> Optional[Response]:
+    def process_request(
+        connection: ServerConnection, request: Request
+    ) -> Optional[Response]:
       del connection
       path = request.path.split("?")[0]
       if path in ("/ui", "/state", "/drop"):
         return None  # Proceed with the WebSocket handshake.
       return _serve_http(path)
+
+    def process_response(
+        connection: ServerConnection, request: Request, response: Response
+    ) -> Optional[Response]:
+      """Adds cross-origin headers to the WebSocket upgrade (101) response.
+
+      The page serves Cross-Origin-Opener-Policy: same-origin and
+      Cross-Origin-Embedder-Policy: require-corp so the WASM pthread build
+      can use SharedArrayBuffer. When accessed through an HTTPS reverse proxy,
+      the browser's cross-origin isolation policy blocks WebSocket connections
+      unless the upgrade response carries matching headers. Without them, the
+      handshake fails with close code CloseCode.ABNORMAL_CLOSURE.
+
+      Args:
+        connection: The WebSocket server connection (unused).
+        request: The initial HTTP upgrade request (unused).
+        response: The HTTP upgrade response to attach CORS headers to.
+
+      Returns:
+        None to allow the WebSocket upgrade handshake to proceed.
+      """
+      del connection
+      del request
+      response.headers["Cross-Origin-Opener-Policy"] = "same-origin"
+      response.headers["Cross-Origin-Embedder-Policy"] = "require-corp"
+      response.headers["Access-Control-Allow-Origin"] = "*"
+      response.headers["Cross-Origin-Resource-Policy"] = "cross-origin"
+      return None
 
     # --- /drop: receive a file dropped onto the browser page ---------------
 
@@ -897,17 +989,20 @@ def _run_server(
       file ([u32 path length][relative path utf-8][file bytes], see
       index.html), then an empty frame as an end marker; this server closes
       once it has everything. The files cross to the viewer process via
-      drop_queue as a dict of relative path -> bytes;
-      WebViewer.get_drop_file() writes them to a temporary directory for the
-      regular drop-loading flow.
+      drop_queue as a dict of relative path -> bytes; WebViewer.get_drop_file()
+      writes them to a temporary directory for the regular drop-loading flow.
 
       Loading a model changes the session for every connected page, so only
       the controller may do it; drops from other pages are rejected.
+
+      Args:
+        ws: The WebSocket connection to receive from.
       """
       if controller_sid is None or _session_id(ws) != controller_sid:
         logger.info("[Drop] Ignored a model drop from a non-controller page")
         await ws.close(_WS_CLOSE_NOT_CONTROLLER, "not the controller")
         return
+
       files: dict[str, bytes] = {}
       complete = False
       try:
@@ -922,26 +1017,35 @@ def _run_server(
           (name_len,) = struct.unpack_from("<I", message)
           if 4 + name_len > len(message):
             continue
-          name = message[4:4 + name_len].decode("utf-8", "replace")
-          files[name] = message[4 + name_len:]
+          name = message[4 : 4 + name_len].decode("utf-8", "replace")
+          files[name] = message[4 + name_len :]
       except (ConnectionClosed, ConnectionError):
         pass
-      # Only forward a drop that arrived in full. A connection that dies
-      # before the end marker (e.g. a file frame exceeding the websocket
-      # size cap closes it with 1009) leaves a partial file set that would
-      # load as a broken model, so discard it instead.
+
+      # Only forward a drop that arrived in full. A connection that dies before
+      # the end marker (e.g. a file frame exceeding the websocket size cap
+      # closes it with CloseCode.MESSAGE_TOO_BIG) leaves a partial file set that
+      # would load as a broken model, so discard it instead.
       if not complete:
         if files:
-          logger.info(f"[Drop] Incomplete drop ({len(files)} file(s) before the"
-                      " connection closed); discarding.")
+          logger.info(
+              "[Drop] Incomplete drop (%d file(s) before the"
+              " connection closed); discarding.",
+              len(files),
+          )
       elif files and drop_queue is not None:
         total = sum(len(data) for data in files.values())
-        logger.info(f"[Drop] Received {len(files)} file(s), {total} bytes")
+        logger.info("[Drop] Received %d file(s), %d bytes", len(files), total)
         drop_queue.put(files)
+
       await ws.close()
 
     async def ws_handler(ws: ServerConnection) -> None:
-      path = ws.request.path.split("?")[0]
+      req = ws.request
+      if req is None:
+        await ws.close(CloseCode.POLICY_VIOLATION, "missing request")
+        return
+      path = req.path.split("?")[0]
       if path == "/ui":
         await ui_handler(ws)
       elif path == "/state":
@@ -949,18 +1053,18 @@ def _run_server(
       elif path == "/drop":
         await drop_handler(ws)
       else:
-        await ws.close(1008, "unknown endpoint")
+        await ws.close(CloseCode.POLICY_VIOLATION, "unknown endpoint")
 
     # Block until the lifeline pipe hits EOF, which happens exactly when the
     # viewer process is gone (clean stop() close, crash, or SIGKILL). An
-    # orphaned server would otherwise keep serving a stale model and fight
-    # any replacement server for browsers.
+    # orphaned server would otherwise keep serving a stale model and fight any
+    # replacement server for browsers.
     async def watch_lifeline() -> None:
-      # A dedicated daemon thread rather than run_in_executor: executor
-      # threads are non-daemonic and are joined at interpreter exit, so a
-      # blocked os.read would keep this process alive for as long as the
-      # viewer holds the lifeline open — e.g. when the viewer is still
-      # tearing down after Ctrl+C hit both processes.
+      # A dedicated daemon thread rather than run_in_executor: executor threads
+      # are non-daemonic and are joined at interpreter exit, so a blocked
+      # os.read would keep this process alive for as long as the viewer holds
+      # the lifeline open — e.g. when the viewer is still tearing down after
+      # Ctrl+C hit both processes.
       loop = asyncio.get_running_loop()
       eof = asyncio.Event()
 
@@ -969,19 +1073,21 @@ def _run_server(
           os.read(lifeline_r, 1)
           loop.call_soon_threadsafe(eof.set)
         except (OSError, RuntimeError):
-          pass  # fd or loop already closed — the process is exiting anyway.
+          pass  # fd or loop already closed, so the process is exiting anyway.
 
       threading.Thread(target=wait_for_eof, daemon=True).start()
       await eof.wait()
       logger.debug("[Http] Viewer process exited; shutting down.")
 
     tcp_server = await asyncio.start_server(handle_tcp_client, sock=tcp_sock)
+
     # NetImgui does its own delta compression and the state payload is small;
     # permessage-deflate would only add latency at 60Hz.
     ws_server = await serve(
         ws_handler,
         sock=http_sock,
         process_request=process_request,
+        process_response=process_response,
         compression=None,
         close_timeout=1.0,
         # Big enough for model files uploaded via /drop.
@@ -990,18 +1096,19 @@ def _run_server(
     http_host, http_port = http_sock.getsockname()[:2]
     tcp_port = tcp_sock.getsockname()[1]
     logger.debug(
-        f"[Http] Serving on http://{http_host}:{http_port} "
-        f"(/, /model.mjb, /ui, /state; NetImgui TCP on 127.0.0.1:{tcp_port})")
+        "[Http] Serving on http://%s:%d "
+        "(/, /model.mjb, /ui, /state; NetImgui TCP on 127.0.0.1:%d)",
+        http_host,
+        http_port,
+        tcp_port,
+    )
 
-    # Not `async with`: on Python >= 3.12 waiting for close would block on
-    # open connections, so cancellation (SIGTERM from WebServer.stop) could
-    # hang the process. Close the listeners explicitly instead; open sockets
-    # die with the process.
     enforcer = asyncio.create_task(enforce_activity())
     try:
       await watch_lifeline()
     finally:
       enforcer.cancel()
+      # Close listeners explicitly to prevent hanging on open client sockets.
       ws_server.close()
       tcp_server.close()
 
@@ -1009,7 +1116,7 @@ def _run_server(
 
 
 class WebServer:
-  """The web viewer's single-port server.
+  """The Web Viewer's single-port server.
 
   Serves the browser page, WASM, and model over HTTP; bridges the NetImgui UI
   stream at /ui; and broadcasts the state payload at /state on a single public
@@ -1017,7 +1124,7 @@ class WebServer:
   memory with latest-wins semantics: update_state() may be called at any rate
   from the viewer thread; browsers only ever see the newest payload.
 
-  Run the simulation with the web viewer, then visit http://localhost:8080.
+  Run the simulation with the web viewer, then visit the printed URL.
   """
 
   def __init__(
@@ -1027,23 +1134,34 @@ class WebServer:
       static_files_dir: Optional[str] = None,
       mjb_data: Optional[bytes] = None,
       max_payload_size: int = 0,
-      drop_queue: Optional[multiprocessing.queues.Queue] = None,
-      controller_sid_shared: Optional[
-          multiprocessing.sharedctypes.SynchronizedString] = None,
+      drop_queue: Optional[multiprocessing.queues.Queue[Any]] = None,
+      controller_sid_shared: Optional[Any] = None,
   ) -> None:
     """Initializes the server around pre-bound listening sockets.
 
     The sockets are bound by the viewer (see bind_public_socket /
     bind_loopback_socket) and shared with the server child, so ports stay
     stable across restarts and bind failures can't occur here.
+
+    Args:
+      http_sock: The listening socket for HTTP and WebSocket traffic.
+      tcp_sock: The listening socket for NetImgui traffic.
+      static_files_dir: The directory containing the static files to serve.
+      mjb_data: The model data to serve from /model.mjb.
+      max_payload_size: The maximum size of the state payload.
+      drop_queue: The queue to put dropped files onto.
+      controller_sid_shared: The shared value containing the controller's
+        session id.
     """
     self.http_sock = http_sock
     self.tcp_sock = tcp_sock
     self.static_files_dir = static_files_dir or _find_static_files_dir()
     self.mjb_data = mjb_data
+
     # Owned by the viewer (it outlives server restarts); dropped-file bytes
     # travel from the server child back to the viewer process through it.
     self.drop_queue = drop_queue
+
     # Also viewer-owned: the controlling page's session id, so a fresh
     # server can reserve the controller slot for the page that was
     # controlling before a model-change restart.
@@ -1057,21 +1175,28 @@ class WebServer:
     self._shm_capacity = max_payload_size
     self._shm_array = (
         multiprocessing.RawArray(ctypes.c_char, 4 + self._shm_capacity)
-        if self._shm_capacity > 0 else None)
+        if self._shm_capacity > 0
+        else None
+    )
     self._generation = multiprocessing.Value("Q", 0)  # uint64 counter
 
   def update_state(self, payload: bytes) -> None:
     """Publishes the latest state payload. Called from the viewer thread."""
     if self._shm_array is None:
       return
+
     if len(payload) > self._shm_capacity:
-      logger.error(f"[StateWS] Payload of {len(payload)} bytes exceeds capacity"
-                   f" {self._shm_capacity}; dropping.")
+      logger.error(
+          "[StateWS] Payload of %d bytes exceeds capacity %d; dropping.",
+          len(payload),
+          self._shm_capacity,
+      )
       return
-    # Seqlock: bump the generation to odd before writing and back to even
-    # after, so a reader that copies the buffer while this memmove is in
-    # flight can detect the torn read (see send_payloads) and retry. Without
-    # it a reader could splice two frames and ship an invalid physics block.
+
+    # Seqlock: bump the generation to odd before writing and back to even after,
+    # so a reader that copies the buffer while this memmove is in flight can
+    # detect the torn read (see send_payloads) and retry. Without it a reader
+    # could splice two frames and ship an invalid physics block.
     with self._generation.get_lock():
       self._generation.value += 1
     ctypes.memmove(
@@ -1087,11 +1212,14 @@ class WebServer:
     if not self.static_files_dir:
       logger.warning("[Http] WARNING: Could not find web viewer static files.")
       return
-    logger.debug(f"[Http] Serving web viewer from: {self.static_files_dir}")
+
+    logger.debug("[Http] Serving web viewer from: %s", self.static_files_dir)
+
     # Lifeline pipe: the child holds the read end and exits on EOF, which
-    # happens when this process closes the write end (stop()) or dies for
-    # any reason at all — no orphaned servers.
+    # happens when this process closes the write end (stop()) or dies for any
+    # reason at all, preventing orphaned servers.
     lifeline_r, self._lifeline_w = os.pipe()
+
     # Sockets and pipe fds must be inherited, so fork explicitly (the default
     # start method is fork on Linux today, but is changing upstream).
     self._process = multiprocessing.get_context("fork").Process(
