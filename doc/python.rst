@@ -51,7 +51,8 @@ Interactive viewer
 An interactive GUI viewer is provided as part of the Python package in the ``mujoco.viewer`` module. It is based on the
 same codebase as the :ref:`simulate<saSimulate>` application that ships with the MuJoCo binary releases. Three distinct
 use cases are supported: :ref:`managed viewer<PyViewerManaged>`, :ref:`standalone app<PyViewerApp>`, and :ref:`passive
-viewer<PyViewerPassive>`.
+viewer<PyViewerPassive>`. In addition, an experimental viewer based on :ref:`MuJoCo Studio<Studio>` is described
+:ref:`below<PyViewerStudio>`.
 
 .. _PyViewerManaged:
 
@@ -232,6 +233,19 @@ Optionally, ``viewer.launch_passive`` accepts the following keyword arguments.
 - ``show_left_ui`` and ``show_right_ui``: Boolean arguments indicating whether UI panels should be visible
   or hidden when the viewer is launched. Note that regardless of the values specified, the user can still toggle the
   visibility of these panels after launch by pressing Tab or Shift+Tab.
+
+.. _PyViewerStudio:
+
+Studio viewer (experimental)
+----------------------------
+
+An experimental viewer based on :ref:`MuJoCo Studio<Studio>` is available in ``mujoco.experimental.studio``. Like the
+passive viewer, it does not block: your script owns the physics loop. Unlike the passive viewer, the Studio viewer
+runs in a separate thread with its own copy of the model, communicating with your simulation exclusively through
+typed messages — there is no lock to hold — and the same message mechanism supports custom GUI panels, plots and
+overlays. The viewer can be displayed in a native window or served to a web browser. See :ref:`the Studio Python
+framework<StPython>` for the full documentation, and :ref:`the migration guide<StMigration>` for how passive-viewer
+concepts map onto it.
 
 .. _PyUsage:
 

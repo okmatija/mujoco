@@ -35,9 +35,14 @@ Abstract visualizer
    simulation state, with all information needed for rendering with the Classic renderer. It also provides abstract
    mouse hooks for camera and perturbation control.
 UI framework
-   The UI framework is written in C and is designed to work with the :ref:`classic OpenGL renderer<OpenGLrendering>`.
-   UI elements are rendered in OpenGL. It has its own event mechanism and abstract hooks for keyboard and mouse input.
-   The code samples use it with GLFW, but it can also be used with other window libraries.
+   The classic UI framework is written in C and is designed to work with the :ref:`classic OpenGL
+   renderer<OpenGLrendering>`. UI elements are rendered in OpenGL. It has its own event mechanism and abstract hooks for
+   keyboard and mouse input. The code samples use it with GLFW, but it can also be used with other window libraries.
+Studio
+   :ref:`MuJoCo Studio<Studio>` is the next iteration of the ``simulate`` application, written in C++ with a
+   `Dear ImGui <https://github.com/ocornut/imgui>`__ UI and the :ref:`Filament renderer<FilamentRendering>`. It is
+   built from a library of reusable components and ships as a desktop application, a browser application, and a
+   Python framework.
 
 .. _inStart:
 

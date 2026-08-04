@@ -13,6 +13,7 @@
    XMLreference
    programming/index.rst
    APIreference/index.rst
+   Studio <studio/index.rst>
    python
    MuJoCo XLA <mjx>
    MuJoCo Warp <mjwarp/index.rst>
