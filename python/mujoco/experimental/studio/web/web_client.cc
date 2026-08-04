@@ -31,6 +31,7 @@
 #include <fstream>
 #include <initializer_list>
 #include <memory>
+#include <new>
 #include <span>
 #include <string>
 #include <string_view>
@@ -101,6 +102,7 @@ class AppCallbacks final : public RemoteUi::Callbacks,
   // Session::Callbacks
   bool ReadyForPayload() override;
   void OnPayload(const StatePayloadView& view) override;
+  void OnModelChanged() override;
   void ConnectRemoteUi() override;
   void ShutdownRemoteUi() override;
   void SetCameraMode(int mode) override;
@@ -132,6 +134,13 @@ struct App {
 
   // User-injected geoms received with the state payload.
   std::vector<mjvGeom> extra_geoms;
+
+  struct ModelDownloadStatus {
+    bool is_downloading = true;
+    size_t bytes_downloaded = 0;
+    size_t total_bytes = 0;
+    int retry_count = 0;
+  } download_status;
 
   AppCallbacks callbacks;
   RemoteUi remote_ui{callbacks};
@@ -377,6 +386,10 @@ void AppCallbacks::OnPayload(const StatePayloadView& view) {
   ApplyStatePayload(view);
 }
 
+void AppCallbacks::OnModelChanged() {
+  EM_ASM({ reloadModel(); });
+}
+
 void AppCallbacks::ConnectRemoteUi() { g_app.remote_ui.Connect(WsUrl("/ui")); }
 
 void AppCallbacks::ShutdownRemoteUi() { g_app.remote_ui.Shutdown(); }
@@ -404,6 +417,10 @@ void BuildBrowserGui() {
   view.sim_bytes_per_sec = g_app.telemetry.sim_bytes_per_sec;
   view.have_remote_frame = g_app.remote_ui.RemoteDrawData() != nullptr;
   view.camera_mode = g_app.spectator_cam_mode;
+  view.is_downloading = g_app.download_status.is_downloading;
+  view.bytes_downloaded = g_app.download_status.bytes_downloaded;
+  view.total_bytes = g_app.download_status.total_bytes;
+  view.retry_count = g_app.download_status.retry_count;
   // The session is the SessionActions implementation: the role window's
   // intents land there directly.
   g_app.role_window.Draw(view, g_app.session);
@@ -444,6 +461,7 @@ void MainLoopImpl() {
       g_app.session.ServerCloseCode() != 0 ? 300 : 60;
   if (!g_app.session.HasSocket() && !g_app.session.ReloadPending() &&
       g_app.model_holder && g_app.model_holder->ok() &&
+      !g_app.download_status.is_downloading &&
       g_app.frame_count - g_app.last_state_retry_frame > state_retry_interval) {
     g_app.last_state_retry_frame = g_app.frame_count;
     LOG(Info, "State WebSocket down; reconnecting...");
@@ -545,7 +563,7 @@ void MainLoopImpl() {
   // Render the scene and all ImGui UI (local and remote).
   if (g_app.renderer && g_app.model_holder && g_app.model_holder->ok()) {
     // Apply backend state if available.
-    if (g_app.backend_state_dirty) {
+    if (g_app.backend_state_dirty && !g_app.download_status.is_downloading) {
       mjModel* model = g_app.model_holder->model();
       mjData* data = g_app.model_holder->data();
       mj_setState(model, data, g_app.backend_state.data(),
@@ -572,8 +590,17 @@ void MainLoopImpl() {
 void SetupScene(const mjModel* m) {
   g_app.renderer->Init(m);
 
+  // Invalidate Dear ImGui and NetImgui texture caches so that after
+  // Renderer::Init(m) recreates the Filament context, all required fonts and
+  // streamed UI textures are re-uploaded.
+  if (ImGui::GetCurrentContext() && ImGui::GetIO().Fonts &&
+      ImGui::GetIO().Fonts->TexData) {
+    ImGui::GetIO().Fonts->TexData->SetStatus(ImTextureStatus_WantCreate);
+  }
+
   // Upload any textures (e.g. the font atlas) that were buffered before the
   // Filament context was available.
+  g_app.remote_ui.InvalidateTextures();
   g_app.remote_ui.FlushPendingTextures();
 
   mjv_defaultPerturb(&g_app.perturb);
@@ -602,52 +629,69 @@ uint32_t Crc32(const uint8_t* data, size_t len) {
   return crc ^ 0xFFFFFFFFu;
 }
 
-void OnFetchSuccess(emscripten_fetch_t* fetch) {
-  LOG(Info, "Fetched model.mjb, size: %llu", fetch->numBytes);
+bool ParseModelBufferImpl(const char* data, size_t size) {
+  LOG(Info, "Fetched model.mjb, size: %zu", size);
   g_app.model_holder = mujoco::platform::ModelHolder::FromBuffer(
-      std::span<const std::byte>(
-          reinterpret_cast<const std::byte*>(fetch->data),
-          static_cast<size_t>(fetch->numBytes)),
+      std::span<const std::byte>(reinterpret_cast<const std::byte*>(data),
+                                 size),
       "application/mjb", "model.mjb");
   if (g_app.model_holder && g_app.model_holder->ok()) {
-    LOG(Info, "Model loaded successfully!");
-    mj_forward(g_app.model_holder->model(), g_app.model_holder->data());
-    if (g_app.window) {
-      SetupScene(g_app.model_holder->model());
-    }
-    // Baseline the state link on the model we just fetched, so a model swap
-    // that raced this fetch is caught by the very first payload.
     g_app.session.SetModelCrc32(
-        Crc32(reinterpret_cast<const uint8_t*>(fetch->data),
-              static_cast<size_t>(fetch->numBytes)));
-    // Connect the state WebSocket to receive simulation state from Python.
-    g_app.session.Connect(WsUrl("/state"));
-  } else {
-    LOG(Error, "Failed to load model: %s",
-        g_app.model_holder ? g_app.model_holder->error().data()
-                           : "Unknown error");
+        Crc32(reinterpret_cast<const uint8_t*>(data), size));
+    LOG(Info, "Model parsed successfully!");
+    return true;
   }
-  emscripten_fetch_close(fetch);
+  LOG(Error, "Failed to load model: %s",
+      g_app.model_holder ? g_app.model_holder->error().data()
+                         : "Unknown error");
+  return false;
 }
 
-void StartModelFetch();
-
-void OnFetchError(emscripten_fetch_t* fetch) {
-  LOG(Error, "Failed to fetch model.mjb, status: %d; retrying", fetch->status);
-  emscripten_fetch_close(fetch);
-  // The most likely cause is the Python side restarting its server after a
-  // model change, so retry rather than leaving the page permanently blank.
-  emscripten_async_call([](void*) { StartModelFetch(); }, nullptr, 1000);
+void UpdateModelDownloadProgress(size_t bytes_downloaded, size_t total_bytes,
+                                 int retry_count) {
+  g_app.download_status.is_downloading = true;
+  g_app.download_status.bytes_downloaded = bytes_downloaded;
+  g_app.download_status.total_bytes = total_bytes;
+  g_app.download_status.retry_count = retry_count;
 }
 
-void StartModelFetch() {
-  emscripten_fetch_attr_t attr;
-  emscripten_fetch_attr_init(&attr);
-  strcpy(attr.requestMethod, "GET");
-  attr.attributes = EMSCRIPTEN_FETCH_LOAD_TO_MEMORY;
-  attr.onsuccess = OnFetchSuccess;
-  attr.onerror = OnFetchError;
-  emscripten_fetch(&attr, "/model.mjb");
+void FinishModelLoad() {
+  mj_forward(g_app.model_holder->model(), g_app.model_holder->data());
+  if (g_app.window) {
+    SetupScene(g_app.model_holder->model());
+  }
+  // Connect the state WebSocket to receive simulation state from Python.
+  if (!g_app.session.HasSocket()) {
+    g_app.session.Connect(WsUrl("/state"));
+  }
+  g_app.download_status.is_downloading = false;
+  LOG(Info, "Model loaded and scene initialized successfully!");
+}
+
+// Direct WASM linear memory allocation for zero-copy streaming chunk downloads.
+// Avoids allocating a duplicate Uint8Array in the JS heap.
+uintptr_t AllocModelBuffer(size_t size) {
+  char* ptr = new (std::nothrow) char[size];
+  if (!ptr) {
+    LOG(Error, "Failed to allocate WASM model buffer of size %zu", size);
+    return 0;
+  }
+  return reinterpret_cast<uintptr_t>(ptr);
+}
+
+void FreeModelBuffer(uintptr_t ptr_val) {
+  if (ptr_val) {
+    delete[] reinterpret_cast<char*>(ptr_val);
+  }
+}
+
+void ParseModelBuffer(uintptr_t ptr_val, size_t size) {
+  char* ptr = reinterpret_cast<char*>(ptr_val);
+  bool ok = ParseModelBufferImpl(ptr, size);
+  delete[] ptr;
+  if (ok) {
+    FinishModelLoad();
+  }
 }
 
 // Holds assets (Filament assets and local ImGui fonts) that the page fetches
@@ -705,9 +749,7 @@ static void RegisterAssetProviders() {
 }
 
 // Starts the viewer once the page has registered every asset. Exposed to JS
-// and called from index.html after the fetches complete. Note that calling
-// emscripten_set_main_loop with simulate_infinite_loop=1 never returns, so
-// there is no post-loop cleanup.
+// and called from index.html after the fetches complete.
 void StartApp() {
   mujoco::platform::Window::Config config;
   config.gfx_mode = mujoco::platform::GraphicsMode::FilamentWebGl;
@@ -723,15 +765,21 @@ void StartApp() {
   g_app.renderer = new mujoco::platform::Renderer(
       g_app.window->GetNativeWindowHandle(), config.gfx_mode);
 
+  // Initialize an empty dummy scene so Filament and ImGui are ready to render
+  // the "DOWNLOADING..." progress bar while /model.mjb downloads asynchronously
+  g_app.model_holder =
+      mujoco::platform::ModelHolder::FromSpec(mj_makeSpec());
+  if (g_app.model_holder && g_app.model_holder->ok()) {
+    SetupScene(g_app.model_holder->model());
+  }
+
   NetImgui::Internal::Network::Startup();
   SDL_StartTextInput();
 
   // The UI stream is a path on the page's own host and port.
   g_app.remote_ui.Connect(WsUrl("/ui"));
 
-  StartModelFetch();
-
-  emscripten_set_main_loop(MainLoop, 0, 1);
+  emscripten_set_main_loop(MainLoop, 0, 0);
 }
 
 int main(int argc, char** argv) {
@@ -740,6 +788,28 @@ int main(int argc, char** argv) {
 }
 
 EMSCRIPTEN_BINDINGS(web_client_bindings) {
+  // Registers staged static files fetched by index.html into the C++ in-memory
+  // AssetRegistry before startApp() runs.
   emscripten::function("registerAsset", &RegisterAsset);
+
+  // Allocates a raw memory buffer in WASM linear heap for zero-copy streaming
+  // model chunk downloads from index.html.
+  emscripten::function("allocModelBuffer", &AllocModelBuffer);
+
+  // Frees a WASM model buffer allocated via allocModelBuffer if a download
+  // attempt fails or aborts.
+  emscripten::function("freeModelBuffer", &FreeModelBuffer);
+
+  // Parses a completed .mjb model buffer residing in WASM memory, immediately
+  // deallocates the buffer, and reinitializes the Filament scene.
+  emscripten::function("parseModelBuffer", &ParseModelBuffer);
+
+  // Initializes the Filament window, ImGui context, WebSocket connections, and
+  // starts the Emscripten main simulation loop.
   emscripten::function("startApp", &StartApp);
+
+  // Updates the model download progress in C++ so the ImGui role window can
+  // display a real-time progress bar and status while downloading.
+  emscripten::function("updateModelDownloadProgress",
+                       &UpdateModelDownloadProgress);
 }

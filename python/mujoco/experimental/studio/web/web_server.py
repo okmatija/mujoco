@@ -40,6 +40,7 @@ import asyncio
 import ctypes
 import datetime
 import enum
+import json
 import logging
 import multiprocessing
 import multiprocessing.queues
@@ -50,6 +51,7 @@ import socket
 import struct
 import sys
 import threading
+import urllib.parse
 from typing import Any, Awaitable, Callable, Optional, cast
 
 from websockets.asyncio.server import serve
@@ -123,7 +125,7 @@ _NETIMGUI_CMD_VERSION_SIZE = 120
 # reconnects within ~1s in the normal case; this only bounds the pathological
 # one where it never appears (e.g., the headless UI failed to start), so a stuck
 # controller cannot lock every other browser out forever.
-_UI_TCP_WAIT_SEC = 15.0
+_UI_TCP_WAIT_SEC = 30.0
 
 # Content types for the static files the HTTP handler serves.
 _CONTENT_TYPES = {
@@ -372,6 +374,7 @@ def _find_static_files_dir() -> Optional[str]:
   dist_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dist")
   if os.path.isdir(dist_dir):
     return dist_dir
+
 
   return None
 
@@ -947,9 +950,41 @@ def _run_server(
         connection: ServerConnection, request: Request
     ) -> Optional[Response]:
       del connection
-      path = request.path.split("?")[0]
+
+      # Split path and query string.
+      if "?" in request.path:
+        path, query_string = request.path.split("?", 1)
+      else:
+        path, query_string = request.path, ""
       if path in ("/ui", "/state", "/drop"):
         return None  # Proceed with the WebSocket handshake.
+
+      # Chunked model endpoint: the client fetches /model.mjb in parallel chunks
+      #
+      #   GET /model.mjb?total_bytes                 -> {"total_bytes": <n>}
+      #   GET /model.mjb?offset_bytes=X&size_bytes=Y -> bytes [X, X+Y)
+      #
+      # Full model endpoint: the client fetches /model.mjb in a single request
+      #
+      #   GET /model.mjb  -> full model bytes
+      if path == "/model.mjb" and mjb_data and query_string:
+        params = urllib.parse.parse_qs(query_string)
+        if "total_bytes" in params or query_string == "total_bytes":
+          body = json.dumps({"total_bytes": len(mjb_data)}).encode()
+          headers = _http_headers(
+              "application/json", len(body), cacheable=False
+          )
+          return Response(200, "OK", headers, body)
+        offset = int(params.get("offset_bytes", [0])[0])
+        size = int(params.get("size_bytes", [0])[0])
+        if size <= 0 or offset < 0 or offset >= len(mjb_data):
+          return Response(400, "Bad Request", Headers(), b"bad range\n")
+        chunk = mjb_data[offset : min(offset + size, len(mjb_data))]
+        headers = _http_headers(
+            "application/octet-stream", len(chunk), cacheable=False
+        )
+        return Response(200, "OK", headers, chunk)
+
       return _serve_http(path)
 
     def process_response(
@@ -1089,7 +1124,10 @@ def _run_server(
         process_request=process_request,
         process_response=process_response,
         compression=None,
-        close_timeout=1.0,
+        ping_interval=None,
+        ping_timeout=None,
+        open_timeout=None,
+        close_timeout=None,
         # Big enough for model files uploaded via /drop.
         max_size=2**26,
     )

@@ -98,6 +98,10 @@ class RemoteUi {
   // queue this reads (note that ImGui::Render() calls EndFrame() implicitly).
   void CaptureAndSendInput();
 
+  // Clears cached GPU texture IDs when the Filament context is recreated,
+  // so that all streamed textures are re-uploaded by FlushPendingTextures().
+  void InvalidateTextures();
+
   // Uploads CPU-buffered textures (e.g. the font atlas) that arrived before
   // the GPU context became available.
   void FlushPendingTextures();

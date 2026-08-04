@@ -25,6 +25,7 @@
 #include <imgui.h>
 #include "experimental/platform/ux/imgui_widgets.h"
 #include "google/logging.h"
+#include "web_client_session.h"
 
 namespace mujoco::studio {
 namespace {
@@ -215,12 +216,17 @@ void RoleWindow::DrawCollapsed(const SessionView& view) {
   ImGui::Begin("Role", nullptr,
                ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
                    ImGuiWindowFlags_AlwaysAutoResize);
-  if (view.role == SessionRole::kSpectating) {
+  if (view.is_downloading) {
+    bool done_downloading =
+        view.total_bytes > 0 && view.bytes_downloaded >= view.total_bytes;
+    ImGui::TextColored(kConnectingColor,
+                       done_downloading ? "PARSING..." : "DOWNLOADING...");
+  } else if (view.role == SessionRole::kSpectating) {
     ImGui::TextColored(kSpectatingColor, "SPECTATING");
   } else if (view.role == SessionRole::kControlling) {
     ImGui::TextColored(kControllingColor, "CONTROLLING");
   } else {
-    ImGui::TextColored(kConnectingColor, "CONNECTING");
+    ImGui::TextColored(kConnectingColor, "CONNECTING...");
   }
   // Keep the window expanded while focused or being dragged, so dragging out
   // of the collapsed bounds doesn't instantly collapse it midway through
@@ -242,10 +248,34 @@ void RoleWindow::DrawExpanded(const SessionView& view,
   ImGui::Begin("Role", nullptr,
                ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoTitleBar);
 
-  if (view.role == SessionRole::kClaiming) {
+  if (view.is_downloading) {
+    bool done_downloading =
+        view.total_bytes > 0 && view.bytes_downloaded >= view.total_bytes;
+    platform::CenteredBanner(done_downloading ? "PARSING..." : "DOWNLOADING...",
+                             kConnectingColor);
+    if (!done_downloading) {
+      float progress = view.total_bytes > 0
+                           ? static_cast<float>(view.bytes_downloaded) /
+                                 static_cast<float>(view.total_bytes)
+                           : 0.0f;
+      char buf[128];
+      if (view.total_bytes > 0) {
+        snprintf(buf, sizeof(buf), "%.1f / %.1f MB (%.0f%%)",
+                 view.bytes_downloaded / (1024.0 * 1024.0),
+                 view.total_bytes / (1024.0 * 1024.0), progress * 100.0f);
+      } else {
+        snprintf(buf, sizeof(buf), "Connecting...");
+      }
+      ImGui::ProgressBar(progress, ImVec2(-1, 0), buf);
+      if (view.retry_count > 0) {
+        ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.2f, 1.0f),
+                           "Retrying chunk (%d)...", view.retry_count);
+      }
+    }
+  } else if (view.role == SessionRole::kClaiming) {
     // The first roster or /ui claim outcome resolves this within a few
     // hundred milliseconds of page load.
-    platform::CenteredBanner("CONNECTING", kConnectingColor);
+    platform::CenteredBanner("CONNECTING...", kConnectingColor);
     ImGui::Separator();
     DataRateLines(view);
   } else if (view.role == SessionRole::kSpectating) {

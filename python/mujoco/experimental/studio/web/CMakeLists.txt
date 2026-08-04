@@ -63,15 +63,19 @@ if(EMSCRIPTEN)
     -sDYNAMIC_EXECUTION=1
     -sGL_ASSERTIONS=0
     -sSTACK_SIZE=32mb
-    -sINITIAL_MEMORY=1024mb
+    # INITIAL_MEMORY=3072mb reserves a 3GB contiguous virtual address block upfront. This means
+    # large models do not fail dynamic memory.grow calls due to browser heap fragmentation. OS
+    # lazy page allocation for anonymous virtual memory means reserving 3GB of virtual address
+    # space consumes much less physical RAM when loading small XML models. Therefore, reducing
+    # INITIAL_MEMORY is not necessary for small models. For models that don't fit in 32-bit
+    # address space (~4GB) we can switch to 64-bit WASM.
+    -sINITIAL_MEMORY=3072mb
     -sMAXIMUM_MEMORY=4gb
     -fexceptions
-    # Filament's GL backend calls glGetError() on every draw call via
-    # GLUtils::checkGLError/assertGLError, even in non-debug builds (the
-    # functions are compiled into the library unconditionally). In WebGL, each
-    # glGetError() forces a synchronous GPU pipeline flush across the JS-WASM
-    # bridge (~0.2ms each, hundreds per frame). Wrapping it at link time
-    # replaces all call sites with a no-op.
+    # Filament's GL backend calls glGetError() on every draw call via even in non-debug builds
+    # (the functions are compiled into the library unconditionally). In WebGL, each glGetError()
+    # forces a synchronous GPU pipeline flush across the JS-WASM bridge (~0.2ms each, hundreds
+    # per frame). Wrapping it at link time replaces all call sites with a no-op.
     -Wl,--wrap=glGetError
   )
 

@@ -281,8 +281,10 @@ void Session::HandleMessage(const uint8_t* data, uint32_t num_bytes) {
   } else if (view.model_crc32 != *model_crc32_) {
     LOG(Info, "Model changed on the Python side (ident %u -> %u); reloading",
         *model_crc32_, view.model_crc32);
-    reload_pending_ = true;
-    EM_ASM({ setTimeout(function() { location.reload(); }, 0); });
+    // Set the new CRC so subsequent payloads don't re-trigger while the new
+    // model is being fetched.
+    model_crc32_ = view.model_crc32;
+    callbacks_.OnModelChanged();
     return;
   }
 

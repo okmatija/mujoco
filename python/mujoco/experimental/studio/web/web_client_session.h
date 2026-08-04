@@ -28,6 +28,7 @@
 
 #include <emscripten/websocket.h>
 
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -65,6 +66,10 @@ struct SessionView {
   uint64_t sim_bytes_per_sec = 0;
   bool have_remote_frame = false;
   int camera_mode = 0;  // [SpectatorCamMode].
+  bool is_downloading = true;
+  size_t bytes_downloaded = 0;
+  size_t total_bytes = 0;
+  int retry_count = 0;
 };
 
 // User intent reported by the role window. Session implements this; the
@@ -115,6 +120,8 @@ class Session : public SessionActions {
     virtual bool ReadyForPayload() = 0;
     // Applies a parsed payload to the application.
     virtual void OnPayload(const StatePayloadView& view) = 0;
+    // Server swapped models; fetch and load the new one in-place.
+    virtual void OnModelChanged() = 0;
     // Role transition: claim the controller slot.
     virtual void ConnectRemoteUi() = 0;
     // Role transition: drop the stream when spectating

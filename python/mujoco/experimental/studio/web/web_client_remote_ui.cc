@@ -241,6 +241,12 @@ void RemoteUi::ReceiveAndProcessCommands(int frame) {
   VLOG(2, "Frame %d: processed %d commands", frame, cmds_this_frame);
 }
 
+void RemoteUi::InvalidateTextures() {
+  for (auto& [tex_id, local_tex] : texture_map_) {
+    local_tex = 0;
+  }
+}
+
 void RemoteUi::FlushPendingTextures() {
   for (auto& [tex_id, entry] : texture_cpu_) {
     uintptr_t& local_tex = texture_map_[tex_id];
