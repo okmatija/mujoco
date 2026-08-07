@@ -4972,6 +4972,32 @@ FUNCTIONS: Mapping[str, FunctionDecl] = dict([
          ),
          doc='Return the average of two OpenGL cameras.',
      )),
+    ('mjv_camera2GLCamera',
+     FunctionDecl(
+         name='mjv_camera2GLCamera',
+         return_type=ValueType(name='mjvGLCamera'),
+         parameters=(
+             FunctionParameterDecl(
+                 name='model',
+                 type=PointerType(
+                     inner_type=ValueType(name='mjModel', is_const=True),
+                 ),
+             ),
+             FunctionParameterDecl(
+                 name='data',
+                 type=PointerType(
+                     inner_type=ValueType(name='mjData', is_const=True),
+                 ),
+             ),
+             FunctionParameterDecl(
+                 name='mjv_camera',
+                 type=PointerType(
+                     inner_type=ValueType(name='mjvCamera', is_const=True),
+                 ),
+             ),
+         ),
+         doc='Converts a mjvCamera to a mjvGLCamera.',
+     )),
     ('mjv_select',
      FunctionDecl(
          name='mjv_select',
@@ -11008,6 +11034,69 @@ FUNCTIONS: Mapping[str, FunctionDecl] = dict([
              ),
          ),
          doc='Set actuator to orientation servo.',
+     )),
+    ('mjs_setToPID',
+     FunctionDecl(
+         name='mjs_setToPID',
+         return_type=PointerType(
+             inner_type=ValueType(name='char', is_const=True),
+         ),
+         parameters=(
+             FunctionParameterDecl(
+                 name='actuator',
+                 type=PointerType(
+                     inner_type=ValueType(name='mjsActuator'),
+                 ),
+             ),
+             FunctionParameterDecl(
+                 name='kp',
+                 type=ValueType(name='double'),
+             ),
+             FunctionParameterDecl(
+                 name='kv',
+                 type=ArrayType(
+                     inner_type=ValueType(name='double'),
+                     extents=(1,),
+                 ),
+             ),
+             FunctionParameterDecl(
+                 name='dampratio',
+                 type=ArrayType(
+                     inner_type=ValueType(name='double'),
+                     extents=(1,),
+                 ),
+             ),
+             FunctionParameterDecl(
+                 name='ki',
+                 type=ArrayType(
+                     inner_type=ValueType(name='double'),
+                     extents=(1,),
+                 ),
+             ),
+             FunctionParameterDecl(
+                 name='imax',
+                 type=ArrayType(
+                     inner_type=ValueType(name='double'),
+                     extents=(1,),
+                 ),
+             ),
+             FunctionParameterDecl(
+                 name='slewmax',
+                 type=ArrayType(
+                     inner_type=ValueType(name='double'),
+                     extents=(1,),
+                 ),
+             ),
+             FunctionParameterDecl(
+                 name='inheritrange',
+                 type=ValueType(name='double'),
+             ),
+             FunctionParameterDecl(
+                 name='ctrlspec',
+                 type=ValueType(name='int'),
+             ),
+         ),
+         doc='Set actuator to PID controller.',
      )),
     ('mjs_setToDamper',
      FunctionDecl(

@@ -60,7 +60,9 @@ Light::Light(filament::Engine* engine, const mjrfLightParams& params)
   filament::LightManager::Type type;
   switch (params.type) {
     case mjLIGHT_SPOT:
-      type = filament::LightManager::Type::FOCUSED_SPOT;
+      // SPOT rather than FOCUSED_SPOT: MJCF intensity is candela, which must
+      // not rescale with the cone angle.
+      type = filament::LightManager::Type::SPOT;
       break;
     case mjLIGHT_DIRECTIONAL:
       type = filament::LightManager::Type::DIRECTIONAL;
@@ -77,9 +79,13 @@ Light::Light(filament::Engine* engine, const mjrfLightParams& params)
   builder.color(ReadFloat3(params.color));
   builder.intensityCandela(params.intensity);
   builder.castShadows(params.cast_shadows);
-  if (type == filament::LightManager::Type::FOCUSED_SPOT) {
-    builder.spotLightCone(0,
-                          params.spot_cone_angle * std::numbers::pi / 180.0f);
+  if (type == filament::LightManager::Type::SPOT) {
+    // The light delivers its full intensity inside the inner cone, so that
+    // illuminance follows E = I/d^2, and falls to zero over the outer
+    // softness fraction of the cone angle.
+    const float outer = params.spot_cone_angle * std::numbers::pi / 180.0f;
+    const float inner = (1.0f - params.spot_softness) * outer;
+    builder.spotLightCone(inner, outer);
   }
   if (type != filament::LightManager::Type::DIRECTIONAL) {
     builder.falloff(params.range);
@@ -163,6 +169,18 @@ void Light::SetIntensity(float intensity) {
     const filament::LightManager::Instance li = lm.getInstance(entity_);
     lm.setIntensityCandela(li, intensity);
   }
+}
+
+void Light::SetShadowMapSize(int map_size) {
+  params_.shadow_map_size = map_size;
+  if (ibl_) {
+    return;
+  }
+  filament::LightManager& lm = engine_->getLightManager();
+  const filament::LightManager::Instance li = lm.getInstance(entity_);
+  filament::LightManager::ShadowOptions opts = lm.getShadowOptions(li);
+  opts.mapSize = map_size;
+  lm.setShadowOptions(li, opts);
 }
 
 void Light::Enable() {

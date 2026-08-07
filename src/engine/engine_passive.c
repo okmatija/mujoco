@@ -22,6 +22,7 @@
 #include "engine/engine_callback.h"
 #include "engine/engine_core_constraint.h"
 #include "engine/engine_core_util.h"
+#include "engine/engine_derivative.h"
 #include "engine/engine_crossplatform.h"
 #include "engine/engine_inline.h"
 #include "engine/engine_memory.h"
@@ -36,8 +37,6 @@
 
 //----------------------------- passive forces -----------------------------------------------------
 
-// stiffness for passive contacts
-static const mjtNum kContactStiffness = 1e4;
 
 // local edge-based vertex indexing for 2D and 3D elements, 2D and 3D elements
 // have 3 and 6 edges, respectively so the missing indexes are set to 0
@@ -532,10 +531,16 @@ static void mj_flexPassiveBend(const mjModel* m, mjData* d, int f,
     // which is what the pin constrains).
     for (int i = 0; i < 4; i++) {
       if (!isfree[i]) continue;
-      int body_dofadr = m->body_dofadr[bodyid[v[i]]];
+      int bi = bodyid[v[i]];
+      int body_dofadr = m->body_dofadr[bi];
+      // spring/damper are world-space; the slide dofs are in the body frame, so rotate before
+      // accumulating (mj_flexPassiveStretch reaches the same frame through mj_applyFT).
+      mjtNum sl[3], dl[3];
+      mji_mulMatTVec3(sl, d->xmat + 9*bi, spring + 3*i);
+      mji_mulMatTVec3(dl, d->xmat + 9*bi, damper + 3*i);
       for (int x = 0; x < 3; x++) {
-        if (enbl_spring) d->qfrc_spring[body_dofadr+x] -= spring[3*i+x];
-        if (enbl_damper) d->qfrc_damper[body_dofadr+x] -= damper[3*i+x] * m->flex_damping[f];
+        if (enbl_spring) d->qfrc_spring[body_dofadr+x] -= sl[x];
+        if (enbl_damper) d->qfrc_damper[body_dofadr+x] -= dl[x] * m->flex_damping[f];
       }
     }
   }
@@ -956,8 +961,8 @@ int mj_contactPassive(const mjModel* m, mjData* d) {
     // rotate Jacobian differences to contact frame
     mju_mulMatMat(jac, con->frame, jacdifp, dim > 1 ? 3 : 1, 3, NV);
 
-    // compute passive contact force (dim = 1)
-    mjtNum scl = -kContactStiffness*con->dist;
+    // compute passive contact force (dim = 1); stiffness shared with the metric Hessian.
+    mjtNum scl = -mjd_flexContactStiffness(m, d, con)*con->dist;
     if (!issparse) {
       mju_addToScl(d->qfrc_spring, jac, scl, nv);
     } else {

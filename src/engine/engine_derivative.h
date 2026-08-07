@@ -77,9 +77,16 @@ MJAPI void mjd_flexStretch_mul(const mjModel* m, mjData* d, mjtNum* res, const m
 // dof-level CSR; phase 1 (colind==NULL) fills rownnz/rowadr and returns total nnz, phase 2
 // fills colind/val. Interp flexes are assembled iff Krot (mjd_flexInterp_cacheKrot cache) is
 // non-NULL and the centered fast path applies (check mjd_flexInterpAssemblable first).
+// Passive contact stiffness (omega^2 * m_min); force and Hessian must use the same value.
+// res += scale * K_contact * vec (shift counterpart of the contact stiffness in the metric).
+MJAPI void mjd_flexContact_mul(const mjModel* m, mjData* d, mjtNum* res, const mjtNum* vec,
+                               mjtNum scale);
+
+MJAPI mjtNum mjd_flexContactStiffness(const mjModel* m, const mjData* d, const mjContact* con);
+
 MJAPI int mjd_flexStiff_assemble(const mjModel* m, mjData* d, int* rownnz, int* rowadr,
                                  int* colind, mjtNum* val, mjtNum s1, mjtNum s2,
-                                 int flg_bend, int flg_stretch, const mjtNum* Krot);
+                                 int flg_bend, int flg_stretch, int flg_contact, const mjtNum* Krot);
 
 // can all interp flexes be assembled to dof-level CSR? (centered fast path everywhere)
 MJAPI mjtBool mjd_flexInterpAssemblable(const mjModel* m);
@@ -97,8 +104,14 @@ MJAPI void mjd_effShift(const mjModel* m, mjData* d);
 // res += B*vec (the stiffness part of the metric; caller supplies the M part)
 MJAPI void mjd_effMulAdd(const mjModel* m, mjData* d, mjtNum* res, const mjtNum* vec);
 
-// x = (M + B)^-1 b to 1e-10 relative; x = M^-1 b when the metric is inactive
+// solve (M + B) x = b by PCG preconditioned with mjd_effPrec, to opt.tolerance on the relative
+// residual; x = M^-1 b when the metric is inactive. Warns (mjWARN_INERTIA) if the iteration cap
+// is reached before convergence, in which case x is returned under-converged.
 MJAPI void mjd_effSolve(const mjModel* m, mjData* d, mjtNum* x, const mjtNum* b);
+
+// apply the metric preconditioner: x ~= (M + B)^-1 b, a cheap fixed linear operator, NOT a solve.
+// Exact only when the metric is inactive (x = M^-1 b); otherwise approximate by construction.
+MJAPI void mjd_effPrec(const mjModel* m, mjData* d, mjtNum* x, const mjtNum* b);
 
 
 #ifdef __cplusplus

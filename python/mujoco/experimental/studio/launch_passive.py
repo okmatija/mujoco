@@ -86,26 +86,21 @@ def run_viewer_target(
   """Creates the appropriate viewer and runs the viewer loop.
 
   Args:
-    config: Configuration specifying the viewer mode and window settings.
+    config: Configuration specifying the viewer window settings.
     viewer_endpoint: Endpoint for communicating with the simulation side.
     handlers: Optional list of viewer-side handler instances, which are classes
       with methods decorated with ``@handler``.
-
-  Raises:
-    ValueError: If the viewer mode requested in config is unknown.
-    NotImplementedError: If web mode is requested.
   """
+  if config.gfx in ('web', 'webgl'):  # In future we may add 'webgpu' here too.
+    from mujoco.experimental.studio import web_viewer  # pylint: disable=g-import-not-at-top
 
-  if config.viewer_mode == viewer_protocol.ViewerMode.NATIVE:
+    viewer = web_viewer.WebViewer(config, viewer_endpoint, handlers=handlers)
+  else:
     from mujoco.experimental.studio import native_viewer  # pylint: disable=g-import-not-at-top
 
     viewer = native_viewer.NativeViewer(
         config, viewer_endpoint, handlers=handlers
     )
-  elif config.viewer_mode == viewer_protocol.ViewerMode.WEB:
-    raise NotImplementedError('Web viewer not implemented yet')
-  else:
-    raise ValueError(f'Unknown viewer mode: {config.viewer_mode!r}')
 
   viewer_protocol.run_viewer_loop(viewer)
 
@@ -149,6 +144,7 @@ def launch_passive(
   handle = viewer_handle.ViewerHandle(
       sim_endpoint,
       is_alive_fn=thread.is_alive,
+      shutdown_fn=thread.join,
       handlers=sim_handlers,
   )
   return handle

@@ -261,6 +261,7 @@ typedef struct mjrfLightParams_ {
   mjtBool cast_shadows;            // if true, cast shadows
   float range;                     // effective range of light, in meters
   float spot_cone_angle;           // spot light cone angle, in degrees
+  float spot_softness;             // spot light edge softness, fraction of cone angle in [0, 1]
   int shadow_map_size;             // size of shadow map texture, 0 to use default size
   float bulb_radius;               // bulb radius, used for soft shadows
   float vsm_blur_width;            // variance shadow map blur width
@@ -280,6 +281,9 @@ void mjrf_setLightEnabled(mjrfLight* light, mjtBool enabled);
 
 // Sets the intensity of the light, in candela.
 void mjrf_setLightIntensity(mjrfLight* light, float intensity);
+
+// Sets the resolution of the light's shadow map, in texels.
+void mjrf_setLightShadowMapSize(mjrfLight* light, int map_size);
 
 // Sets the RGB color of the light.
 void mjrf_setLightColor(mjrfLight* light, const float color[3]);

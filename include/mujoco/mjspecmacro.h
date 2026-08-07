@@ -258,6 +258,7 @@
     X   ( float,        range,       1 ) \
     XVEC( float,        attenuation, 3 ) \
     X   ( float,        cutoff,      1 ) \
+    X   ( float,        softness,    1 ) \
     X   ( float,        exponent,    1 ) \
     XVEC( float,        ambient,     3 ) \
     XVEC( float,        diffuse,     3 ) \
@@ -492,11 +493,13 @@
     X   ( mjtGain,       gaintype,      1         ) \
     XVEC( double,        gainprm,       mjNGAIN   ) \
     X   ( mjtBias,       biastype,      1         ) \
-    XVEC( double,        biasprm,       mjNGAIN   ) \
+    XVEC( double,        biasprm,       mjNBIAS   ) \
     X   ( mjtDyn,        dyntype,       1         ) \
     XVEC( double,        dynprm,        mjNDYN    ) \
     X   ( int,           actdim,        1         ) \
     X   ( int,           ctrlspec,      1         ) \
+    XVEC( double,        velrange,      2         ) \
+    XVEC( double,        ffrange,       2         ) \
     X   ( mjtBool,       actearly,      1         ) \
     X   ( mjtTrn,        trntype,       1         ) \
     XVEC( double,        gear,          6         ) \

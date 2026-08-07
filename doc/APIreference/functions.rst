@@ -2623,6 +2623,15 @@ Set perturb force,torque in d->xfrc_applied, if selected body is dynamic.
 
 Return the average of two OpenGL cameras.
 
+.. _mjv_camera2GLCamera:
+
+`mjv_camera2GLCamera <#mjv_camera2GLCamera>`__
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. mujoco-include:: mjv_camera2GLCamera
+
+Converts a mjvCamera to a mjvGLCamera.
+
 .. _mjv_select:
 
 `mjv_select <#mjv_select>`__
@@ -3419,6 +3428,15 @@ Enables or disables the light.
 .. mujoco-include:: mjrf_setLightIntensity
 
 Sets the intensity of the light, in candela.
+
+.. _mjrf_setLightShadowMapSize:
+
+`mjrf_setLightShadowMapSize <#mjrf_setLightShadowMapSize>`__
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. mujoco-include:: mjrf_setLightShadowMapSize
+
+Sets the resolution of the light's shadow map, in texels.
 
 .. _mjrf_setLightColor:
 
@@ -5296,6 +5314,15 @@ Set actuator to velocity servo; return error if any.
 .. mujoco-include:: mjs_setToOrientation
 
 Set actuator to orientation servo.
+
+.. _mjs_setToPID:
+
+`mjs_setToPID <#mjs_setToPID>`__
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. mujoco-include:: mjs_setToPID
+
+Set actuator to PID controller.
 
 .. _mjs_setToDamper:
 

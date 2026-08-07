@@ -786,6 +786,8 @@ def _make_data_warp(
 
   impl_fields = {}
   for k in mjxw.types.DataWarp.__annotations__.keys():
+    if k == '_jax_token':  # custom token to force sequential calls in JAX
+      continue
     field = _get_nested_attr(dw, k, split='__')
     field = _wp_to_np_type(field)
     if mjxw.types._BATCH_DIM['Data'][k]:  # pylint: disable=protected-access
@@ -878,7 +880,7 @@ def make_data(
       worlds. Since the number of worlds is **not** pre-defined in JAX, we use the
       `naccdmax` argument to set the upper bound for the number of contacts
       across all worlds, rather than the `nccdmax` argument from MuJoCo Warp.
-    njmax: maximum number of constraints to allocate for warp across all worlds
+    njmax: maximum number of constraints to allocate per world
     nvmax: capacity for compacted active DOFs per world
     keepalive_refs: optional dict to store references to underlying MuJoCo
       objects, preventing them from being garbage collected. Required for CPP
@@ -1167,6 +1169,7 @@ def _put_data_warp(
     d: mujoco.MjData,
     device: Optional[jax.Device] = None,
     naconmax: Optional[int] = None,
+    naccdmax: Optional[int] = None,
     njmax: Optional[int] = None,
     nvmax: Optional[int] = None,
 ) -> types.Data:
@@ -1174,7 +1177,13 @@ def _put_data_warp(
 
   with wp.ScopedDevice('cpu'):  # pylint: disable=undefined-variable
     dw = mjwp.put_data(
-        m, d, nworld=1, naconmax=naconmax, njmax=njmax, nvmax=nvmax
+        m,
+        d,
+        nworld=1,
+        naconmax=naconmax,
+        naccdmax=naccdmax,
+        njmax=njmax,
+        nvmax=nvmax,
     )  # pylint: disable=undefined-variable
 
   fields = _put_data_public_fields(d)
@@ -1188,6 +1197,8 @@ def _put_data_warp(
 
   impl_fields = {}
   for k in mjxw.types.DataWarp.__annotations__.keys():
+    if k == '_jax_token':  # custom token to force sequential calls in JAX
+      continue
     field = _get_nested_attr(dw, k, split='__')
     field = _wp_to_np_type(field)
     if mjxw.types._BATCH_DIM['Data'][k]:  # pylint: disable=protected-access
@@ -1209,6 +1220,7 @@ def put_data(
     device: Optional[jax.Device] = None,
     impl: Optional[Union[str, types.Impl]] = None,
     naconmax: Optional[int] = None,
+    naccdmax: Optional[int] = None,
     njmax: Optional[int] = None,
     nvmax: Optional[int] = None,
     dummy_arg_for_batching: Optional[jax.Array] = None,
@@ -1225,7 +1237,11 @@ def put_data(
       Since the number of worlds is **not** pre-defined in JAX, we use the
       `naconmax` argument to set the upper bound for the number of contacts
       across all worlds.
-    njmax: maximum number of constraints to allocate for warp
+    naccdmax: maximum number of contacts for GJK collision detection across all
+      worlds. Since the number of worlds is **not** pre-defined in JAX, we use the
+      `naccdmax` argument to set the upper bound for the number of contacts
+      across all worlds, rather than the `nccdmax` argument from MuJoCo Warp.
+    njmax: maximum number of constraints per world
     nvmax: capacity for compacted active DOFs per world
     dummy_arg_for_batching: dummy argument to use for batching in cpp
       implementation
@@ -1249,7 +1265,15 @@ def put_data(
     )
   elif impl == types.Impl.WARP:
     _check_warp_installed()
-    return _put_data_warp(m, d, device, naconmax, njmax, nvmax)
+    return _put_data_warp(
+        m,
+        d,
+        device=device,
+        naconmax=naconmax,
+        naccdmax=naccdmax,
+        njmax=njmax,
+        nvmax=nvmax,
+    )
 
   raise NotImplementedError(
       f'put_data for implementation "{impl}" not implemented yet.'

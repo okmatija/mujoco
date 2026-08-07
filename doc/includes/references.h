@@ -112,10 +112,10 @@ typedef struct mjData_ {
   int     nl;                // number of limit constraints
   int     nefc;              // number of constraints
   int     nJ;                // number of non-zeros in constraint Jacobian
-  int     efm_active;        // implicit effective metric M+K: 0 inactive, 1 active, 2 active + preconditioner exact
+  int     efm_active;        // implicit effective metric M+K is active (see mjd_effBuild)
   int     nefmK;             // number of non-zeros in effective-stiffness CSR
-  int     nefmdof;           // number of rows in effective-metric factor
-  int     nefmL;             // number of non-zeros in the effective-metric factor
+  int     nefmdof;           // number of 3x3 blocks in the effective-metric preconditioner
+  int     nefmL;             // size of the effective-metric block storage (9*nefmdof)
   int     nY;                // number of non-zeros in constraint inverse inertia square root
   int     nA;                // number of non-zeros in constraint inverse inertia matrix
   int     nisland;           // number of detected constraint islands
@@ -382,11 +382,8 @@ typedef struct mjData_ {
   int*    efm_K_rowadr;      // effective-stiffness CSR row addresses            (nv x 1)
   int*    efm_K_colind;      // effective-stiffness CSR column indices           (nefmK x 1)
   mjtNum* efm_K_val;         // effective-stiffness CSR values                   (nefmK x 1)
-  int*    efm_dofid;         // factor row -> dof address                        (nefmdof x 1)
-  int*    efm_L_rownnz;      // factor row nonzeros                              (nefmdof x 1)
-  int*    efm_L_rowadr;      // factor row addresses                             (nefmdof x 1)
-  int*    efm_L_colind;      // factor column indices                            (nefmL x 1)
-  mjtNum* efm_L;             // Cholesky factor of diag(M)+K, covered dofs       (nefmL x 1)
+  int*    efm_dofid;         // block k -> dof address of its vertex triple      (nefmdof x 1)
+  mjtNum* efm_L;             // factored 3x3 diagonal blocks of M+K              (nefmL x 1)
 
   //-------------------- arena-allocated: POSITION, VELOCITY, CONTROL/ACCELERATION dependent
 
@@ -701,7 +698,7 @@ typedef struct mjModel_ {
   // bodies
   int*      body_parentid;        // id of body's parent                      (nbody x 1)
   int*      body_rootid;          // ancestor that is direct child of world   (nbody x 1)
-  int*      body_weldid;          // top ancestor with no dofs to this body   (nbody x 1)
+  int*      body_weldid;          // top dof-less ancestor; mocap: own root   (nbody x 1)
   int*      body_mocapid;         // id of mocap data; -1: none               (nbody x 1)
   int*      body_jntnum;          // number of joints for this body           (nbody x 1)
   int*      body_jntadr;          // start addr of joints; -1: no joints      (nbody x 1)
@@ -863,6 +860,7 @@ typedef struct mjModel_ {
   mjtNum*   light_dir0;           // global direction in qpos0                (nlight x 3)
   float*    light_attenuation;    // OpenGL attenuation (quadratic model)     (nlight x 3)
   float*    light_cutoff;         // OpenGL cutoff                            (nlight x 1)
+  float*    light_softness;       // spotlight edge softness                  (nlight x 1)
   float*    light_exponent;       // OpenGL exponent                          (nlight x 1)
   float*    light_ambient;        // ambient rgb (alpha=1)                    (nlight x 3)
   float*    light_diffuse;        // diffuse rgb (alpha=1)                    (nlight x 3)
@@ -969,6 +967,7 @@ typedef struct mjModel_ {
   int*      mesh_texcoordadr;     // texcoord data address; -1: no texcoord   (nmesh x 1)
   int*      mesh_texcoordnum;     // number of texcoord                       (nmesh x 1)
   int*      mesh_graphadr;        // graph data address; -1: no graph         (nmesh x 1)
+  int*      mesh_extrema;         // extremum vertices in 3x3x3 directions    (nmesh x 27)
   float*    mesh_vert;            // vertex positions for all meshes          (nmeshvert x 3)
   float*    mesh_normal;          // normals for all meshes                   (nmeshnormal x 3)
   float*    mesh_texcoord;        // vertex texcoords for all meshes          (nmeshtexcoord x 2)
@@ -1253,6 +1252,8 @@ typedef struct mjResource_ {
   mjVFS* vfs;                                   // pointer to the VFS
   char timestamp[512];                          // timestamp of the resource
   const struct mjpResourceProvider* provider;   // pointer to the provider
+  const char* args;  // resource arguments/hints, URI query format key=val&...
+                     // (optional)
 } mjResource;
 typedef struct mjpResourceProvider {
   const char* prefix;               // prefix for match against a resource name
@@ -1609,6 +1610,7 @@ typedef struct mjrfLightParams_ {
   mjtBool cast_shadows;            // if true, cast shadows
   float range;                     // effective range of light, in meters
   float spot_cone_angle;           // spot light cone angle, in degrees
+  float spot_softness;             // spot light edge softness, fraction of cone angle in [0, 1]
   int shadow_map_size;             // size of shadow map texture, 0 to use default size
   float bulb_radius;               // bulb radius, used for soft shadows
   float vsm_blur_width;            // variance shadow map blur width
@@ -2002,6 +2004,7 @@ typedef struct mjsLight_ {         // light specification
   float range;                     // range of effectiveness
   float attenuation[3];            // OpenGL attenuation (quadratic model)
   float cutoff;                    // OpenGL cutoff
+  float softness;                  // spotlight edge softness
   float exponent;                  // OpenGL exponent
   float ambient[3];                // ambient color
   float diffuse[3];                // diffuse color
@@ -2240,13 +2243,15 @@ typedef struct mjsActuator_ {      // actuator specification
   mjtGain gaintype;                // gain type
   double gainprm[mjNGAIN];         // gain parameters
   mjtBias biastype;                // bias type
-  double biasprm[mjNGAIN];         // bias parameters
+  double biasprm[mjNBIAS];         // bias parameters
 
   // activation state
   mjtDyn dyntype;                  // dynamics type
   double dynprm[mjNDYN];           // dynamics parameters
   int actdim;                      // number of activation variables
   int ctrlspec;                    // input signature, scoped by gaintype; 0: type default
+  double velrange[2];              // range of the velocity-setpoint input (pid)
+  double ffrange[2];               // range of the feedforward input (pid)
   mjtBool actearly;                // apply next activations to qfrc
 
   // transmission
@@ -2516,6 +2521,7 @@ typedef enum mjtDyn {             // type of actuator dynamics
   mjDYN_FILTEREXACT,              // linear filter: da/dt = (u-a) / tau, with exact integration
   mjDYN_MUSCLE,                   // piecewise linear filter with two time constants
   mjDYN_DCMOTOR,                  // DC motor electrical dynamics
+  mjDYN_PID,                      // PID controller states: slew, integral
   mjDYN_USER                      // user-defined dynamics type
 } mjtDyn;
 typedef enum mjtGain {            // type of actuator gain
@@ -2524,6 +2530,7 @@ typedef enum mjtGain {            // type of actuator gain
   mjGAIN_MUSCLE,                  // muscle FLV curve computed by mju_muscleGain()
   mjGAIN_DCMOTOR,                 // DC motor gain: K or K/R
   mjGAIN_SO3,                     // geodesic servo on an SO3 transmission: force = kp * log(error)
+  mjGAIN_PID,                     // PID controller: position and velocity setpoint inputs
   mjGAIN_USER                     // user-defined gain type
 } mjtGain;
 typedef enum mjtBias {            // type of actuator bias
@@ -2538,6 +2545,11 @@ typedef enum mjtCtrlChart {       // so3 input signature (actuator_ctrlspec): or
   mjCHART_EXPMAP      = 1,        // exponential-map orientation target: 3 controls
   mjCHART_QUAT        = 2         // quaternion orientation target: 4 controls
 } mjtCtrlChart;
+typedef enum mjtCtrlInput {       // servo input signature (actuator_ctrlspec): present-input bits
+  mjINPUT_POS         = 1,        // position setpoint input
+  mjINPUT_VEL         = 2,        // velocity setpoint input
+  mjINPUT_FF          = 4         // feedforward input
+} mjtCtrlInput;
 typedef enum mjtObj {             // type of MujoCo object
   mjOBJ_UNKNOWN       = 0,        // unknown object type
   mjOBJ_BODY,                     // body
@@ -3285,6 +3297,7 @@ typedef struct mjvLight_ {        // OpenGL light
   float    bulbradius;            // bulb radius for soft shadows
   float    intensity;             // intensity, in candelas
   float    range;                 // range of effectiveness
+  float    softness;              // spotlight edge softness
 } mjvLight;
 typedef struct mjvOption_ {          // abstract visualization options
   int      label;                    // what objects to label (mjtLabel)
@@ -3445,6 +3458,7 @@ mjrfLight* mjrf_createLight(mjrfContext* ctx, const mjrfLightParams* params);
 void mjrf_destroyLight(mjrfLight* light);
 void mjrf_setLightEnabled(mjrfLight* light, mjtBool enabled);
 void mjrf_setLightIntensity(mjrfLight* light, float intensity);
+void mjrf_setLightShadowMapSize(mjrfLight* light, int map_size);
 void mjrf_setLightColor(mjrfLight* light, const float color[3]);
 void mjrf_setLightTransform(mjrfLight* light, const float position[3], const float direction[3]);
 int mjrf_getLightType(const mjrfLight* light);
@@ -3696,6 +3710,8 @@ void mjv_applyPerturbPose(const mjModel* m, mjData* d, const mjvPerturb* pert,
                           int flg_paused);
 void mjv_applyPerturbForce(const mjModel* m, mjData* d, const mjvPerturb* pert);
 mjvGLCamera mjv_averageCamera(const mjvGLCamera* cam1, const mjvGLCamera* cam2);
+mjvGLCamera mjv_camera2GLCamera(const mjModel* model, const mjData* data,
+                                const mjvCamera* mjv_camera);
 int mjv_select(const mjModel* m, const mjData* d, const mjvOption* vopt,
                mjtNum aspectratio, mjtNum relx, mjtNum rely,
                const mjvScene* scn, mjtNum selpnt[3],
@@ -3989,6 +4005,9 @@ const char* mjs_setToIntVelocity(mjsActuator* actuator, double kp, double kv[1],
 const char* mjs_setToVelocity(mjsActuator* actuator, double kv);
 const char* mjs_setToOrientation(mjsActuator* actuator, double kp, double kv[1],
                                  double dampratio[1], int ctrlspec);
+const char* mjs_setToPID(mjsActuator* actuator, double kp, double kv[1], double dampratio[1],
+                         double ki[1], double imax[1], double slewmax[1], double inheritrange,
+                         int ctrlspec);
 const char* mjs_setToDamper(mjsActuator* actuator, double kv);
 const char* mjs_setToCylinder(mjsActuator* actuator, double timeconst,
                               double bias, double area, double diameter);

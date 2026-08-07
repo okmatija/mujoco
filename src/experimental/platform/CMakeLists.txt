@@ -22,13 +22,18 @@ target_sources(${MUJOCO_PLATFORM_TARGET_NAME}
     PUBLIC
         helpers.cc
         helpers.h
+        resources.cc
+        resources.h
         sys_utils.cc
         sys_utils.h
+        hal/classic_renderer.cc
+        hal/classic_renderer.h
         hal/egl_utils.cc
         hal/egl_utils.h
+        hal/filament_renderer.cc
+        hal/filament_renderer.h
         hal/graphics_mode.cc
         hal/graphics_mode.h
-        hal/renderer.cc
         hal/renderer.h
         hal/window.cc
         hal/window.h
@@ -42,6 +47,8 @@ target_sources(${MUJOCO_PLATFORM_TARGET_NAME}
         sim/step_control.h
         ux/enum_utils.h
         ux/file_dialog.h
+        ux/fonts.cc
+        ux/fonts.h
         ux/gui.cc
         ux/gui.h
         ux/gui_spec.cc
@@ -94,9 +101,10 @@ target_include_directories(${MUJOCO_PLATFORM_TARGET_NAME}
         ${PROJECT_SOURCE_DIR}/src
 )
 
-include(third_party_deps/dear_imgui)
-include(third_party_deps/implot)
 include(third_party_deps/sdl2)
+include(third_party_deps/dear_imgui)
+mujoco_add_dear_imgui_sdl2_backend()
+include(third_party_deps/implot)
 include(third_party_deps/libwebp)
 
 target_link_libraries(${MUJOCO_PLATFORM_TARGET_NAME}

@@ -905,8 +905,8 @@ static void set0(mjModel* m, mjData* d) {
   // compute body_invweight0
   m->body_invweight0[0] = m->body_invweight0[1] = 0.0;
   for (int i=1; i < m->nbody; i++) {
-    // static bodies: zero invweight0
-    if (m->body_weldid[i] == 0) {
+    // bodies with no dofs (static and mocap): zero invweight0
+    if (m->body_dofnum[m->body_weldid[i]] == 0) {
       m->body_invweight0[2*i] = m->body_invweight0[2*i+1] = 0;
     }
 
@@ -1138,8 +1138,9 @@ static void set0(mjModel* m, mjData* d) {
     mjtNum* biasprm = m->actuator_biasprm + i*mjNBIAS;
     mjtNum* gainprm = m->actuator_gainprm + i*mjNGAIN;
 
-    // not a position-like actuator: skip
-    if (gainprm[0] != -biasprm[1]) {
+    // not a position-like actuator: skip (PID single-sources kp in biasprm[1])
+    int is_pid = m->actuator_gaintype[i] == mjGAIN_PID;
+    if (!is_pid && gainprm[0] != -biasprm[1]) {
       continue;
     }
 
@@ -1165,7 +1166,8 @@ static void set0(mjModel* m, mjData* d) {
     }
 
     // damping = dampratio * 2 * sqrt(kp * mass)
-    mjtNum damping = biasprm[2] * 2 * mju_sqrt(gainprm[0] * mass);
+    mjtNum kp = is_pid ? -biasprm[1] : gainprm[0];
+    mjtNum damping = biasprm[2] * 2 * mju_sqrt(kp * mass);
 
     // set biasprm[2] to negative damping
     biasprm[2] = -damping;
@@ -1414,10 +1416,11 @@ static void setEfm0Factor(mjModel* m, mjData* d) {
   int* K_rownnz = mjSTACKALLOC(d, nv, int);
   int* K_rowadr = mjSTACKALLOC(d, nv, int);
   int nK = mjd_flexStiff_assemble(m, d, K_rownnz, K_rowadr, NULL, NULL, h*h, h,
-                                  /*flg_bend=*/1, /*flg_stretch=*/0, NULL);
+                                  /*flg_bend=*/1, /*flg_stretch=*/0, /*flg_contact=*/0,
+                                  NULL);
   int* K_colind = mjSTACKALLOC(d, nK > 0 ? nK : 1, int);
   mjtNum* K_val = mjSTACKALLOC(d, nK > 0 ? nK : 1, mjtNum);
-  mjd_flexStiff_assemble(m, d, K_rownnz, K_rowadr, K_colind, K_val, h*h, h, 1, 0, NULL);
+  mjd_flexStiff_assemble(m, d, K_rownnz, K_rowadr, K_colind, K_val, h*h, h, 1, 0, 0, NULL);
 
   // inverse map: dof address -> compact factor row (monotone: slots follow dof order)
   int* dofrow = mjSTACKALLOC(d, nv, int);

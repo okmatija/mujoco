@@ -1043,6 +1043,7 @@ class mjCFlex: public mjCFlex_, private mjsFlex {
   const std::vector<float>& get_texcoord() const { return texcoord_; }
   const std::vector<int>& get_elemtexcoord() const { return elemtexcoord_; }
   const std::vector<std::string>& get_nodebody() const { return nodebody_; }
+  const std::vector<double>& get_node() const { return node_; }
 
   bool HasTexcoord() const;               // texcoord not null
   void DelTexcoord();                     // delete texcoord
@@ -1138,6 +1139,7 @@ class mjCMesh_ : public mjCBase {
 
 class mjCMesh: public mjCMesh_, private mjsMesh {
   friend class mjCModel;
+  friend class mjXWriter;
 
  public:
   explicit mjCMesh(mjCModel* = nullptr, mjCDef* = nullptr);
@@ -1492,8 +1494,6 @@ class mjCTexture : public mjCTexture_, private mjsTexture {
                unsigned int& w, unsigned int& h, bool& is_srgb);
   void LoadKTX(mjResource* resource, std::vector<std::byte>& image,
                unsigned int& w, unsigned int& h, bool& is_srgb);
-  void LoadCustom(mjResource* resource, std::vector<std::byte>& image,
-                  unsigned int& w, unsigned int& h, bool& is_srgb);
 
   bool clear_data_;  // if true, data_ is empty and should be filled by Compile
 };
@@ -1816,6 +1816,8 @@ class mjCActuator_ : public mjCBase {
   int outadr_;                                      // address of first force output
   int outnum_;                                      // number of force outputs, from trntype
   bool so3_;                                        // compiles to an SO3 transmission
+  double ctrlranges_[4][2];                         // resolved per-input control ranges
+  mjtByte ctrllimiteds_[4];                         // resolved per-input limited flags
   std::map<std::string, std::vector<mjtNum>> act_;  // act at the previous step
   std::map<std::string, mjtNum> ctrl_;              // ctrl at the previous step
 

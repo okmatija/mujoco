@@ -2923,6 +2923,15 @@ std::string mjs_setToOrientation_wrapper(MjsActuator& actuator, double kp, const
   return std::string(mjs_setToOrientation(actuator.get(), kp, kv_.data(), dampratio_.data(), ctrlspec));
 }
 
+std::string mjs_setToPID_wrapper(MjsActuator& actuator, double kp, const val& kv, const val& dampratio, const val& ki, const val& imax, const val& slewmax, double inheritrange, int ctrlspec) {
+  UNPACK_VALUE(double, kv);
+  UNPACK_VALUE(double, dampratio);
+  UNPACK_VALUE(double, ki);
+  UNPACK_VALUE(double, imax);
+  UNPACK_VALUE(double, slewmax);
+  return std::string(mjs_setToPID(actuator.get(), kp, kv_.data(), dampratio_.data(), ki_.data(), imax_.data(), slewmax_.data(), inheritrange, ctrlspec));
+}
+
 std::string mjs_setToPosition_wrapper(MjsActuator& actuator, double kp, const val& kv, const val& dampratio, const val& timeconst, double inheritrange) {
   UNPACK_VALUE(double, kv);
   UNPACK_VALUE(double, dampratio);
@@ -3732,6 +3741,12 @@ void mjv_applyPerturbPose_wrapper(const MjModel& m, MjData& d, const MjvPerturb&
   mjv_applyPerturbPose(m.get(), d.get(), pert.get(), flg_paused);
 }
 
+MjvGLCamera mjv_camera2GLCamera_wrapper(const MjModel& model, const MjData& data, const MjvCamera& mjv_camera) {
+  MjvGLCamera result;
+  *result.get() = mjv_camera2GLCamera(model.get(), data.get(), mjv_camera.get());
+  return result;
+}
+
 void mjv_cameraFrame_wrapper(const val& headpos, const val& forward, const val& up, const val& right, const MjData& d, const MjvCamera& cam) {
   UNPACK_NULLABLE_VALUE(mjtNum, headpos);
   UNPACK_NULLABLE_VALUE(mjtNum, forward);
@@ -3975,6 +3990,10 @@ EMSCRIPTEN_BINDINGS(mujoco_bindings) {
   enum_<mjtCtrlChart>("mjtCtrlChart")
     .value("mjCHART_EXPMAP", mjCHART_EXPMAP)
     .value("mjCHART_QUAT", mjCHART_QUAT);
+  enum_<mjtCtrlInput>("mjtCtrlInput")
+    .value("mjINPUT_POS", mjINPUT_POS)
+    .value("mjINPUT_VEL", mjINPUT_VEL)
+    .value("mjINPUT_FF", mjINPUT_FF);
   enum_<mjtDataType>("mjtDataType")
     .value("mjDATATYPE_REAL", mjDATATYPE_REAL)
     .value("mjDATATYPE_POSITIVE", mjDATATYPE_POSITIVE)
@@ -4012,6 +4031,7 @@ EMSCRIPTEN_BINDINGS(mujoco_bindings) {
     .value("mjDYN_FILTEREXACT", mjDYN_FILTEREXACT)
     .value("mjDYN_MUSCLE", mjDYN_MUSCLE)
     .value("mjDYN_DCMOTOR", mjDYN_DCMOTOR)
+    .value("mjDYN_PID", mjDYN_PID)
     .value("mjDYN_USER", mjDYN_USER);
   enum_<mjtEnableBit>("mjtEnableBit")
     .value("mjENBL_OVERRIDE", mjENBL_OVERRIDE)
@@ -4076,6 +4096,7 @@ EMSCRIPTEN_BINDINGS(mujoco_bindings) {
     .value("mjGAIN_MUSCLE", mjGAIN_MUSCLE)
     .value("mjGAIN_DCMOTOR", mjGAIN_DCMOTOR)
     .value("mjGAIN_SO3", mjGAIN_SO3)
+    .value("mjGAIN_PID", mjGAIN_PID)
     .value("mjGAIN_USER", mjGAIN_USER);
   enum_<mjtGeom>("mjtGeom")
     .value("mjGEOM_PLANE", mjGEOM_PLANE)
@@ -4609,9 +4630,6 @@ EMSCRIPTEN_BINDINGS(mujoco_bindings) {
     .property("efm_K_rownnz", &MjData::efm_K_rownnz)
     .property("efm_K_val", &MjData::efm_K_val)
     .property("efm_L", &MjData::efm_L)
-    .property("efm_L_colind", &MjData::efm_L_colind)
-    .property("efm_L_rowadr", &MjData::efm_L_rowadr)
-    .property("efm_L_rownnz", &MjData::efm_L_rownnz)
     .property("efm_active", &MjData::efm_active, &MjData::set_efm_active, reference())
     .property("efm_c", &MjData::efm_c)
     .property("efm_dofid", &MjData::efm_dofid)
@@ -5084,6 +5102,7 @@ EMSCRIPTEN_BINDINGS(mujoco_bindings) {
     .property("light_pos0", &MjModel::light_pos0)
     .property("light_poscom0", &MjModel::light_poscom0)
     .property("light_range", &MjModel::light_range)
+    .property("light_softness", &MjModel::light_softness)
     .property("light_specular", &MjModel::light_specular)
     .property("light_targetbodyid", &MjModel::light_targetbodyid)
     .property("light_texid", &MjModel::light_texid)
@@ -5103,6 +5122,7 @@ EMSCRIPTEN_BINDINGS(mujoco_bindings) {
     .property("mat_texuniform", &MjModel::mat_texuniform)
     .property("mesh_bvhadr", &MjModel::mesh_bvhadr)
     .property("mesh_bvhnum", &MjModel::mesh_bvhnum)
+    .property("mesh_extrema", &MjModel::mesh_extrema)
     .property("mesh_face", &MjModel::mesh_face)
     .property("mesh_faceadr", &MjModel::mesh_faceadr)
     .property("mesh_facenormal", &MjModel::mesh_facenormal)
@@ -5609,6 +5629,7 @@ EMSCRIPTEN_BINDINGS(mujoco_bindings) {
     .property("dynprm", &MjsActuator::dynprm)
     .property("dyntype", &MjsActuator::dyntype, &MjsActuator::set_dyntype, reference())
     .property("element", &MjsActuator::element, reference())
+    .property("ffrange", &MjsActuator::ffrange)
     .property("forcelimited", &MjsActuator::forcelimited, &MjsActuator::set_forcelimited, reference())
     .property("forcerange", &MjsActuator::forcerange)
     .property("gainprm", &MjsActuator::gainprm)
@@ -5625,7 +5646,8 @@ EMSCRIPTEN_BINDINGS(mujoco_bindings) {
     .property("slidersite", &MjsActuator::slidersite, &MjsActuator::set_slidersite, reference())
     .property("target", &MjsActuator::target, &MjsActuator::set_target, reference())
     .property("trntype", &MjsActuator::trntype, &MjsActuator::set_trntype, reference())
-    .property("userdata", &MjsActuator::userdata, reference());
+    .property("userdata", &MjsActuator::userdata, reference())
+    .property("velrange", &MjsActuator::velrange);
   emscripten::class_<MjsAuthored>("MjsAuthored")
     .property("disableactuator", &MjsAuthored::disableactuator, &MjsAuthored::set_disableactuator, reference())
     .property("disableflags", &MjsAuthored::disableflags, &MjsAuthored::set_disableflags, reference())
@@ -5873,6 +5895,7 @@ EMSCRIPTEN_BINDINGS(mujoco_bindings) {
     .property("mode", &MjsLight::mode, &MjsLight::set_mode, reference())
     .property("pos", &MjsLight::pos)
     .property("range", &MjsLight::range, &MjsLight::set_range, reference())
+    .property("softness", &MjsLight::softness, &MjsLight::set_softness, reference())
     .property("specular", &MjsLight::specular)
     .property("targetbody", &MjsLight::targetbody, &MjsLight::set_targetbody, reference())
     .property("texture", &MjsLight::texture, &MjsLight::set_texture, reference())
@@ -6150,6 +6173,7 @@ EMSCRIPTEN_BINDINGS(mujoco_bindings) {
     .property("intensity", &MjvLight::intensity, &MjvLight::set_intensity, reference())
     .property("pos", &MjvLight::pos)
     .property("range", &MjvLight::range, &MjvLight::set_range, reference())
+    .property("softness", &MjvLight::softness, &MjvLight::set_softness, reference())
     .property("specular", &MjvLight::specular)
     .property("texid", &MjvLight::texid, &MjvLight::set_texid, reference())
     .property("type", &MjvLight::type, &MjvLight::set_type, reference());
@@ -6507,6 +6531,7 @@ EMSCRIPTEN_BINDINGS(mujoco_bindings) {
   function("mjs_setToMotor", &mjs_setToMotor_wrapper);
   function("mjs_setToMuscle", &mjs_setToMuscle_wrapper);
   function("mjs_setToOrientation", &mjs_setToOrientation_wrapper);
+  function("mjs_setToPID", &mjs_setToPID_wrapper);
   function("mjs_setToPosition", &mjs_setToPosition_wrapper);
   function("mjs_setToVelocity", &mjs_setToVelocity_wrapper);
   function("mjs_wrapGeom", &mjs_wrapGeom_wrapper);
@@ -6629,6 +6654,7 @@ EMSCRIPTEN_BINDINGS(mujoco_bindings) {
   function("mjv_alignToCamera", &mjv_alignToCamera_wrapper);
   function("mjv_applyPerturbForce", &mjv_applyPerturbForce_wrapper);
   function("mjv_applyPerturbPose", &mjv_applyPerturbPose_wrapper);
+  function("mjv_camera2GLCamera", &mjv_camera2GLCamera_wrapper);
   function("mjv_cameraFrame", &mjv_cameraFrame_wrapper);
   function("mjv_cameraFrustum", &mjv_cameraFrustum_wrapper);
   function("mjv_cameraInModel", &mjv_cameraInModel_wrapper);

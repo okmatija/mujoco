@@ -85,6 +85,7 @@ void mjrf_defaultLightParams(mjrfLightParams* params) {
   params->cast_shadows = true;
   params->range = 10.0f;
   params->spot_cone_angle = 180.f;
+  params->spot_softness = 0.0f;
   params->bulb_radius = 0.0f;
   params->shadow_map_size = 2048;
   params->vsm_blur_width = 0.0f;
@@ -232,6 +233,10 @@ void mjrf_setLightEnabled(mjrfLight* light, mjtBool enabled) {
 
 void mjrf_setLightIntensity(mjrfLight* light, float intensity) {
   mujoco::Light::downcast(light)->SetIntensity(intensity);
+}
+
+void mjrf_setLightShadowMapSize(mjrfLight* light, int map_size) {
+  mujoco::Light::downcast(light)->SetShadowMapSize(map_size);
 }
 
 void mjrf_setLightColor(mjrfLight* light, const float color[3]) {

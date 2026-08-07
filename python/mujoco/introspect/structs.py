@@ -1497,7 +1497,7 @@ STRUCTS: Mapping[str, StructDecl] = dict([
                  type=PointerType(
                      inner_type=ValueType(name='int'),
                  ),
-                 doc='top ancestor with no dofs to this body',
+                 doc='top dof-less ancestor; mocap: own root',
                  array_extent=('nbody',),
              ),
              StructFieldDecl(
@@ -2645,6 +2645,14 @@ STRUCTS: Mapping[str, StructDecl] = dict([
                  array_extent=('nlight',),
              ),
              StructFieldDecl(
+                 name='light_softness',
+                 type=PointerType(
+                     inner_type=ValueType(name='float'),
+                 ),
+                 doc='spotlight edge softness',
+                 array_extent=('nlight',),
+             ),
+             StructFieldDecl(
                  name='light_exponent',
                  type=PointerType(
                      inner_type=ValueType(name='float'),
@@ -3443,6 +3451,14 @@ STRUCTS: Mapping[str, StructDecl] = dict([
                  ),
                  doc='graph data address; -1: no graph',
                  array_extent=('nmesh',),
+             ),
+             StructFieldDecl(
+                 name='mesh_extrema',
+                 type=PointerType(
+                     inner_type=ValueType(name='int'),
+                 ),
+                 doc='extremum vertices in 3x3x3 directions',
+                 array_extent=('nmesh', 27),
              ),
              StructFieldDecl(
                  name='mesh_vert',
@@ -5737,7 +5753,7 @@ STRUCTS: Mapping[str, StructDecl] = dict([
              StructFieldDecl(
                  name='efm_active',
                  type=ValueType(name='int'),
-                 doc='implicit effective metric M+K: 0 inactive, 1 active, 2 active + preconditioner exact',  # pylint: disable=line-too-long
+                 doc='implicit effective metric M+K is active (see mjd_effBuild)',  # pylint: disable=line-too-long
              ),
              StructFieldDecl(
                  name='nefmK',
@@ -5747,12 +5763,12 @@ STRUCTS: Mapping[str, StructDecl] = dict([
              StructFieldDecl(
                  name='nefmdof',
                  type=ValueType(name='int'),
-                 doc='number of rows in effective-metric factor',
+                 doc='number of 3x3 blocks in the effective-metric preconditioner',  # pylint: disable=line-too-long
              ),
              StructFieldDecl(
                  name='nefmL',
                  type=ValueType(name='int'),
-                 doc='number of non-zeros in the effective-metric factor',
+                 doc='size of the effective-metric block storage (9*nefmdof)',
              ),
              StructFieldDecl(
                  name='nY',
@@ -7038,39 +7054,15 @@ STRUCTS: Mapping[str, StructDecl] = dict([
                  type=PointerType(
                      inner_type=ValueType(name='int'),
                  ),
-                 doc='factor row -> dof address',
+                 doc='block k -> dof address of its vertex triple',
                  array_extent=('nefmdof',),
-             ),
-             StructFieldDecl(
-                 name='efm_L_rownnz',
-                 type=PointerType(
-                     inner_type=ValueType(name='int'),
-                 ),
-                 doc='factor row nonzeros',
-                 array_extent=('nefmdof',),
-             ),
-             StructFieldDecl(
-                 name='efm_L_rowadr',
-                 type=PointerType(
-                     inner_type=ValueType(name='int'),
-                 ),
-                 doc='factor row addresses',
-                 array_extent=('nefmdof',),
-             ),
-             StructFieldDecl(
-                 name='efm_L_colind',
-                 type=PointerType(
-                     inner_type=ValueType(name='int'),
-                 ),
-                 doc='factor column indices',
-                 array_extent=('nefmL',),
              ),
              StructFieldDecl(
                  name='efm_L',
                  type=PointerType(
                      inner_type=ValueType(name='mjtNum'),
                  ),
-                 doc='Cholesky factor of diag(M)+K, covered dofs',
+                 doc='factored 3x3 diagonal blocks of M+K',
                  array_extent=('nefmL',),
              ),
              StructFieldDecl(
@@ -8436,6 +8428,11 @@ STRUCTS: Mapping[str, StructDecl] = dict([
                  doc='OpenGL cutoff',
              ),
              StructFieldDecl(
+                 name='softness',
+                 type=ValueType(name='float'),
+                 doc='spotlight edge softness',
+             ),
+             StructFieldDecl(
                  name='exponent',
                  type=ValueType(name='float'),
                  doc='OpenGL exponent',
@@ -9672,6 +9669,22 @@ STRUCTS: Mapping[str, StructDecl] = dict([
                  doc='input signature, scoped by gaintype; 0: type default',
              ),
              StructFieldDecl(
+                 name='velrange',
+                 type=ArrayType(
+                     inner_type=ValueType(name='double'),
+                     extents=(2,),
+                 ),
+                 doc='range of the velocity-setpoint input (pid)',
+             ),
+             StructFieldDecl(
+                 name='ffrange',
+                 type=ArrayType(
+                     inner_type=ValueType(name='double'),
+                     extents=(2,),
+                 ),
+                 doc='range of the feedforward input (pid)',
+             ),
+             StructFieldDecl(
                  name='actearly',
                  type=ValueType(name='mjtBool'),
                  doc='apply next activations to qfrc',
@@ -10640,6 +10653,11 @@ STRUCTS: Mapping[str, StructDecl] = dict([
                  name='range',
                  type=ValueType(name='float'),
                  doc='range of effectiveness',
+             ),
+             StructFieldDecl(
+                 name='softness',
+                 type=ValueType(name='float'),
+                 doc='spotlight edge softness',
              ),
          ),
      )),

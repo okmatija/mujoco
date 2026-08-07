@@ -126,34 +126,6 @@ TEST_F(VfsTest, TexturePngWithVFS) {
   mj_deleteVFS(vfs.get());
 }
 
-TEST_F(VfsTest, TextureCustomWithVFS) {
-  static constexpr char xml[] = R"(
-  <mujoco>
-    <asset>
-      <texture name="texture" file="unknown_file" type="2d"/>
-      <material name="material" texture="texture"/>
-    </asset>
-
-    <worldbody>
-      <geom type="plane" material="material" size="4 4 4"/>
-    </worldbody>
-  </mujoco>
-  )";
-
-  char error[1024];
-  size_t error_sz = 1024;
-
-  // load VFS on the heap
-  auto vfs = std::make_unique<mjVFS>();
-  mj_defaultVFS(vfs.get());
-
-  // should fallback to OS filesystem
-  MjModelPtr model = LoadModelFromString(xml, error, error_sz, vfs.get());
-  EXPECT_THAT(model.get(), IsNull());
-  EXPECT_THAT(error, HasSubstr("Error opening file"));
-  mj_deleteVFS(vfs.get());
-}
-
 // ------------------------ test content_type attribute ------------------------
 
 using ContentTypeTest = MujocoTest;
@@ -247,35 +219,6 @@ TEST_F(ContentTypeTest, TexturePngWithContentType) {
   <mujoco>
     <asset>
       <texture name="texture" content_type="image/png" file="some_file" type="2d"/>
-      <material name="material" texture="texture"/>
-    </asset>
-
-    <worldbody>
-      <geom type="plane" material="material" size="4 4 4"/>
-    </worldbody>
-  </mujoco>
-  )";
-
-  char error[1024];
-  size_t error_sz = 1024;
-
-  // load VFS on the heap
-  auto vfs = std::make_unique<mjVFS>();
-  mj_defaultVFS(vfs.get());
-
-  // should try loading the file
-  MjModelPtr model = LoadModelFromString(xml, error, error_sz, vfs.get());
-  EXPECT_THAT(model.get(), IsNull());
-  EXPECT_THAT(error, HasSubstr("Error opening file"));
-  mj_deleteVFS(vfs.get());
-}
-
-TEST_F(ContentTypeTest, TextureCustomWithContentType) {
-  static constexpr char xml[] = R"(
-  <mujoco>
-    <asset>
-      <texture name="texture" content_type="image/vnd.mujoco.texture"
-              file="some_file" type="2d"/>
       <material name="material" texture="texture"/>
     </asset>
 
@@ -554,7 +497,7 @@ TEST_F(RelativeFrameSensorParsingTest, BadRefType) {
   )";
   std::array<char, 1024> error;
   LoadModelFromString(xml, error.data(), error.size());
-  EXPECT_THAT(error.data(), HasSubstr("reference frame object must be"));
+  EXPECT_THAT(error.data(), HasSubstr("invalid keyword: 'light'"));
   EXPECT_THAT(error.data(), HasSubstr("line 8"));
 }
 
@@ -2461,8 +2404,8 @@ TEST_F(UserObjectsTest, BadConnect) {
   EXPECT_THAT(AsVector(m->eq_data, 6), ElementsAre(0, 0, 0, 0, 0, 0));
 
   char error_missing[] =
-      "either both body1 and anchor must be defined,"
-      " or both site1 and site2 must be defined\nElement 'connect', line 12";
+      "one of ('site1', 'site2'), ('body1', 'anchor') must be specified"
+      "\nElement 'connect', line 12";
 
   // bad model (missing anchor)
   xml = base.replace(pos, len, "<connect body1='1'/>");
@@ -2471,8 +2414,8 @@ TEST_F(UserObjectsTest, BadConnect) {
   EXPECT_THAT(error, HasSubstr(error_missing));
 
   char error_mixed[] =
-      "body and site semantics cannot be mixed"
-      "\nElement 'connect', line 12";
+      "at most one of ('site1', 'site2'), ('body1', 'body2', 'anchor')"
+      " can be specified\nElement 'connect', line 12";
 
   // bad model (mixing body and site)
   xml = base.replace(pos, len, "<connect body1='1' site1='1'/>");
@@ -2540,8 +2483,8 @@ TEST_F(UserObjectsTest, BadWeld) {
               ElementsAre(0, 1, 0, 0, 0, 0, 0, 0, 0, 0));
 
   char error_mixed[] =
-      "body and site semantics cannot be mixed"
-      "\nElement 'weld', line 12";
+      "at most one of ('site1', 'site2'), ('body1', 'body2', 'anchor', "
+      "'relpose') can be specified\nElement 'weld', line 12";
 
   // bad model (mixing body and site)
   xml = base.replace(pos, len, "<weld body1='1' site1='1'/>");
@@ -2568,8 +2511,8 @@ TEST_F(UserObjectsTest, BadWeld) {
   EXPECT_THAT(error, HasSubstr(error_mixed));
 
   char error_underspecified[] =
-      "either body1 must be defined and optionally {body2, anchor, "
-      "relpose}, or site1 and site2 must be defined\nElement 'weld', line 12";
+      "one of ('site1', 'site2'), 'body1' must be specified"
+      "\nElement 'weld', line 12";
 
   // bad model (underspecified body semantics)
   xml = base.replace(pos, len, "<weld anchor='0 0 1'/>");
@@ -2663,7 +2606,7 @@ TEST_F(UserObjectsTest, Inertial) {
   )";
   m = LoadModelFromString(bad_xml2.c_str(), error, sizeof(error));
   ASSERT_THAT(m.get(), IsNull());
-  EXPECT_THAT(error, HasSubstr("fullinertia and inertial orientation cannot"));
+  EXPECT_THAT(error, HasSubstr("at most one of 'fullinertia', 'quat'"));
 }
 
 // Merged COM must be correct when a fused-static child has a non-identity

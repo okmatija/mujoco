@@ -324,7 +324,7 @@ TEST_F(XMLWriterTest, KeepsJointLimitedFalseIfAutoLimits) {
   MjModelPtr model = LoadModelFromString(xml);
   ASSERT_THAT(model.get(), NotNull());
   std::string saved_xml = SaveAndReadXml(model.get());
-  EXPECT_THAT(saved_xml, HasSubstr("limited=\"false\" range=\"-1 1\""));
+  EXPECT_THAT(saved_xml, HasSubstr("range=\"-1 1\" limited=\"false\""));
 }
 
 TEST_F(XMLWriterTest, DoesNotKeepInferredTendonLimited) {
@@ -537,7 +537,7 @@ TEST_F(XMLWriterTest, KeepsCtrllimitedFalse) {
   MjModelPtr model = LoadModelFromString(xml);
   ASSERT_THAT(model.get(), NotNull());
   std::string saved_xml = SaveAndReadXml(model.get());
-  EXPECT_THAT(saved_xml, HasSubstr("ctrllimited=\"false\" ctrlrange=\"-1 1\""));
+  EXPECT_THAT(saved_xml, HasSubstr("ctrlrange=\"-1 1\" ctrllimited=\"false\""));
 }
 
 TEST_F(XMLWriterTest, DoesNotKeepInferredForcelimited) {
@@ -702,8 +702,8 @@ TEST_F(XMLWriterTest, WritesActuatorDefaults) {
   ASSERT_THAT(model.get(), NotNull());
   std::string saved_xml = SaveAndReadXml(model.get());
   EXPECT_THAT(saved_xml, Not(HasSubstr("mass")));
-  EXPECT_THAT(saved_xml, HasSubstr(
-      "<general biastype=\"affine\" gainprm=\"3\""));
+  EXPECT_THAT(saved_xml,
+              HasSubstr("<general biastype=\"affine\" gainprm=\"3\""));
 }
 
 TEST_F(XMLWriterTest, WritesFrameDefaults) {
@@ -763,7 +763,7 @@ TEST_F(XMLWriterTest, WritesFrameDefaults) {
           </frame>
         </frame>
       </frame>
-      <light pos="0 0 1" dir="0 0 -1"/>
+      <light pos="0 0 1"/>
     </body>
     <frame name="f1">
       <geom size="0.5" quat="0.906308 0 0 0.422618"/>
@@ -930,10 +930,39 @@ TEST_F(XMLWriterTest, WritesSkin) {
   EXPECT_THAT(model->nskin, 1);
 
   char error[1024];
-  MjModelPtr mtemp = LoadModelFromString(SaveAndReadXml(model.get()),
-                                       error, sizeof(error));
+  MjModelPtr mtemp =
+      LoadModelFromString(SaveAndReadXml(model.get()), error, sizeof(error));
   ASSERT_THAT(mtemp.get(), NotNull()) << error;
   EXPECT_THAT(mtemp->nskin, 1);
+}
+
+TEST_F(XMLWriterTest, WritesPinnedFlexNodes) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <worldbody>
+      <body name="parent">
+        <flexcomp name="soft" type="box" count="3 3 3" spacing=".03 .01 .01" mass=".5" dof="trilinear">
+          <contact selfcollide="none" internal="false"/>
+          <edge equality="true"/>
+          <pin id="4 5 6 7"/>
+        </flexcomp>
+      </body>
+    </worldbody>
+  </mujoco>
+  )";
+
+  MjModelPtr model = LoadModelFromString(xml);
+  ASSERT_THAT(model.get(), NotNull());
+
+  // pinned nodes have no body of their own: their coordinates in the parent
+  // body frame must be saved or the interpolation grid degenerates on reload
+  std::string saved_xml = SaveAndReadXml(model.get());
+  EXPECT_THAT(saved_xml, HasSubstr("nodecoord"));
+
+  char error[1024];
+  MjModelPtr mtemp = LoadModelFromString(saved_xml, error, sizeof(error));
+  ASSERT_THAT(mtemp.get(), NotNull()) << error;
+  EXPECT_EQ(SaveAndReadXml(mtemp.get()), saved_xml);
 }
 
 TEST_F(XMLWriterTest, WritesHfield) {
@@ -950,7 +979,7 @@ TEST_F(XMLWriterTest, WritesHfield) {
   // load model
   MjModelPtr model = LoadModelFromString(xml);
   ASSERT_THAT(model.get(), NotNull());
-  int size = model->hfield_nrow[0]*model->hfield_ncol[0];
+  int size = model->hfield_nrow[0] * model->hfield_ncol[0];
   EXPECT_EQ(size, 6);
 
   // check that the data is normalized and in row-major, bottom-to-top order
@@ -1256,9 +1285,7 @@ class XMLWriterLocaleTest : public MujocoTest {
     }
   }
 
-  void TearDown() override {
-    std::setlocale(LC_ALL, old_locale_.c_str());
-  }
+  void TearDown() override { std::setlocale(LC_ALL, old_locale_.c_str()); }
 
  private:
   std::string old_locale_;
@@ -1303,7 +1330,6 @@ TEST_F(XMLWriterTest, NonRGBTextures) {
 
   mj_deleteModel(model);
 }
-
 
 // ---------------- test CopyBack functionality (decompiler) ------------------
 using DecompilerTest = MujocoTest;
@@ -1469,7 +1495,8 @@ TEST_F(XMLWriterTest, ExpandAttach) {
   mj_addBufferVFS(vfs.get(), "b.xml", xml_child, sizeof(xml_child));
 
   std::array<char, 1024> er;
-  MjModelPtr m = LoadModelFromString(xml_parent, er.data(), er.size(), vfs.get());
+  MjModelPtr m =
+      LoadModelFromString(xml_parent, er.data(), er.size(), vfs.get());
   ASSERT_THAT(m.get(), NotNull()) << er.data();
 
   std::string saved_xml = SaveAndReadXml(m.get());
@@ -1624,6 +1651,101 @@ TEST_F(XMLWriterTest, BodySimpleRoundtrip) {
 
   // nC should increase when simple is disabled
   EXPECT_GT(model->nC, model_auto->nC);
+}
+
+TEST_F(XMLWriterTest, EmptyFlagsAttribute) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <worldbody>
+      <camera name="cam" output=""/>
+    </worldbody>
+  </mujoco>
+  )";
+  MjModelPtr model = LoadModelFromString(xml);
+  ASSERT_THAT(model.get(), NotNull());
+  std::string saved_xml = SaveAndReadXml(model.get());
+  EXPECT_THAT(saved_xml, Not(HasSubstr("output=")));
+}
+
+TEST_F(XMLWriterTest, OmitsDefaultJointPosAxis) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <worldbody>
+      <body name="b">
+        <joint name="j" type="hinge"/>
+        <geom size=".1"/>
+      </body>
+    </worldbody>
+  </mujoco>
+  )";
+  MjModelPtr model = LoadModelFromString(xml);
+  ASSERT_THAT(model.get(), NotNull());
+  std::string saved_xml = SaveAndReadXml(model.get());
+  EXPECT_THAT(saved_xml, Not(HasSubstr("pos=\"0 0 0\"")));
+  EXPECT_THAT(saved_xml, Not(HasSubstr("axis=")));
+}
+
+TEST_F(XMLWriterTest, KeepsAuthoredJointPosAxis) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <worldbody>
+      <body name="b">
+        <joint name="j" type="hinge" pos="0 0 0.5" axis="1 0 0"/>
+        <geom size=".1"/>
+      </body>
+    </worldbody>
+  </mujoco>
+  )";
+  MjModelPtr model = LoadModelFromString(xml);
+  ASSERT_THAT(model.get(), NotNull());
+  std::string saved_xml = SaveAndReadXml(model.get());
+  EXPECT_THAT(saved_xml, HasSubstr("pos=\"0 0 0.5\""));
+  EXPECT_THAT(saved_xml, HasSubstr("axis=\"1 0 0\""));
+}
+
+TEST_F(XMLWriterTest, OmitsDefaultEqualityData) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <worldbody>
+      <body name="b1"><joint name="j1" type="hinge"/><geom size=".1"/></body>
+      <body name="b2"><joint name="j2" type="hinge"/><geom size=".1"/></body>
+    </worldbody>
+    <equality>
+      <weld body1="b1" body2="b2"/>
+      <joint joint1="j1" joint2="j2"/>
+    </equality>
+  </mujoco>
+  )";
+  MjModelPtr model = LoadModelFromString(xml);
+  ASSERT_THAT(model.get(), NotNull());
+  std::string saved_xml = SaveAndReadXml(model.get());
+  EXPECT_THAT(saved_xml, Not(HasSubstr("anchor=")));
+  EXPECT_THAT(saved_xml, Not(HasSubstr("torquescale=")));
+  EXPECT_THAT(saved_xml, Not(HasSubstr("polycoef=")));
+  // relpose is legitimately saved: the compiler resolves the zero-quat
+  // "compute current pose" sentinel into the actual relative pose
+  EXPECT_THAT(saved_xml, HasSubstr("relpose=\"0 0 0 1 0 0 0\""));
+}
+
+TEST_F(XMLWriterTest, WritesDefaultClassJointPosAxis) {
+  // pos and axis set in a default class used to be lost when saving
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <default>
+      <joint pos="1 2 3" axis="0 1 0"/>
+    </default>
+    <worldbody>
+      <body name="b">
+        <joint name="j" type="hinge"/>
+        <geom size=".1"/>
+      </body>
+    </worldbody>
+  </mujoco>
+  )";
+  MjModelPtr model = LoadModelFromString(xml);
+  ASSERT_THAT(model.get(), NotNull());
+  std::string saved_xml = SaveAndReadXml(model.get());
+  EXPECT_THAT(saved_xml, HasSubstr("<joint pos=\"1 2 3\" axis=\"0 1 0\"/>"));
 }
 
 }  // namespace
