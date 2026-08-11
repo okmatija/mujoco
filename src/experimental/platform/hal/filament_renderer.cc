@@ -73,6 +73,11 @@ void FilamentRenderer::Init(const mjModel* model) {
 
     mjv_defaultScene(&scene_);
     mjv_makeScene(model, &scene_, 2000);
+    // TEST ONLY — revert this commit after measuring. Minimal-cost baseline:
+    // start with shadows and reflections off (both still toggleable live via
+    // the Rendering panel checkboxes).
+    scene_.flags[mjRND_SHADOW] = 0;
+    scene_.flags[mjRND_REFLECTION] = 0;
   }
 }
 
@@ -190,6 +195,10 @@ void FilamentRenderer::DoRender(int width, int height) {
     reqs[0].viewport = viewport;
     reqs[0].enable_shadows = scene_.flags[mjRND_SHADOW];
     reqs[0].enable_reflections = scene_.flags[mjRND_REFLECTION];
+    // TEST ONLY — revert this commit after measuring. Hard-disable the whole
+    // post-processing chain (tone mapping, color grading, FXAA) on the main
+    // scene pass; the image will look dark/raw. No GUI toggle for this.
+    reqs[0].enable_post_processing = false;
 
     mjrf_defaultRenderRequest(&reqs[1]);
     reqs[1].scene = ux_scene_.get();
