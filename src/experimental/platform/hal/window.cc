@@ -77,8 +77,13 @@ Window::Window(std::string_view title, int width, int height, Config config)
     SDL_SetHint(SDL_HINT_FRAMEBUFFER_ACCELERATION, "0");
   } else {
     SDL_SetHint(SDL_HINT_FRAMEBUFFER_ACCELERATION, "1");
-    SDL_GL_SetAttribute(SDL_GL_MULTISAMPLEBUFFERS, 1);
-    SDL_GL_SetAttribute(SDL_GL_MULTISAMPLESAMPLES, 16);
+    // Only the classic renderer draws directly into the window's default
+    // framebuffer; filament renders offscreen (with its own MSAA options) and
+    // blits, so a multisampled backbuffer would be pure memory/resolve cost.
+    if (config_.gfx_mode == GraphicsMode::ClassicOpenGl) {
+      SDL_GL_SetAttribute(SDL_GL_MULTISAMPLEBUFFERS, 1);
+      SDL_GL_SetAttribute(SDL_GL_MULTISAMPLESAMPLES, 16);
+    }
   }
 
   if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS) != 0) {

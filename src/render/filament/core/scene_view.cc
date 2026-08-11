@@ -53,6 +53,16 @@
 
 namespace mujoco {
 
+// Default render-quality settings, chosen for minimal per-frame GPU cost.
+// Tweak here to trade quality back for cost; a model can also override each
+// one at load time via a <custom> element of the same name (e.g.
+// "filament.ao.enabled"). Studio's previous defaults were AO enabled at
+// ULTRA quality and MSAA enabled; filament's own AO quality default is LOW.
+static constexpr bool kDefaultAoEnabled = false;
+static constexpr filament::QualityLevel kDefaultAoQuality =
+    filament::QualityLevel::LOW;
+static constexpr bool kDefaultMsaaEnabled = false;
+
 using filament::math::float3;
 using filament::math::float4;
 using filament::math::mat4;
@@ -399,21 +409,21 @@ void SceneView::Configure(const mjModel* model) {
   SetColorGradingOptions(cg);
 
   auto ao = main_view_->getAmbientOcclusionOptions();
-  ao.enabled = ReadElement(model, "filament.ao.enabled", true);
+  ao.enabled = ReadElement(model, "filament.ao.enabled", kDefaultAoEnabled);
   ao.bentNormals = ReadElement(model, "filament.ao.bent_normals", false);
   ao.ssct.enabled = ReadElement(model, "filament.ao.ssct", ao.ssct.enabled);
   ao.quality =
-      ReadElement(model, "filament.ao.quality", filament::QualityLevel::ULTRA);
+      ReadElement(model, "filament.ao.quality", kDefaultAoQuality);
   ao.lowPassFilter = ReadElement(model, "filament.ao.low_pass_filter",
-                                 filament::QualityLevel::ULTRA);
+                                 kDefaultAoQuality);
   ao.upsampling = ReadElement(model, "filament.ao.upsampling",
-                              filament::QualityLevel::ULTRA);
+                              kDefaultAoQuality);
   ao.bilateralThreshold =
       ReadElement(model, "filament.ao.bilateral_threshold", 0.5f);
   main_view_->setAmbientOcclusionOptions(ao);
 
   auto msaa = main_view_->getMultiSampleAntiAliasingOptions();
-  msaa.enabled = ReadElement(model, "filament.msaa.enabled", true);
+  msaa.enabled = ReadElement(model, "filament.msaa.enabled", kDefaultMsaaEnabled);
   main_view_->setMultiSampleAntiAliasingOptions(msaa);
 
   auto shadow_type = main_view_->getShadowType();
