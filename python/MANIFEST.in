@@ -1,3 +1,12 @@
 include LICENSE *.md
-recursive-include mujoco *.h *.cc *.cc.inc *.mm CMakeLists.txt *.cmake
+recursive-include mujoco *.h *.cc *.cc.inc *.cpp *.inl *.html *.mm CMakeLists.txt *.cmake
 recursive-include mujoco/mjpython mjpython.* Info.plist
+# Pre-built web viewer browser clients, staged into web/dist (Filament WASM,
+# by the Studio emscripten build) and web/dist_3js (three.js client + UI
+# overlay module, by `npm run build` in web/client_3js + the plain wasm
+# build). Carrying them in the sdist lets the wheel bundle ready-to-serve
+# viewers (see pyproject package-data).
+recursive-include mujoco/experimental/studio/web/dist *
+recursive-include mujoco/experimental/studio/web/dist_3js *
+# The dev-server demo model is regenerated locally; never ship it.
+exclude mujoco/experimental/studio/web/dist_3js/model
