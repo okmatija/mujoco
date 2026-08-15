@@ -16,6 +16,9 @@ export default defineConfig({
     chunkSizeWarningLimit: 6000
   },
   optimizeDeps: {
-    exclude: ['@mujoco/mujoco', '@sparkjsdev/spark']
+    // @mujoco/mujoco must stay unbundled so its .wasm asset resolves; Spark
+    // must be prebundled or its worker-based splat decode hangs silently in
+    // dev (the production build bundles it and works either way).
+    exclude: ['@mujoco/mujoco']
   }
 });

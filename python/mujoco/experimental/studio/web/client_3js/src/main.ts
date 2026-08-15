@@ -109,7 +109,7 @@ class App {
     this.renderer.setPixelRatio(window.devicePixelRatio);
     this.renderer.setSize(window.innerWidth, window.innerHeight);
     this.renderer.shadowMap.enabled = true;
-    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    this.renderer.shadowMap.type = THREE.PCFShadowMap;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     document.getElementById('app')!.appendChild(this.renderer.domElement);
 
@@ -168,7 +168,7 @@ class App {
     this.handles = buildScene(this.mujoco, this.model);
     this.scene.add(this.handles.root);
     this.scene.background = this.handles.skybox ?? new THREE.Color(0x26262c);
-    this.splat = loadSplatFromModel(this.model, this.scene);
+    this.splat = loadSplatFromModel(this.model, this.scene, this.renderer);
     syncBodyPoses(this.data, this.handles.bodies);
     this.frameCamera();
   }

@@ -65,23 +65,53 @@ export function applySplatTransform(splat: SplatMesh, transform: SplatTransform)
   );
 }
 
+// Spark 2.x renders splats through an explicit SparkRenderer object in the
+// scene (0.1.x auto-installed one); without it a SplatMesh silently renders
+// nothing. Reuse an existing one so model hot-swaps don't stack them.
+function ensureSparkRenderer(
+  scene: THREE.Scene,
+  renderer: THREE.WebGLRenderer
+): SparkRenderer {
+  for (const child of scene.children) {
+    if (child instanceof SparkRenderer) return child;
+  }
+  const spark = new SparkRenderer({ renderer });
+  scene.add(spark);
+  return spark;
+}
+
 // Builds a SplatMesh from raw splat file bytes and places it in the scene.
 export function loadSplat(
   bytes: Uint8Array,
   transform: SplatTransform,
-  scene: THREE.Scene
+  scene: THREE.Scene,
+  renderer: THREE.WebGLRenderer
 ): SplatMesh {
+  ensureSparkRenderer(scene, renderer);
   const splat = new SplatMesh({
     fileBytes: bytes,
     fileType: getSplatFileType(bytes),
   });
   applySplatTransform(splat, transform);
   scene.add(splat);
+  splat.initialized
+    .then((mesh) => {
+      console.log(`[splat] initialized: ${mesh.packedSplats?.numSplats} splats`);
+      (window as any).__splatReady = true;
+    })
+    .catch((error: unknown) => {
+      console.error('[splat] initialization failed:', error);
+      (window as any).__splatError = String(error);
+    });
   return splat;
 }
 
 // Loads the splat embedded in the model's custom fields, if present.
-export function loadSplatFromModel(model: any, scene: THREE.Scene): SplatMesh | null {
+export function loadSplatFromModel(
+  model: any,
+  scene: THREE.Scene,
+  renderer: THREE.WebGLRenderer
+): SplatMesh | null {
   const b64 = findText(model, SPLAT_TEXT_NAME);
   if (!b64) return null;
 
@@ -103,7 +133,7 @@ export function loadSplatFromModel(model: any, scene: THREE.Scene): SplatMesh | 
     pitch: xf[5] ?? 0.0,
     yaw: xf[6] ?? 0.0,
   };
-  return loadSplat(bytes, transform, scene);
+  return loadSplat(bytes, transform, scene, renderer);
 }
 
 export function disposeSplat(splat: SplatMesh, scene: THREE.Scene): void {
