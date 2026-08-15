@@ -19,6 +19,7 @@ from mujoco.experimental.studio import launch_passive
 from mujoco.experimental.studio import messages
 from mujoco.experimental.studio import parser
 from mujoco.experimental.studio import sim
+from mujoco.experimental.studio import splat as _splat
 from mujoco.experimental.studio import viewer_app
 from mujoco.experimental.studio import viewer_protocol
 
@@ -33,6 +34,19 @@ _PORT = _flags.DEFINE_integer(
 )
 _WIDTH = _flags.DEFINE_integer('width', 1200, 'Width of the output image.')
 _HEIGHT = _flags.DEFINE_integer('height', 800, 'Height of the output image')
+_SPLAT = _flags.DEFINE_string(
+    'splat',
+    None,
+    'Path to a gaussian splat file (.spz/.ply/.splat) embedded into the model'
+    ' and rendered as the environment (--gfx=web_3js only).',
+)
+_SPLAT_SCALE = _flags.DEFINE_float('splat_scale', 1.0, 'Splat uniform scale.')
+_SPLAT_OFFSET = _flags.DEFINE_list(
+    'splat_offset', ['0', '0', '0'], 'Splat x,y,z offset in its own frame.'
+)
+_SPLAT_RPY = _flags.DEFINE_list(
+    'splat_rpy', ['0', '0', '0'], 'Splat roll,pitch,yaw in degrees.'
+)
 
 
 def main(argv: list[str]) -> None:
@@ -48,9 +62,26 @@ def main(argv: list[str]) -> None:
       argv[1] if len(argv) > 1 and not argv[1].startswith('--') else None
   )
 
+  # Embed the splat environment into the model spec, if requested.
+  spec_edit = None
+  if _SPLAT.value:
+    x, y, z = (float(v) for v in _SPLAT_OFFSET.value)
+    roll, pitch, yaw = (float(v) for v in _SPLAT_RPY.value)
+    spec_edit = lambda spec: _splat.embed(
+        spec,
+        _SPLAT.value,
+        scale=_SPLAT_SCALE.value,
+        x_offset=x,
+        y_offset=y,
+        z_offset=z,
+        roll=roll,
+        pitch=pitch,
+        yaw=yaw,
+    )
+
   # Load model if path was provided.
   data, model = None, None
-  if model_path and (data := parser.parse(model_path)):
+  if model_path and (data := parser.parse(model_path, spec_edit=spec_edit)):
     model = data.model
 
   with launch_passive.launch_passive(

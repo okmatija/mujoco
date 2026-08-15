@@ -209,6 +209,23 @@ class WebViewer(viewer_protocol.Viewer):
     self._tcp_sock = web_server.bind_loopback_socket(ui_tcp_port)
     self._ui_tcp_port = self._tcp_sock.getsockname()[1]
 
+    # The 'web_3js' graphics mode serves the three.js client bundle instead of
+    # the Filament WASM app; both speak the same /model and /state protocol.
+    # None lets WebServer fall back to the default `dist` directory.
+    self._static_files_dir = (
+        web_server.find_static_files_dir(
+            dist_name='dist_3js', env_var='MUJOCO_WEB_VIEWER_DIST_3JS'
+        )
+        if config.gfx == 'web_3js'
+        else None
+    )
+    if config.gfx == 'web_3js' and self._static_files_dir is None:
+      raise FileNotFoundError(
+          'No three.js client build found for --gfx=web_3js: build it with'
+          ' `npm run build` in .../studio/web/client_3js, or point'
+          ' MUJOCO_WEB_VIEWER_DIST_3JS at a build output directory.'
+      )
+
     # Headless ImGui context streaming UI draw data via NetImgui.
     self._headless_ui = headless_ui.HeadlessUi(
         config.title or 'MuJoCo Web Viewer',
@@ -277,6 +294,7 @@ class WebViewer(viewer_protocol.Viewer):
     self._web_server = web_server.WebServer(
         http_sock=self._http_sock,
         tcp_sock=self._tcp_sock,
+        static_files_dir=self._static_files_dir,
         mjb_data=mjb_data,
         max_payload_size=max_payload,
         drop_queue=self._drop_queue,

@@ -34,6 +34,7 @@ GFX_MODES = (
     'vulkan',
     'vulkan_software',
     'web',
+    'web_3js',
     'webgl',
 )
 

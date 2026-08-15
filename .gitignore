@@ -42,3 +42,6 @@ MUJOCO_LOG.TXT
 wasm/**/dist/
 **/node_modules/
 
+# Web viewer three.js client build
+python/mujoco/experimental/studio/web/dist_3js/
+

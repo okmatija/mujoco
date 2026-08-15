@@ -353,25 +353,28 @@ def _terminate_process(
     proc.join(timeout=timeout)
 
 
-def _find_static_files_dir() -> Optional[str]:
-  """Locate the web viewer static files.
+def find_static_files_dir(
+    dist_name: str = "dist", env_var: str = "MUJOCO_WEB_VIEWER_DIST"
+) -> Optional[str]:
+  """Locate the static files of one of the web viewer's browser clients.
 
   The `dist` directory next to this file is populated by the Emscripten build
-  of the `web_client` target. This is the default for packaged installations.
+  of the `web_client` target; `dist_3js` by the Vite build of the three.js
+  client (client_3js/, served for gfx mode 'web_3js'). These are the defaults
+  for packaged installations.
 
-  Development option: Set MUJOCO_WEB_VIEWER_DIST to serve from a different
-  directory (e.g. a local Emscripten build tree). This allows rapid iteration
-  on web_client changes without rebuilding and reinstalling the package.
+  Development option: set the env var (MUJOCO_WEB_VIEWER_DIST or
+  MUJOCO_WEB_VIEWER_DIST_3JS) to serve from a different directory (e.g. a
+  local build tree). This allows rapid iteration on client changes without
+  rebuilding and reinstalling the package.
   """
-  env_dir = os.environ.get("MUJOCO_WEB_VIEWER_DIST")
+  env_dir = os.environ.get(env_var)
   if env_dir:
     if os.path.isdir(env_dir):
       return env_dir
-    logger.warning(
-        "[Http] MUJOCO_WEB_VIEWER_DIST is not a directory: %s", env_dir
-    )
+    logger.warning("[Http] %s is not a directory: %s", env_var, env_dir)
 
-  dist_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dist")
+  dist_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), dist_name)
   if os.path.isdir(dist_dir):
     return dist_dir
 
@@ -1199,7 +1202,7 @@ class WebServer:
     """
     self.http_sock = http_sock
     self.tcp_sock = tcp_sock
-    self.static_files_dir = static_files_dir or _find_static_files_dir()
+    self.static_files_dir = static_files_dir or find_static_files_dir()
     self.mjb_data = mjb_data
 
     # Owned by the viewer (it outlives server restarts); dropped-file bytes

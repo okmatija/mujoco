@@ -91,7 +91,7 @@ def run_viewer_target(
     plugins: Optional list of viewer-side plugin instances, which are classes
       with methods decorated with ``@handler``.
   """
-  if config.gfx in ('web', 'webgl'):  # In future we may add 'webgpu' here too.
+  if config.gfx in ('web', 'webgl', 'web_3js'):
     from mujoco.experimental.studio import web_viewer  # pylint: disable=g-import-not-at-top
 
     viewer = web_viewer.WebViewer(config, endpoint, plugins=plugins)
