@@ -7,7 +7,11 @@
     "skipLibCheck": true,
     "noEmit": true,
     "types": ["vite/client"],
-    "lib": ["ES2022", "DOM", "DOM.Iterable"]
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "baseUrl": ".",
+    "paths": {
+      "@mujoco/mujoco": ["../../../../../../wasm/dist/mujoco.d.ts"]
+    }
   },
   "include": ["src"]
 }

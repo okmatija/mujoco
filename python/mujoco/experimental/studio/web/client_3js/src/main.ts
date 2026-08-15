@@ -33,6 +33,14 @@ import { disposeSplat, loadSplatFromModel } from './splat';
 import type { SplatMesh } from './splat';
 import { StateClient } from './state';
 import type { StatePayload } from './state';
+import {
+  ROLE_NAMES,
+  parseModelInModule,
+  resizeOverlayCanvas,
+  tryLoadUiOverlay,
+  wireOverlayInput,
+} from './uioverlay';
+import type { UiModule } from './uioverlay';
 
 const statusEl = document.getElementById('status')!;
 function setStatus(text: string): void {
@@ -58,7 +66,10 @@ class App {
   private handles: SceneHandles | null = null;
   private splat: SplatMesh | null = null;
 
-  private stateClient!: StateClient;
+  private uiModule: UiModule | null = null;
+  private uiCanvas: HTMLCanvasElement | null = null;
+
+  private stateClient: StateClient | null = null;
   private modelCrc: number | null = null;
   private live = false;
   private localSim = false;
@@ -70,34 +81,49 @@ class App {
     setStatus('loading MuJoCo…');
     this.mujoco = await loadMujoco();
     this.mj = this.mujoco as any;
-    try {
-      this.mj.FS.mkdir('/working');
-    } catch {
-      // already exists
-    }
 
     this.initRenderer();
+
+    // The web_client_ui WASM overlay, when deployed, owns the /state session,
+    // the streamed Studio UI, and the camera; without it this page falls back
+    // to the standalone TS state client (or a local simulation).
+    this.uiModule = await tryLoadUiOverlay();
+    if (this.uiModule) {
+      this.uiCanvas = document.getElementById('ui-canvas') as HTMLCanvasElement;
+      this.uiCanvas.style.display = 'block';
+      resizeOverlayCanvas(this.uiCanvas);
+      this.uiModule.startApp();
+      wireOverlayInput(this.uiModule, this.uiCanvas);
+      this.uiModule.onModelChanged = () => {
+        void this.reloadModel().catch((error) =>
+          console.error('Model refetch failed:', error)
+        );
+      };
+      this.controls.enabled = false;
+    }
 
     setStatus('fetching model…');
     await this.reloadModel();
 
-    this.stateClient = new StateClient({
-      onPayload: (payload) => this.onPayload(payload),
-      onText: (message) => {
-        this.rosterLine = message;
-        this.updateStatus();
-      },
-      onConnected: () => this.updateStatus(),
-      onDisconnected: () => this.updateStatus(),
-    });
-    this.stateClient.connect();
+    if (!this.uiModule) {
+      this.stateClient = new StateClient({
+        onPayload: (payload) => this.onPayload(payload),
+        onText: (message) => {
+          this.rosterLine = message;
+          this.updateStatus();
+        },
+        onConnected: () => this.updateStatus(),
+        onDisconnected: () => this.updateStatus(),
+      });
+      this.stateClient.connect();
 
-    window.setTimeout(() => {
-      if (!this.live) {
-        this.localSim = true;
-        this.updateStatus();
-      }
-    }, LOCAL_SIM_FALLBACK_MS);
+      window.setTimeout(() => {
+        if (!this.live) {
+          this.localSim = true;
+          this.updateStatus();
+        }
+      }, LOCAL_SIM_FALLBACK_MS);
+    }
 
     this.lastFrameTime = performance.now();
     this.renderer.setAnimationLoop(() => this.frame());
@@ -151,10 +177,15 @@ class App {
     this.data = null;
     this.model = null;
 
-    this.mj.FS.writeFile('/working/model.mjb', bytes);
+    if (this.uiModule && !parseModelInModule(this.uiModule, bytes)) {
+      setStatus('UI module failed to load the model');
+      throw new Error('parseModelBuffer failed');
+    }
+
     const vfs = new this.mj.MjVFS();
     try {
-      this.model = this.mj.MjModel.mj_loadModel('/working/model.mjb', vfs);
+      vfs.addBuffer('model.mjb', bytes);
+      this.model = this.mj.MjModel.mj_loadModel('model.mjb', vfs);
     } finally {
       vfs.delete();
     }
@@ -228,7 +259,9 @@ class App {
     const dt = Math.min(0.25, (now - this.lastFrameTime) / 1000);
     this.lastFrameTime = now;
 
-    if (this.localSim && this.model && this.data) {
+    if (this.uiModule) {
+      this.overlayFrame(dt);
+    } else if (this.localSim && this.model && this.data) {
       const target = this.data.time + dt;
       let steps = 0;
       while (this.data.time < target && steps < MAX_LOCAL_STEPS_PER_FRAME) {
@@ -237,22 +270,78 @@ class App {
       }
     }
 
-    if (this.handles && this.data) {
-      syncBodyPoses(this.data, this.handles.bodies);
-      updateLightsFromData(this.mujoco, this.data, this.handles.lights);
+    if (this.handles) {
+      const poses = this.uiModule
+        ? { xpos: this.uiModule.xposView(), xquat: this.uiModule.xquatView() }
+        : this.data;
+      if (poses?.xpos && poses?.xquat) {
+        syncBodyPoses(poses, this.handles.bodies);
+      }
+      const lights = this.uiModule
+        ? {
+            light_xpos: this.uiModule.lightXposView(),
+            light_xdir: this.uiModule.lightXdirView(),
+          }
+        : this.data;
+      if (lights?.light_xpos && lights?.light_xdir) {
+        updateLightsFromData(this.mujoco, lights, this.handles.lights);
+      }
       updateHeadlightFromCamera(this.camera, this.handles.lights);
     }
 
-    this.controls.update();
+    if (!this.uiModule) {
+      this.controls.update();
+    }
     this.renderer.render(this.scene, this.camera);
   }
 
+  // Runs the UI overlay module's frame (session + streamed UI + camera) and
+  // mirrors its camera onto the three.js camera. Scene interaction is handled
+  // by the headless viewer via the module's NetImgui input stream, so
+  // OrbitControls stays disabled in this mode.
+  private overlayFrame(dt: number): void {
+    const module = this.uiModule!;
+    resizeOverlayCanvas(this.uiCanvas!);
+    const status = module.frame(
+      window.innerWidth,
+      window.innerHeight,
+      window.devicePixelRatio,
+      dt
+    );
+    if (status < 0) {
+      console.error('UI overlay frame failed; disabling overlay');
+      this.uiCanvas!.style.display = 'none';
+      this.uiModule = null;
+      this.controls.enabled = true;
+      return;
+    }
+    if (status & 1) {
+      this.live = true;
+      this.updateStatus();
+    }
+
+    const cam = module.cameraView();
+    if (cam[7] > 0) {
+      // MuJoCo world (z-up) -> three.js (y-up): (x, y, z) -> (x, z, -y).
+      this.camera.position.set(cam[0], cam[2], -cam[1]);
+      this.camera.up.set(0, 1, 0);
+      this.camera.lookAt(cam[3], cam[5], -cam[4]);
+      const fovy = cam[6];
+      if (Math.abs(this.camera.fov - fovy) > 1e-3) {
+        this.camera.fov = fovy;
+        this.camera.updateProjectionMatrix();
+      }
+    }
+  }
+
   private updateStatus(): void {
-    const mode = this.live
-      ? 'live'
-      : this.localSim
-        ? 'local sim (no /state server)'
-        : 'connecting…';
+    const mode = this.uiModule
+      ? `studio ui · ${ROLE_NAMES[this.uiModule.sessionRole()] ?? ''}`
+      : this.live
+        ? 'live'
+        : this.localSim
+          ? 'local sim (no /state server)'
+          : 'connecting…';
     const splat = this.splat ? ' · splat' : '';
     const roster = this.rosterLine ? `\n${this.rosterLine}` : '';
     setStatus(`${mode}${splat}${roster}`);

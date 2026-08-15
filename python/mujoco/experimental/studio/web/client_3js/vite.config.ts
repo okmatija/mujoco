@@ -1,4 +1,12 @@
+import { fileURLToPath } from 'node:url';
 import { defineConfig } from 'vite';
+
+// MuJoCo WASM bindings built from this tree (emcmake cmake -B <dir> at the
+// repo root). Using the in-tree build keeps the client's engine identical to
+// the server's, which the .mjb format requires.
+const treeBindings = fileURLToPath(
+  new URL('../../../../../../wasm/dist/mujoco.js', import.meta.url)
+);
 
 // Two dev modes:
 //  * `npm run dev`: vite serves the app; /model is served statically from
@@ -9,11 +17,19 @@ import { defineConfig } from 'vite';
 //    /state endpoints.
 export default defineConfig({
   base: './',
+  resolve: {
+    alias: {
+      '@mujoco/mujoco': treeBindings
+    }
+  },
   build: {
     outDir: '../dist_3js',
     emptyOutDir: true,
     target: 'es2022',
     chunkSizeWarningLimit: 6000
+  },
+  worker: {
+    format: 'es'
   },
   optimizeDeps: {
     // @mujoco/mujoco must stay unbundled so its .wasm asset resolves; Spark

@@ -178,6 +178,9 @@ endif()
 
 if(EMSCRIPTEN)
   add_subdirectory(wasm)
+  # Web Viewer browser clients (three.js UI overlay module; the Filament
+  # web_client additionally requires the Studio build).
+  add_subdirectory(python/mujoco/experimental/studio/web)
 endif()
 
 
