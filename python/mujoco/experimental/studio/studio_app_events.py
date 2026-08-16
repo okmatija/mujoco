@@ -598,3 +598,96 @@ def handle_mouse_events(
   handle_camera_tracking_mouse_events(
       model, data, camera, vis_options, ux_state
   )
+
+
+def handle_mouse_events_mobile(
+    model: mujoco.MjModel,
+    data: mujoco.MjData,
+    camera: mujoco.MjvCamera,
+    vis_options: mujoco.MjvOption,
+    perturb: mujoco.MjvPerturb,
+) -> None:
+  """Handles mouse events translated from touch gestures on mobile clients.
+
+  The browser translates touch gestures into plain mouse input (see
+  web_client_touch.cc): a one-finger drag arrives as a left-button drag, a
+  two-finger drag as a right-button drag, and a pinch as mouse wheel. This
+  handler gives those their touch-first meaning: dragging a body perturbs it
+  (translation only — no rotation perturbations on touch), dragging free
+  space orbits the camera, two-finger drags pan, and pinches zoom.
+  """
+  io = imgui.GetIO()
+  if io.WantCaptureMouse:
+    return
+
+  if io.DisplaySize.x <= 0 or io.DisplaySize.y <= 0:
+    return
+
+  mouse_x = io.MousePos.x / io.DisplaySize.x
+  mouse_y = io.MousePos.y / io.DisplaySize.y
+  mouse_dx = io.MouseDelta.x / io.DisplaySize.x
+  mouse_dy = io.MouseDelta.y / io.DisplaySize.y
+  aspect_ratio = io.DisplaySize.x / io.DisplaySize.y
+
+  # Touch-down decides the gesture: a body under the finger starts a
+  # translation perturbation, free space starts a camera orbit. Return
+  # without moving anything — this frame's mouse delta is the jump from
+  # wherever the previous gesture ended to the new touch point.
+  if imgui.IsMouseClicked(imgui.MouseButton.Left):
+    picked = ux.Pick(
+        model, data, camera, mouse_x, mouse_y, aspect_ratio, vis_options
+    )
+    if picked.body > 0:
+      perturb.select = picked.body
+      perturb.flexselect = picked.flex
+      perturb.skinselect = picked.skin
+      tmp = np.array(picked.point, dtype=np.float64) - data.xpos[picked.body]
+      xmat = np.array(data.xmat[picked.body], dtype=np.float64).reshape(3, 3)
+      perturb.localpos = xmat.T @ tmp
+      ux.InitPerturb(
+          model, data, camera, perturb, int(mujoco.mjtPertBit.mjPERT_TRANSLATE)
+      )
+    else:
+      perturb.select = 0
+      perturb.flexselect = -1
+      perturb.skinselect = -1
+      perturb.active = 0
+    return
+
+  if not imgui.IsMouseDown(imgui.MouseButton.Left):
+    perturb.active = 0
+
+  is_mouse_moving = mouse_dx != 0.0 or mouse_dy != 0.0
+
+  # One finger: drag the picked body in the camera-facing plane, or orbit.
+  if imgui.IsMouseDown(imgui.MouseButton.Left) and is_mouse_moving:
+    if perturb.active:
+      ux.MovePerturb(
+          model,
+          data,
+          camera,
+          perturb,
+          int(mujoco.mjtMouse.mjMOUSE_MOVE_V),
+          mouse_dx,
+          mouse_dy,
+      )
+    else:
+      ux.MoveCamera(
+          model, data, camera, ux.CameraMotion.ORBIT, mouse_dx, mouse_dy
+      )
+
+  # Two fingers: the centroid pans (skipping the press frame, whose delta is
+  # the jump from the single-finger position to the centroid).
+  if (
+      imgui.IsMouseDown(imgui.MouseButton.Right)
+      and is_mouse_moving
+      and not imgui.IsMouseClicked(imgui.MouseButton.Right)
+  ):
+    ux.MoveCamera(
+        model, data, camera, ux.CameraMotion.PLANAR_MOVE_V, mouse_dx, mouse_dy
+    )
+
+  # Pinch, delivered as mouse wheel.
+  mouse_scroll = io.MouseWheel / 50.0
+  if mouse_scroll != 0.0:
+    ux.MoveCamera(model, data, camera, ux.CameraMotion.ZOOM, 0, -mouse_scroll)

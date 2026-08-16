@@ -27,6 +27,7 @@ Architecture:
   ViewerHandle.sync().
 """
 
+import collections
 import copy
 import dataclasses
 
@@ -38,8 +39,21 @@ from mujoco.experimental.studio import studio_app_events
 from mujoco.experimental.studio import ux
 from mujoco.experimental.studio import viewer_protocol
 from mujoco.experimental.studio import viewer_utils
+import numpy as np
 
 from mujoco.experimental.dear_imgui import dear_imgui as imgui
+
+# Mobile UI: a single bottom bar with a play/pause button and a time
+# scrubber; everything else is hidden (see build_gui).
+_MOBILE_BAR_HEIGHT = 64.0
+_MOBILE_FONT_SCALE = 1.8
+_ICON_PLAY = '\uf04b'  # FontAwesome "play".
+_ICON_PAUSE = '\uf04c'  # FontAwesome "pause".
+
+# The scrubber's history buffer: recent state snapshots kept viewer-side,
+# capped by both count and memory so huge models can't balloon it.
+_MOBILE_HISTORY_MAX_SNAPSHOTS = 2000
+_MOBILE_HISTORY_MAX_BYTES = 64 * 1024 * 1024
 
 
 @dataclasses.dataclass(frozen=True)
@@ -106,6 +120,14 @@ class ViewerApp:
     """Resets ViewerApp-specific state (step control, ux)."""
     self.step_control_state = sim.StepControl()
     self.ux_state = ux.UxState()
+
+    # Mobile scrubber state: a rolling buffer of (time, state) snapshots and
+    # the time being viewed while scrubbed back (None = live). The buffer is
+    # created lazily because its capacity depends on the model's state size.
+    self._mobile_history: collections.deque[tuple[float, np.ndarray]] | None = (
+        None
+    )
+    self._mobile_scrub_time: float | None = None
 
   def close(self) -> None:
     self.viewer.close()
@@ -221,9 +243,20 @@ class ViewerApp:
       except Exception as ex:  # pylint: disable=broad-except
         print(f'Error loading model from {drop_file!r}: {ex}')
 
-    # Handle user input.
-    self.handle_mouse_events()
-    self.handle_keyboard_events()
+    # Handle user input. Mobile controllers send touch gestures translated
+    # into mouse input, and have no keyboard.
+    if self.viewer.controller_is_mobile:
+      studio_app_events.handle_mouse_events_mobile(
+          self.model,
+          self.data,
+          self.viewer.camera,
+          self.viewer.vis_options,
+          self.viewer.perturb,
+      )
+      self._update_mobile_history()
+    else:
+      self.handle_mouse_events()
+      self.handle_keyboard_events()
 
     # Apply perturbation forces from the viewer.
     self.apply_perturb()
@@ -242,8 +275,127 @@ class ViewerApp:
         messages.MjOptionSnapshot(opt=copy.deepcopy(self.model.opt))
     )
 
+  # ---------------------------------------------------------------------------
+  # Mobile UI (touch controllers): a play/pause button and a time scrubber.
+  # ---------------------------------------------------------------------------
+
+  def _update_mobile_history(self) -> None:
+    """Records state history for the scrubber; re-applies scrubbed views.
+
+    Runs every mobile frame after sim snapshots have been dispatched: while
+    scrubbed back, the historical state is re-applied each frame so the
+    paused sim's (unchanging) snapshots don't overwrite the scrubbed view.
+    """
+    state_sig = int(mujoco.mjtState.mjSTATE_INTEGRATION)
+    if self._mobile_history is None:
+      state_bytes = (
+          mujoco.mj_stateSize(self.model, state_sig) * np.float64().itemsize
+      )
+      maxlen = max(
+          2,
+          min(
+              _MOBILE_HISTORY_MAX_SNAPSHOTS,
+              _MOBILE_HISTORY_MAX_BYTES // max(1, state_bytes),
+          ),
+      )
+      self._mobile_history = collections.deque(maxlen=maxlen)
+    history = self._mobile_history
+
+    if self._mobile_scrub_time is not None:
+      # A scrubbed view neither extends nor clears the history. It wins over
+      # incoming snapshots — except mid-perturb, where the user is dragging a
+      # body within the scrubbed state.
+      if not self.viewer.perturb.active:
+        self._apply_scrub_state(self._mobile_scrub_time)
+      return
+
+    if history and self.data.time < history[-1][0]:
+      history.clear()  # Time went backwards: a reset or a new model.
+    if not history or self.data.time > history[-1][0]:
+      state = np.empty(mujoco.mj_stateSize(self.model, state_sig), np.float64)
+      mujoco.mj_getState(self.model, self.data, state, state_sig)
+      history.append((self.data.time, state))
+
+  def _apply_scrub_state(self, time: float) -> None:
+    """Shows the recorded state nearest to the requested time."""
+    if not self._mobile_history:
+      return
+    _, state = min(self._mobile_history, key=lambda entry: abs(entry[0] - time))
+    state_sig = int(mujoco.mjtState.mjSTATE_INTEGRATION)
+    if len(state) == mujoco.mj_stateSize(self.model, state_sig):
+      mujoco.mj_setState(self.model, self.data, state, state_sig)
+      mujoco.mj_forward(self.model, self.data)
+
+  def _build_mobile_gui(self) -> None:
+    """Mobile UI: everything hidden except a bottom play/pause + scrubber bar."""
+    ux.setup_theme(self.theme)
+
+    io = imgui.GetIO()
+    imgui.SetNextWindowPos(imgui.Vec2(0, io.DisplaySize.y - _MOBILE_BAR_HEIGHT))
+    imgui.SetNextWindowSize(imgui.Vec2(io.DisplaySize.x, _MOBILE_BAR_HEIGHT))
+    flags = (
+        int(imgui.WindowFlags.NoTitleBar)
+        | int(imgui.WindowFlags.NoResize)
+        | int(imgui.WindowFlags.NoMove)
+        | int(imgui.WindowFlags.NoCollapse)
+        | int(imgui.WindowFlags.NoScrollbar)
+        | int(imgui.WindowFlags.NoScrollWithMouse)
+        | int(imgui.WindowFlags.NoDocking)
+        | int(imgui.WindowFlags.NoSavedSettings)
+    )
+    # Big touch targets: generous frame padding and a fat scrubber thumb.
+    imgui.PushStyleVar(imgui.StyleVar.FramePadding, imgui.Vec2(14, 10))
+    imgui.PushStyleVar(imgui.StyleVar.GrabMinSize, 28.0)
+    shown, _ = imgui.Begin('##MobileBar', True, flags)
+    if shown:
+      imgui.SetWindowFontScale(_MOBILE_FONT_SCALE)
+
+      paused = (
+          self.step_control_state.get_pause_state() != sim.PauseState.UNPAUSED
+      )
+      if imgui.Button(_ICON_PLAY if paused else _ICON_PAUSE):
+        if paused:
+          self.step_control_state.set_pause_state(sim.PauseState.UNPAUSED)
+          self._mobile_scrub_time = None  # Back to the live view.
+        else:
+          self.step_control_state.set_pause_state(sim.PauseState.NORMAL_PAUSED)
+
+      imgui.SameLine()
+      self._mobile_scrubber_gui(paused)
+    imgui.End()
+    imgui.PopStyleVar(2)
+
+  def _mobile_scrubber_gui(self, paused: bool) -> None:
+    """The time scrubber over the recorded history.
+
+    While playing it tracks the live simulation time; dragging it pauses and
+    shows the recorded state at the chosen time. Scrubbing is viewing only:
+    pressing play resumes the live simulation where it paused.
+    """
+    history = self._mobile_history
+    t_begin = history[0][0] if history else 0.0
+    t_end = history[-1][0] if history else 0.0
+    value = (
+        self._mobile_scrub_time
+        if self._mobile_scrub_time is not None
+        else min(max(self.data.time, t_begin), t_end)
+    )
+    imgui.SetNextItemWidth(-1.0)
+    changed, value = imgui.SliderFloat(
+        '##scrub', value, t_begin, t_end, '%.2f s'
+    )
+    if changed and history:
+      if not paused:
+        self.step_control_state.set_pause_state(sim.PauseState.NORMAL_PAUSED)
+      self._mobile_scrub_time = value
+      self._apply_scrub_state(value)
+
   def build_gui(self) -> None:
     """Emit full Studio UI."""
+    if self.viewer.controller_is_mobile:
+      self._build_mobile_gui()
+      return
+
     ux.setup_theme(self.theme)
     ux.configure_docking_layout()
 

@@ -17,6 +17,11 @@ limitations under the License.
 <html>
   <head>
     <meta charset="utf-8" />
+    <!-- Real device size on phones; the app implements its own pinch zoom. -->
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no"
+    />
     <title>MuJoCo Web Viewer</title>
     <link rel="icon" href="favicon.ico" sizes="16x16 32x32 48x48" />
     <style>
@@ -24,11 +29,15 @@ limitations under the License.
         margin: 0;
         overflow: hidden;
         background: #1a1a2e;
+        /* No pull-to-refresh or rubber-banding while dragging the scene. */
+        overscroll-behavior: none;
       }
       canvas {
         width: 100vw;
         height: 100vh;
         display: block;
+        /* All touch gestures go to the app, not to browser pan/zoom. */
+        touch-action: none;
       }
     </style>
   </head>
@@ -298,6 +307,15 @@ limitations under the License.
           reloadModel();
         },
       };
+      // Mobile detection: switches the client to touch-first camera and
+      // perturbation controls (see web_client_touch.cc) and tells the server
+      // to serve the mobile UI (?mobile=1 on every WebSocket connect).
+      // iPadOS 13+ reports itself as "MacIntel", so Macs with a multi-touch
+      // screen are treated as tablets.
+      Module.isMobile =
+        /Android|iPhone|iPad|iPod/i.test(navigator.userAgent) ||
+        (/Mac/.test(navigator.platform) && navigator.maxTouchPoints > 2);
+
       // Set only the CSS size; SDL owns canvas.width/height. Use whole
       // pixels: a fractional size (100vw/100vh under display scaling) makes
       // the streamed UI relayout — and visibly flicker — every frame.

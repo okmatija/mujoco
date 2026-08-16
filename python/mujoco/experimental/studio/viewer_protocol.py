@@ -184,6 +184,15 @@ class Viewer(abc.ABC):
     """Returns True while the viewer has not been closed."""
     return self._is_running
 
+  @property
+  def controller_is_mobile(self) -> bool:
+    """True while the controlling client is a touch device.
+
+    The WebViewer overrides this; native viewers are never mobile. ViewerApp
+    uses it to switch to the touch UI and touch input handling.
+    """
+    return False
+
   def send_to_sim(self, message: messages.Message) -> None:
     """Sends a message to the simulation process."""
     self._endpoint.send_to_sim(message)

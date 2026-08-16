@@ -242,6 +242,13 @@ class WebViewer(viewer_protocol.Viewer):
     # reconnects first win it.
     self._controller_sid = multiprocessing.get_context('fork').Array('c', 64)
 
+    # Whether the controlling page is a touch device (?mobile=1 on its
+    # WebSocket connects), written by the server child on every controller
+    # claim. Drives the mobile UI and touch input mode in ViewerApp.
+    self._controller_is_mobile = multiprocessing.get_context('fork').Value(
+        'i', 0
+    )
+
     # Temp dir holding the most recent drop's files; removed when the next drop
     # supersedes it (its model is already parsed) and on close.
     self._drop_dir = None
@@ -281,6 +288,7 @@ class WebViewer(viewer_protocol.Viewer):
         max_payload_size=max_payload,
         drop_queue=self._drop_queue,
         controller_sid_shared=self._controller_sid,
+        controller_is_mobile_shared=self._controller_is_mobile,
     )
     self._web_server.start()
 
@@ -311,6 +319,11 @@ class WebViewer(viewer_protocol.Viewer):
   # ---------------------------------------------------------------------------
   # Viewer interface.
   # ---------------------------------------------------------------------------
+
+  @property
+  def controller_is_mobile(self) -> bool:
+    """True while the controlling browser is a touch device."""
+    return bool(self._controller_is_mobile.value)
 
   def prepare_next_frame(self) -> bool:
     """Advances to the next headless frame; returns False when disconnected."""

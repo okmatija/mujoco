@@ -328,6 +328,13 @@ def _session_id(ws: ServerConnection) -> str:
   return f"anon-{id(ws)}"
 
 
+def _is_mobile(ws: ServerConnection) -> bool:
+  """Whether the page declared itself a touch device (?mobile=1)."""
+  path = ws.request.path if ws.request else ""
+  query = path.split("?", 1)[1] if "?" in path else ""
+  return "mobile=1" in query.split("&")
+
+
 def _terminate_process(
     proc: multiprocessing.process.BaseProcess, timeout: float = 2.0
 ) -> None:
@@ -421,6 +428,7 @@ def _run_server(
     generation: multiprocessing.sharedctypes.Synchronized,
     drop_queue: Optional[multiprocessing.queues.Queue[Any]],
     controller_sid_shared: Optional[Any],
+    controller_is_mobile_shared: Optional[Any],
 ) -> None:
   """The server process: HTTP + /ui + /state on one port, one event loop."""
 
@@ -519,15 +527,18 @@ def _run_server(
     last_controller_input = [0.0]
     loop_time = asyncio.get_event_loop().time
 
-    def remember_controller(sid: str) -> None:
+    def remember_controller(sid: str, is_mobile: bool) -> None:
       """Records the controlling page's sid in viewer-owned shared memory.
 
       Written on every claim (never cleared: teardown paths must not wipe it) so
       that the next server, after a model-change restart, can reserve the slot
-      for the page that was controlling.
+      for the page that was controlling. The mobile flag rides along so the
+      viewer builds the touch UI whenever a touch device is in control.
       """
       if controller_sid_shared is not None:
         controller_sid_shared.value = sid.encode("utf-8", "replace")[:63]
+      if controller_is_mobile_shared is not None:
+        controller_is_mobile_shared.value = 1 if is_mobile else 0
 
     # Reserve the controller slot for the previous controller across a restart.
     # Session ids survive page reloads (sessionStorage, see web_client.cc), so
@@ -739,7 +750,7 @@ def _run_server(
         control_queue.remove(sid)
       active_ui_ws = ws
       controller_sid = sid
-      remember_controller(sid)
+      remember_controller(sid, _is_mobile(ws))
       last_controller_input[0] = loop_time()
       await broadcast_roster()
 
@@ -1180,6 +1191,7 @@ class WebServer:
       max_payload_size: int = 0,
       drop_queue: Optional[multiprocessing.queues.Queue[Any]] = None,
       controller_sid_shared: Optional[Any] = None,
+      controller_is_mobile_shared: Optional[Any] = None,
   ) -> None:
     """Initializes the server around pre-bound listening sockets.
 
@@ -1196,6 +1208,8 @@ class WebServer:
       drop_queue: The queue to put dropped files onto.
       controller_sid_shared: The shared value containing the controller's
         session id.
+      controller_is_mobile_shared: The shared value recording whether the
+        controlling page is a touch device.
     """
     self.http_sock = http_sock
     self.tcp_sock = tcp_sock
@@ -1210,6 +1224,7 @@ class WebServer:
     # server can reserve the controller slot for the page that was
     # controlling before a model-change restart.
     self.controller_sid_shared = controller_sid_shared
+    self.controller_is_mobile_shared = controller_is_mobile_shared
     self._process = None
     self._lifeline_w = None
 
@@ -1280,6 +1295,7 @@ class WebServer:
             self._generation,
             self.drop_queue,
             self.controller_sid_shared,
+            self.controller_is_mobile_shared,
         ),
         daemon=True,
     )

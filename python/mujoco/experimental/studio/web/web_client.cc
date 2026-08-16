@@ -53,6 +53,7 @@
 #include "web_client_local_ui.h"
 #include "web_client_remote_ui.h"
 #include "web_client_session.h"
+#include "web_client_touch.h"
 
 #if !defined(__EMSCRIPTEN__)
 #error "web_client.cc is only supported for Emscripten builds"
@@ -127,6 +128,12 @@ struct App {
   int spectator_cam_mode = kSpecCamTumble;
   float spectator_cam_speed = 0.001f;  // WASD speed; accelerates while held.
 
+  // Touch-first mode for phones and tablets (see index.html's Module.isMobile):
+  // finger gestures become synthetic mouse input, and every WebSocket connect
+  // carries mobile=1 so the server serves the mobile UI.
+  bool is_mobile = false;
+  mujoco::studio::TouchInput touch_input;
+
   Telemetry telemetry;
 
   // Main loop frame counters (MainLoopImpl): reconnect pacing for the state
@@ -188,7 +195,11 @@ std::string GetSessionId() {
 }
 
 std::string WsUrl(const char* path) {
-  return GetWsBaseUrl() + path + "?sid=" + GetSessionId();
+  std::string url = GetWsBaseUrl() + path + "?sid=" + GetSessionId();
+  if (g_app.is_mobile) {
+    url += "&mobile=1";
+  }
+  return url;
 }
 
 // Returns true if the Filament rendering context is initialized and ready for
@@ -501,6 +512,12 @@ void MainLoopImpl() {
   }
   g_app.remote_ui.ReceiveAndProcessCommands(g_app.frame_count);
 
+  // Touch gestures first: finger events become ImGui mouse events before the
+  // window's pump handles everything else and starts the ImGui frame.
+  if (g_app.is_mobile) {
+    g_app.touch_input.PumpEvents();
+  }
+
   // Event loop and ImGui NewFrame via window abstraction.
   mujoco::platform::Window::Status status = g_app.window->NewFrame();
   if (status == mujoco::platform::Window::kQuitting) {
@@ -767,6 +784,14 @@ static void RegisterAssetProviders() {
 // Starts the viewer once the page has registered every asset. Exposed to JS
 // and called from index.html after the fetches complete.
 void StartApp() {
+  // Touch-first mode, decided by the page (see index.html). SDL's own
+  // touch-to-mouse emulation must be off before the window exists; the
+  // TouchInput pump in MainLoopImpl synthesizes gesture-aware input instead.
+  g_app.is_mobile = EM_ASM_INT({ return Module.isMobile ? 1 : 0; }) != 0;
+  if (g_app.is_mobile) {
+    mujoco::studio::TouchInput::DisableSdlTouchMouseEmulation();
+  }
+
   mujoco::platform::Window::Config config;
   config.gfx_mode = mujoco::platform::GraphicsMode::FilamentWebGl;
   // Load the Studio UI fonts for the browser's local ImGui (the role window);
