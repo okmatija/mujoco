@@ -190,6 +190,7 @@ void FilamentRenderer::DoRender(int width, int height) {
     reqs[0].viewport = viewport;
     reqs[0].enable_shadows = scene_.flags[mjRND_SHADOW];
     reqs[0].enable_reflections = scene_.flags[mjRND_REFLECTION];
+    reqs[0].enable_post_processing = scene_post_processing_;
 
     mjrf_defaultRenderRequest(&reqs[1]);
     reqs[1].scene = ux_scene_.get();

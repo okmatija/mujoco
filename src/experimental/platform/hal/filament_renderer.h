@@ -71,6 +71,15 @@ class FilamentRenderer : public Renderer {
   // Rendering flags.
   mjtByte* GetRenderFlags() override { return scene_.flags; }
 
+  // Disables the scene view's post-processing chain, rendering LDR directly
+  // into the swapchain (the way the UI pass always renders). Some mobile GPU
+  // drivers silently render the HDR float intermediates as black — Filament
+  // cannot apply its device-specific workarounds under WebGL, where the GPU
+  // identity is masked — so the mobile web client turns this off.
+  void SetScenePostProcessingEnabled(bool enabled) {
+    scene_post_processing_ = enabled;
+  }
+
   // Returns the current frame rate.
   double GetFps() override;
 
@@ -91,6 +100,7 @@ class FilamentRenderer : public Renderer {
   std::unique_ptr<SceneBridge> scene_bridge_;
   std::unique_ptr<ImguiBridge> imgui_bridge_;
   int framebuffer_mode_ = 0;
+  bool scene_post_processing_ = true;
   mjvScene scene_;
   double fps_ = 0;
 };
