@@ -803,16 +803,14 @@ void StartApp() {
                                                             1400, 720, config);
   ImPlot::CreateContext();  // Needed if the server app uses ImPlot.
 
-  auto* filament_renderer = new mujoco::platform::FilamentRenderer(
+  // NOTE: Filament WebGL rendering is wholesale broken on the Pixel 10's
+  // PowerVR GPU (Tensor G5) — filament's own hosted WebGL demos render a
+  // black canvas there while raw WebGL2 on the same context works. Filament
+  // cannot detect the GPU under WebGL (masked renderer string), so its
+  // PowerVR workarounds never engage. Nothing to work around on our side;
+  // needs an upstream filament/driver fix.
+  g_app.renderer = new mujoco::platform::FilamentRenderer(
       g_app.window->GetNativeWindowHandle(), config.gfx_mode);
-  if (g_app.is_mobile) {
-    // Some mobile GPU drivers render Filament's HDR float intermediates as
-    // pure black (seen on the Pixel 10's PowerVR under WebGL, where Filament
-    // cannot detect the GPU to apply workarounds). Render the scene LDR,
-    // directly into the swapchain, like the UI pass always does.
-    filament_renderer->SetScenePostProcessingEnabled(false);
-  }
-  g_app.renderer = filament_renderer;
 
   // Initialize an empty dummy scene so Filament and ImGui are ready to render
   // the "DOWNLOADING..." progress bar while /model downloads asynchronously
