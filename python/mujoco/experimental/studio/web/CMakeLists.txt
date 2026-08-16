@@ -17,66 +17,97 @@ set(NETIMGUI_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../netimgui)
 if(EMSCRIPTEN)
   add_subdirectory(${NETIMGUI_DIR} ${CMAKE_CURRENT_BINARY_DIR}/netimgui)
 
-  # Browser WASM client for the Web Viewer
-  add_executable(web_client web_client.cc web_client_local_ui.cc
-                 web_client_remote_ui.cc web_client_session.cc
-                 web_client_touch.cc state_payload.cc)
+  # Browser WASM client for the Web Viewer. Two links of the same app:
+  # web_client for desktops, web_client_mobile for phones. They differ only
+  # in wasm memory sizing — phone browsers refuse the desktop variant's big
+  # up-front shared-memory reservation, so the mobile link starts small and
+  # caps growth lower. The page picks a variant via Module.isMobile (see
+  # index.html).
+  foreach(variant IN ITEMS web_client web_client_mobile)
+    add_executable(${variant} web_client.cc web_client_local_ui.cc
+                   web_client_remote_ui.cc web_client_session.cc
+                   web_client_touch.cc state_payload.cc)
 
-  target_include_directories(web_client
-    PRIVATE
-      ${PROJECT_SOURCE_DIR}/include
-      ${PROJECT_SOURCE_DIR}/src
-  )
+    target_include_directories(${variant}
+      PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src
+    )
 
-  target_link_libraries(web_client
-    PRIVATE
-      dear_imgui
-      implot
-      netimgui
-      mujoco::mujoco
-      mujoco::platform
-      mujoco::render_noop
-      SDL2::SDL2-static
-  )
+    target_link_libraries(${variant}
+      PRIVATE
+        dear_imgui
+        implot
+        netimgui
+        mujoco::mujoco
+        mujoco::platform
+        mujoco::render_noop
+        SDL2::SDL2-static
+    )
 
-  # Ensure resource decoder plugins are linked into the WASM binary.
+    # Ensure resource decoder plugins are linked into the WASM binary.
+    target_link_options(${variant} PRIVATE
+      -Wl,--whole-archive $<TARGET_FILE:mujoco> -Wl,--no-whole-archive
+    )
+
+    # Compile with exception support so the try/catch around MainLoop can catch
+    # throws escaping the requestAnimationFrame callback. Emscripten disables
+    # exception handling by default at compile time; the -fexceptions in the
+    # link options below only covers linking.
+    target_compile_options(${variant} PRIVATE -fexceptions)
+
+    # Filament's OpenGL backend requires WebGL2 / full ES3 bindings.
+    target_link_options(${variant} PRIVATE
+      --bind
+      -sUSE_WEBGL2=1
+      -sFULL_ES3
+      -sMIN_WEBGL_VERSION=2
+      -sMAX_WEBGL_VERSION=2
+      -sALLOW_MEMORY_GROWTH=1
+      -sFETCH=1
+      # embind (EMSCRIPTEN_BINDINGS registerAsset/startApp) needs eval enabled.
+      -sDYNAMIC_EXECUTION=1
+      -sGL_ASSERTIONS=0
+      -sSTACK_SIZE=32mb
+      -fexceptions
+      # Filament's GL backend calls glGetError() on every draw call via even in non-debug builds
+      # (the functions are compiled into the library unconditionally). In WebGL, each glGetError()
+      # forces a synchronous GPU pipeline flush across the JS-WASM bridge (~0.2ms each, hundreds
+      # per frame). Wrapping it at link time replaces all call sites with a no-op.
+      -Wl,--wrap=glGetError
+    )
+  endforeach()
+
+  # INITIAL_MEMORY=3072mb reserves a 3GB contiguous virtual address block upfront. This means
+  # large models do not fail dynamic memory.grow calls due to browser heap fragmentation. OS
+  # lazy page allocation for anonymous virtual memory means reserving 3GB of virtual address
+  # space consumes much less physical RAM when loading small XML models. Therefore, reducing
+  # INITIAL_MEMORY is not necessary for small models. For models that don't fit in 32-bit
+  # address space (~4GB) we can switch to 64-bit WASM.
   target_link_options(web_client PRIVATE
-    -Wl,--whole-archive $<TARGET_FILE:mujoco> -Wl,--no-whole-archive
-  )
-
-  # Compile with exception support so the try/catch around MainLoop can catch
-  # throws escaping the requestAnimationFrame callback. Emscripten disables
-  # exception handling by default at compile time; the -fexceptions in the
-  # link options below only covers linking.
-  target_compile_options(web_client PRIVATE -fexceptions)
-
-  # Filament's OpenGL backend requires WebGL2 / full ES3 bindings.
-  target_link_options(web_client PRIVATE
-    --bind
-    -sUSE_WEBGL2=1
-    -sFULL_ES3
-    -sMIN_WEBGL_VERSION=2
-    -sMAX_WEBGL_VERSION=2
-    -sALLOW_MEMORY_GROWTH=1
-    -sFETCH=1
-    # embind (EMSCRIPTEN_BINDINGS registerAsset/startApp) needs eval enabled.
-    -sDYNAMIC_EXECUTION=1
-    -sGL_ASSERTIONS=0
-    -sSTACK_SIZE=32mb
-    # INITIAL_MEMORY=3072mb reserves a 3GB contiguous virtual address block upfront. This means
-    # large models do not fail dynamic memory.grow calls due to browser heap fragmentation. OS
-    # lazy page allocation for anonymous virtual memory means reserving 3GB of virtual address
-    # space consumes much less physical RAM when loading small XML models. Therefore, reducing
-    # INITIAL_MEMORY is not necessary for small models. For models that don't fit in 32-bit
-    # address space (~4GB) we can switch to 64-bit WASM.
     -sINITIAL_MEMORY=3072mb
     -sMAXIMUM_MEMORY=4gb
-    -fexceptions
-    # Filament's GL backend calls glGetError() on every draw call via even in non-debug builds
-    # (the functions are compiled into the library unconditionally). In WebGL, each glGetError()
-    # forces a synchronous GPU pipeline flush across the JS-WASM bridge (~0.2ms each, hundreds
-    # per frame). Wrapping it at link time replaces all call sites with a no-op.
-    -Wl,--wrap=glGetError
+  )
+
+  # Phone browsers (iOS Safari in particular) reject multi-GB shared-memory
+  # allocations outright, which kills the app before the first frame. Start
+  # small and let the heap grow; 2GB still fits mid-sized models.
+  target_link_options(web_client_mobile PRIVATE
+    -sINITIAL_MEMORY=512mb
+    -sMAXIMUM_MEMORY=2gb
+  )
+
+  # Stage the mobile variant's artifacts into dist/ next to the desktop ones
+  # (the shared assets are staged by the web_client post-build below).
+  add_custom_command(
+    TARGET web_client_mobile
+    POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_CURRENT_SOURCE_DIR}/dist
+    COMMAND ${CMAKE_COMMAND} -E copy
+        $<TARGET_FILE_DIR:web_client_mobile>/web_client_mobile.js
+        $<TARGET_FILE_DIR:web_client_mobile>/web_client_mobile.wasm
+        ${CMAKE_CURRENT_SOURCE_DIR}/dist
+    COMMENT "Staging mobile web viewer artifacts into dist"
   )
 
   # Stage the Studio fonts in WEB_CLIENT_FONTS_DIR so the browser can load them.

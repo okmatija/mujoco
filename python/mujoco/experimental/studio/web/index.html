@@ -308,13 +308,43 @@ limitations under the License.
         },
       };
       // Mobile detection: switches the client to touch-first camera and
-      // perturbation controls (see web_client_touch.cc) and tells the server
-      // to serve the mobile UI (?mobile=1 on every WebSocket connect).
+      // perturbation controls (see web_client_touch.cc), tells the server
+      // to serve the mobile UI (?mobile=1 on every WebSocket connect), and
+      // selects the mobile-sized wasm build (see the loader at the bottom).
       // iPadOS 13+ reports itself as "MacIntel", so Macs with a multi-touch
       // screen are treated as tablets.
       Module.isMobile =
         /Android|iPhone|iPad|iPod/i.test(navigator.userAgent) ||
         (/Mac/.test(navigator.platform) && navigator.maxTouchPoints > 2);
+
+      // Surface fatal boot failures as a visible banner: a phone has no
+      // console, and an app that dies before its first frame otherwise
+      // shows only the page background. Only the first error is shown.
+      let fatalShown = false;
+      function showFatalBanner(message) {
+        if (fatalShown) return;
+        fatalShown = true;
+        const div = document.createElement("div");
+        div.style.cssText =
+          "position:absolute;top:16px;left:16px;right:16px;padding:14px;" +
+          "background:#7a1a1a;color:#fff;font-family:sans-serif;" +
+          "font-size:14px;border-radius:8px;z-index:9999;word-break:break-word;";
+        div.textContent = "MuJoCo Web Viewer failed to start: " + message;
+        document.body.appendChild(div);
+      }
+      window.addEventListener("error", (e) => {
+        showFatalBanner(e.message || String(e.error || "unknown error"));
+      });
+      window.addEventListener("unhandledrejection", (e) => {
+        showFatalBanner(String((e.reason && e.reason.message) || e.reason));
+      });
+      if (typeof SharedArrayBuffer === "undefined") {
+        showFatalBanner(
+          "SharedArrayBuffer is unavailable. The viewer needs a secure " +
+            "context (HTTPS or localhost) with cross-origin isolation; " +
+            "plain http:// on a LAN address cannot work.",
+        );
+      }
 
       // Set only the CSS size; SDL owns canvas.width/height. Use whole
       // pixels: a fractional size (100vw/100vh under display scaling) makes
@@ -410,6 +440,14 @@ limitations under the License.
         };
       });
     </script>
-    <script async src="web_client.js"></script>
+    <script>
+      // Load the variant matching the device. The two builds are identical
+      // apps; the mobile link starts with a small wasm heap because phone
+      // browsers refuse the desktop link's multi-GB up-front reservation.
+      const clientScript = document.createElement("script");
+      clientScript.async = true;
+      clientScript.src = Module.isMobile ? "web_client_mobile.js" : "web_client.js";
+      document.body.appendChild(clientScript);
+    </script>
   </body>
 </html>
