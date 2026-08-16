@@ -1,3 +1,8 @@
 include LICENSE *.md
 recursive-include mujoco *.h *.cc *.cc.inc *.mm CMakeLists.txt *.cmake
 recursive-include mujoco/mjpython mjpython.* Info.plist
+# Web viewer page and staged browser build (web_client.js/.wasm + assets).
+recursive-include mujoco/experimental/studio/web *.html
+recursive-include mujoco/experimental/studio/web/dist *
+# The netimgui client library, built into the headless_ui extension.
+recursive-include mujoco/experimental/netimgui *.cpp *.inl LICENSE
