@@ -350,9 +350,15 @@ limitations under the License.
               ? "This page must be opened over HTTPS (e.g. the viewer's " +
                 "tunnel URL) — browsers never enable it for plain http:// " +
                 "on a LAN address."
-              : "The server's cross-origin isolation headers " +
-                "(Cross-Origin-Opener-Policy / Embedder-Policy) did not " +
-                "reach this page; check any proxy in front of the viewer."),
+              : window.crossOriginIsolated
+                ? "The page is cross-origin isolated but this browser still " +
+                  "exposes no SharedArrayBuffer — in-app browsers (links " +
+                  "opened inside chat apps) often lack it; open the page in " +
+                  "the real browser app."
+                : "The server's cross-origin isolation headers " +
+                  "(Cross-Origin-Opener-Policy / Embedder-Policy) did not " +
+                  "take effect on this page; check any proxy in front of " +
+                  "the viewer."),
         );
       }
 

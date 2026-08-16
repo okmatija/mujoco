@@ -1026,10 +1026,20 @@ def _run_server(
       """
       del connection
       del request
-      response.headers["Cross-Origin-Opener-Policy"] = "same-origin"
-      response.headers["Cross-Origin-Embedder-Policy"] = "require-corp"
-      response.headers["Access-Control-Allow-Origin"] = "*"
-      response.headers["Cross-Origin-Resource-Policy"] = "cross-origin"
+      # Headers is a multidict and assignment APPENDS, and this hook also runs
+      # for the plain-HTTP responses built by _serve_http, which already carry
+      # some of these. A duplicated policy header reads as the invalid value
+      # "require-corp, require-corp": Chrome parses it leniently, but WebKit
+      # rejects it and drops cross-origin isolation — no SharedArrayBuffer,
+      # dead viewer on iPhone. Set each header only when absent.
+      for name, value in (
+          ("Cross-Origin-Opener-Policy", "same-origin"),
+          ("Cross-Origin-Embedder-Policy", "require-corp"),
+          ("Access-Control-Allow-Origin", "*"),
+          ("Cross-Origin-Resource-Policy", "cross-origin"),
+      ):
+        if name not in response.headers:
+          response.headers[name] = value
       return None
 
     # --- /drop: receive a file dropped onto the browser page ---------------
