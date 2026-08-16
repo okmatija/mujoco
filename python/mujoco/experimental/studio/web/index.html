@@ -338,6 +338,65 @@ limitations under the License.
       window.addEventListener("unhandledrejection", (e) => {
         showFatalBanner(String((e.reason && e.reason.message) || e.reason));
       });
+      // Phone debugging: a phone's devtools are unreachable from a Windows
+      // dev machine (iPhone inspection needs a Mac), so on mobile the page
+      // mirrors its console — which includes the client's stdout, routed
+      // through console.log by emscripten — to the server's /clientlog
+      // endpoint, landing in the viewer's terminal log. Capped and batched.
+      if (Module.isMobile || location.search.includes("debug=1")) {
+        const pending = [];
+        let sentLines = 0;
+        setInterval(() => {
+          if (!pending.length) return;
+          const batch = pending.splice(0, pending.length).join("\n").slice(0, 3000);
+          fetch("/clientlog?m=" + encodeURIComponent(batch), { keepalive: true })
+            .catch(() => {});
+        }, 700);
+        const relay = (level, args) => {
+          if (sentLines >= 400) return;
+          sentLines++;
+          let line;
+          try {
+            line = args
+              .map((a) => (typeof a === "string" ? a : JSON.stringify(a)))
+              .join(" ");
+          } catch (e) {
+            line = String(args[0]);
+          }
+          pending.push(level + " " + line.slice(0, 500));
+        };
+        for (const level of ["log", "info", "warn", "error"]) {
+          const original = console[level].bind(console);
+          console[level] = (...args) => {
+            original(...args);
+            relay(level, args);
+          };
+        }
+        window.addEventListener("error", (e) =>
+          relay("uncaught", [e.message + " @" + e.filename + ":" + e.lineno]),
+        );
+        window.addEventListener("unhandledrejection", (e) =>
+          relay("unhandledrejection", [
+            String((e.reason && e.reason.message) || e.reason),
+          ]),
+        );
+        relay("ua", [navigator.userAgent]);
+        relay("gpu", [
+          (() => {
+            try {
+              const gl = document.createElement("canvas").getContext("webgl2");
+              if (!gl) return "no webgl2 context";
+              const info = gl.getExtension("WEBGL_debug_renderer_info");
+              return info
+                ? gl.getParameter(info.UNMASKED_RENDERER_WEBGL)
+                : "webgl2 ok, renderer masked";
+            } catch (e) {
+              return "webgl2 probe failed: " + e;
+            }
+          })(),
+        ]);
+      }
+
       if (typeof SharedArrayBuffer === "undefined") {
         const insecure =
           location.protocol === "http:" &&

@@ -973,6 +973,16 @@ def _run_server(
       if path in ("/ui", "/state", "/drop"):
         return None  # Proceed with the WebSocket handshake.
 
+      # Client-side console relay (mobile debugging): the page mirrors its
+      # console here (see index.html) since a phone's devtools are not
+      # reachable from the machine running the viewer.
+      if path == "/clientlog":
+        params = urllib.parse.parse_qs(query_string)
+        for message in params.get("m", []):
+          for line in message.splitlines():
+            logger.info("[Client] %s", line[:600])
+        return Response(204, "No Content", Headers(), b"")
+
       # Chunked model endpoint: the client fetches /model in parallel chunks
       #
       #   GET /model?total_bytes                 -> {"total_bytes": <n>}
