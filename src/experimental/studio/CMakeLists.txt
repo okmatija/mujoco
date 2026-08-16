@@ -171,6 +171,14 @@ if(NOT EMSCRIPTEN)
     endif()
 endif()
 
+# Browser WASM client for the Web Viewer.
+if(EMSCRIPTEN)
+    add_subdirectory(
+        ${PROJECT_SOURCE_DIR}/python/mujoco/experimental/studio/web
+        ${CMAKE_CURRENT_BINARY_DIR}/web
+    )
+endif()
+
 # WASM Live target.
 if(EMSCRIPTEN)
     add_executable(mujoco_studio)

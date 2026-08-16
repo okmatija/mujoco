@@ -35,11 +35,14 @@ target_link_libraries(ux PRIVATE ${STUDIO_COMMON_LIBS})
 mujoco_pybind11_module(sim sim.cc)
 target_link_libraries(sim PRIVATE ${STUDIO_COMMON_LIBS})
 
+add_subdirectory(web)
+
 set(MUJOCO_STUDIO_TARGETS
     native_viewer_cc
     renderer
     ux
     sim
+    ${MUJOCO_WEB_VIEWER_TARGETS}
     PARENT_SCOPE
 )
 
@@ -73,9 +76,12 @@ if(UNIX AND NOT APPLE)
       renderer
       ux
       sim
+      headless_ui
   )
   foreach(target ${STUDIO_PY_MODULES})
-    target_link_options(${target} PRIVATE "-Wl,--allow-multiple-definition")
+    if(TARGET ${target})
+      target_link_options(${target} PRIVATE "-Wl,--allow-multiple-definition")
+    endif()
   endforeach()
 endif()
 
@@ -85,6 +91,8 @@ if(APPLE)
       renderer
       ux
       sim
+      headless_ui
+      state_payload
       dear_imgui
       implot
   )
