@@ -82,14 +82,25 @@ def _print_url_banner(host: str, port: int) -> None:
   rows.append(('Local:', f'http://localhost:{port}/'))
 
   label_width = max(len(label) for label, _ in rows)
-  lines = ['MuJoCo Web Viewer running at:', '']
-  lines += [f'  {label.ljust(label_width)}  {url}' for label, url in rows]
-  lines += ['', 'Ctrl+C to quit']
+  lines_plain = ['MuJoCo Web Viewer running at:', '']
+  lines_plain += [f'  {label.ljust(label_width)}  {url}' for label, url in rows]
+  lines_plain += ['', 'Ctrl+C to quit']
 
-  width = max(len(line) for line in lines)
+  width = max(len(line) for line in lines_plain)
+
+  def _hyperlink(url: str) -> str:
+    return f'\033]8;;{url}\033\\{url}\033]8;;\033\\'
+
+  lines_formatted = ['MuJoCo Web Viewer running at:', '']
+  lines_formatted += [
+      f'  {label.ljust(label_width)}  {_hyperlink(url)}' for label, url in rows
+  ]
+  lines_formatted += ['', 'Ctrl+C to quit']
+
   banner = ['+' + '-' * (width + 2) + '+']
-  for line in lines:
-    banner.append(f'| {line.ljust(width)} |')
+  for plain, formatted in zip(lines_plain, lines_formatted):
+    padding = ' ' * (width - len(plain))
+    banner.append(f'| {formatted}{padding} |')
   banner.append('+' + '-' * (width + 2) + '+')
   print('\n'.join(banner), flush=True)
 
