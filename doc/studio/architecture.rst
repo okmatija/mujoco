@@ -107,7 +107,7 @@ Applications as assemblies
        ``web_viewer``, the UI is drawn headless, streamed to the browser, and the scene is rendered there by a small
        WebAssembly client itself assembled from ``Window``, ``Renderer``, ``ModelHolder`` and ``interaction``.
    * - Custom Python apps
-     - User assemblies, easily composed from the same components: your own handlers and messages, panels from
+     - User assemblies, easily composed from the same components: your own plugins and messages, panels from
        ``ux``, with or without ``ViewerApp`` — see :doc:`python`.
 
 - The frame contract is the same everywhere: *update* → *build GUI* → *render*
@@ -146,8 +146,8 @@ Events and snapshots
 - Plumbing: **channels** (event + snapshot, each direction) bundled into per-side **endpoints**.
 - Receiving: **handlers** — methods subscribed by message type, collected in a registry, dispatched on the receiving
   side's thread; priorities; a handler may consume a message.
-- Composability: everything is a plugin, including the Studio App itself (``ViewerApp`` is just handlers) —
-  extending or replacing it is a one-line change to the handler list.
+- Composability: everything is a plugin, including the Studio App itself (``ViewerApp`` is just a plugin composed of
+  handlers) — extending or replacing it is a one-line change to the plugin list.
 
 .. _StThreading:
 

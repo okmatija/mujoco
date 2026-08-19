@@ -41,7 +41,7 @@ Quick start
 
    config = viewer_protocol.ViewerConfig(title='My tool')
    with launch_passive.launch_passive(
-       config, viewer_handlers=[viewer_app.ViewerApp()]) as handle:
+       config, viewer_plugins=[viewer_app.ViewerApp()]) as handle:
      handle.send_to_viewer(messages.ModelEvent(model=model, path='humanoid.xml'))
 
      step_control = sim.StepControl()
@@ -94,7 +94,7 @@ The simulation side
 - ``ViewerHandle``: ``sync(model, data, step_control)`` (drains viewer messages → dispatches to sim handlers →
   publishes state → returns possibly-replaced objects); ``send_to_viewer``; ``is_running`` (also detects a dead
   viewer thread); ``close``; context manager.
-- ``sim_handlers=[...]``: run inside ``sync`` on your thread; typical use — react to custom messages from your GUI
+- ``sim_plugins=[...]``: run inside ``sync`` on your thread; typical use — react to custom messages from your GUI
   code.
 
 .. _StPyMessages:
@@ -136,8 +136,8 @@ Messages and handlers
 
 - Viewer-side lifecycle events, dispatched every frame: ``UpdateEvent`` (input/per-frame logic), ``BuildGuiEvent``
   (build ImGui panels); plus ``ViewerInitEvent`` once at startup (carries the viewer).
-- ``@messages.handler``: second parameter's type annotation = the subscription; any object with handler methods goes
-  in ``viewer_handlers`` / ``sim_handlers``.
+- ``@messages.handler``: second parameter's type annotation = the subscription; any object with handler methods is a
+  plugin and goes in ``viewer_plugins`` / ``sim_plugins``.
 - Worked example (short code block): define ``RewardSnapshot(messages.Snapshot)``; a ``RewardPanel`` class with an
   ``on_reward`` handler and an ``on_build_gui`` handler drawing an ImGui window; sim loop calls
   ``handle.send_to_viewer(RewardSnapshot(value=...))``.
@@ -165,10 +165,10 @@ Customizing the viewer
 The ViewerApp class
 -------------------
 
-- ``ViewerApp`` = the Studio UI packaged as a handler: menu bar, toolbar, options/inspector panes, status bar,
+- ``ViewerApp`` = the Studio UI packaged as a plugin: menu bar, toolbar, options/inspector panes, status bar,
   input handling, and the per-frame messages that connect GUI controls (pause/speed/options) to the sim.
-- Custom tools are *additional* handlers listed alongside it:
-  ``viewer_handlers=[viewer_app.ViewerApp(), RewardPanel()]``.
+- Custom tools are *additional* plugins listed alongside it:
+  ``viewer_plugins=[viewer_app.ViewerApp(), RewardPanel()]``.
 - Bootstraps via ``ViewerInitEvent``; then dispatches ``ViewerAppInitEvent`` carrying itself — handle it to keep a
   reference (e.g. to read the current selection from a panel).
 - Optional: without it you get a bare viewer (rendering + message plumbing + lifecycle events, no built-in UI), and
