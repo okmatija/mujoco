@@ -115,6 +115,10 @@ Messages and handlers
    * - ``StateSnapshot``
      - Snapshot, sim → viewer
      - The physics state (as in ``mj_getState``); sent by every ``handle.sync``.
+   * - ``StateEvent``
+     - Event, viewer → sim
+     - A partial state edit (state array + ``mjtState`` signature), applied with ``mj_setState``; sent by the GUI
+       joint and control sliders.
    * - ``ModelEvent``
      - Event, both directions
      - A new model. Sending it to the viewer loads the model; the viewer sends it to the sim after drag-and-drop.
@@ -123,7 +127,7 @@ Messages and handlers
      - Reset the simulation (``mj_resetData``).
    * - ``PerturbEvent``
      - Event, viewer → sim
-     - Applied perturbation forces from mouse dragging.
+     - Applied perturbation forces from mouse dragging; a ``StateEvent`` subclass.
    * - ``StepControlSnapshot``
      - Snapshot, viewer → sim
      - Pause state, speed and noise settings from the GUI.

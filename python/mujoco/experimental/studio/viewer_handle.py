@@ -30,6 +30,18 @@ IsAliveFn = Callable[[], bool]
 # viewer release its resources before the interpreter tears itself down.
 ShutdownFn = Callable[[float], None]
 
+# State components whose edits require mj_forward to re-derive dependent
+# quantities. Force-like components (xfrc_applied, ctrl) only affect the next
+# step and skip the forward pass.
+_FORWARD_STATE_SIGS: int = (
+    int(mujoco.mjtState.mjSTATE_QPOS)
+    | int(mujoco.mjtState.mjSTATE_QVEL)
+    | int(mujoco.mjtState.mjSTATE_ACT)
+    | int(mujoco.mjtState.mjSTATE_MOCAP_POS)
+    | int(mujoco.mjtState.mjSTATE_MOCAP_QUAT)
+    | int(mujoco.mjtState.mjSTATE_EQ_ACTIVE)
+)
+
 
 class ViewerHandle:
   """A handle for interacting with a running viewer application from the sim."""
@@ -165,13 +177,15 @@ class ViewerHandle:
     return True
 
   @messages.handler(priority=messages.Priority.INTERNAL)
-  def _on_perturb(self, event: messages.PerturbEvent) -> bool:
+  def _on_state(self, event: messages.StateEvent) -> bool:
     model = self.model
     data = self.data
     if model is not None and data is not None:
       state_size = mujoco.mj_stateSize(model, event.state_sig)
       if len(event.state) == state_size:
         mujoco.mj_setState(model, data, event.state, event.state_sig)
+        if event.state_sig & _FORWARD_STATE_SIGS:
+          mujoco.mj_forward(model, data)
     return True
 
   @messages.handler(priority=messages.Priority.INTERNAL)

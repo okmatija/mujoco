@@ -110,6 +110,20 @@ class StateSnapshot(Snapshot):
 
 
 @dataclasses.dataclass(frozen=True)
+class StateEvent(Event):
+  """A reliable event that transports a (partial) MuJoCo state.
+
+  The receiver applies the state with ``mj_setState`` using ``state_sig``.
+  Unlike ``StateSnapshot``, events are never dropped and different state edits
+  do not overwrite each other, so this is the right carrier for state edits
+  such as GUI joint/control slider changes and perturbation forces.
+  """
+
+  state: np.ndarray
+  state_sig: int
+
+
+@dataclasses.dataclass(frozen=True)
 class ResetEvent(Event):
   """An event requesting to reset the simulation."""
 
@@ -145,11 +159,13 @@ class MjOptionSnapshot(Snapshot):
 
 
 @dataclasses.dataclass(frozen=True)
-class PerturbEvent(Event):
-  """Carries perturbation forces from the viewer to the simulation."""
+class PerturbEvent(StateEvent):
+  """Carries perturbation forces from the viewer to the simulation.
 
-  state: np.ndarray
-  state_sig: int
+  A ``StateEvent`` subclass: generic ``StateEvent`` handlers receive it via
+  MRO dispatch, while perturbation-specific handlers can subscribe to this
+  type directly.
+  """
 
 
 @dataclasses.dataclass(frozen=True)
