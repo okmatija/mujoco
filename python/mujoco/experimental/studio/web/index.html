@@ -47,7 +47,7 @@ limitations under the License.
 
       // Parallel chunked model download.
       //
-      // Fetches /model.mjb in up to PARALLEL concurrent 64 MiB requests
+      // Fetches /model in up to PARALLEL concurrent 64 MiB requests
       // and streams the chunks directly into a WASM linear heap buffer
       // allocated via allocModelBuffer(totalSize). Each chunk is retried up
       // to MAX_RETRIES times on transient errors (proxy resets, HTTP2
@@ -58,14 +58,15 @@ limitations under the License.
         const PARALLEL = 6; // concurrent fetches
         const MAX_RETRIES = 3; // per-chunk retry limit
         const RETRY_DELAY = 500; // ms between retries
+        let ptr = 0;
         try {
-          const totalSizeResp = await fetch("/model.mjb?total_bytes");
+          const totalSizeResp = await fetch("/model?total_bytes");
           if (!totalSizeResp.ok) return null;
           const totalSizeData = await totalSizeResp.json();
           const totalSize = totalSizeData.total_bytes;
           if (!totalSize || totalSize <= 0) return null;
 
-          const ptr = Module.allocModelBuffer(totalSize);
+          ptr = Module.allocModelBuffer(totalSize);
           if (!ptr) {
             console.error("[model] failed to allocate WASM buffer of size:", totalSize);
             return null;
@@ -87,7 +88,7 @@ limitations under the License.
             while (nextIndex < chunks.length) {
               const index = nextIndex++;
               const chunk = chunks[index];
-              const url = "/model.mjb?offset_bytes=" + chunk.offset + "&size_bytes=" + chunk.size;
+              const url = "/model?offset_bytes=" + chunk.offset + "&size_bytes=" + chunk.size;
               let ok = false;
               for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
                 try {
@@ -124,34 +125,36 @@ limitations under the License.
             workers.push(worker());
           }
           await Promise.all(workers);
-          if (errors > 0) {
-            Module.freeModelBuffer(ptr);
-            return null;
-          }
+          if (errors > 0) return null;  // finally frees ptr
           if (Module.updateModelDownloadProgress) {
             Module.updateModelDownloadProgress(totalSize, totalSize, 0);
           }
           // Allow ~4 frames (60ms) to elapse so the 100% progress bar paints
           // before C++ synchronous parsing blocks the thread.
           await new Promise((resolve) => setTimeout(resolve, 60));
-          return { ptr: ptr, size: totalSize };
+          const result = { ptr: ptr, size: totalSize };
+          ptr = 0;  // transfer ownership to caller
+          return result;
         } catch (e) {
           console.error("[model] chunked fetch failed:", e);
-          return null;
+          return null;  // finally frees ptr
+        } finally {
+          if (ptr) Module.freeModelBuffer(ptr);
         }
       }
 
       // Single-fetch fallback if chunked download using fetchModelChunked() fails.
       async function fetchModelSingle() {
+        let ptr = 0;
         try {
-          const resp = await fetch("/model.mjb");
+          const resp = await fetch("/model");
           if (!resp.ok) return null;
           const buffer = await resp.arrayBuffer();
           const totalSize = buffer.byteLength;
           if (Module.updateModelDownloadProgress) {
             Module.updateModelDownloadProgress(0, totalSize, 0);
           }
-          const ptr = Module.allocModelBuffer(totalSize);
+          ptr = Module.allocModelBuffer(totalSize);
           if (!ptr) return null;
           HEAPU8.set(new Uint8Array(buffer), ptr);
           if (Module.updateModelDownloadProgress) {
@@ -160,10 +163,14 @@ limitations under the License.
           // Allow ~4 frames (60ms) to elapse so the 100% progress bar paints
           // before C++ synchronous parsing blocks the thread.
           await new Promise((resolve) => setTimeout(resolve, 60));
-          return { ptr: ptr, size: totalSize };
+          const result = { ptr: ptr, size: totalSize };
+          ptr = 0;  // transfer ownership to caller
+          return result;
         } catch (e) {
           console.error("[model] single fetch failed:", e);
-          return null;
+          return null;  // finally frees ptr
+        } finally {
+          if (ptr) Module.freeModelBuffer(ptr);
         }
       }
 
@@ -180,6 +187,7 @@ limitations under the License.
           const modelRes = await fetchModelChunked();
           if (modelRes) {
             Module.parseModelBuffer(modelRes.ptr, modelRes.size);
+            Module.freeModelBuffer(modelRes.ptr);
             return;
           }
         }
@@ -187,6 +195,7 @@ limitations under the License.
         const modelRes = await fetchModelSingle();
         if (modelRes) {
           Module.parseModelBuffer(modelRes.ptr, modelRes.size);
+          Module.freeModelBuffer(modelRes.ptr);
         }
       }
 
@@ -205,19 +214,20 @@ limitations under the License.
           }
           return prefix + path;
         },
-        onRuntimeInitialized: () => {
+        onRuntimeInitialized: async () => {
           const assetsToPrefetch = [
             "AtkinsonHyperlegibleNext[wght].ttf",
             "AtkinsonHyperlegibleMono-Regular.ttf",
             "fontawesome-webfont.ttf",
             "ibl.ktx",
             "pbr.filamat",
+            "pbr_reflect.filamat",
+            "pbr_packed_reflect.filamat",
             "pbr_transparent.filamat",
             "pbr_packed.filamat",
             "pbr_packed_transparent.filamat",
             "phong_2d.filamat",
             "phong_2d_fade.filamat",
-            "phong_2d_reflect.filamat",
             "phong_2d_uv.filamat",
             "phong_2d_uv_fade.filamat",
             "phong_2d_uv_reflect.filamat",
@@ -236,28 +246,55 @@ limitations under the License.
             "unlit_ui.filamat",
           ];
 
-          const assetPromises = assetsToPrefetch.map(async (filename) => {
-            for (let attempt = 0; attempt < 3; attempt++) {
-              try {
-                if (attempt > 0) {
-                  await new Promise((r) => setTimeout(r, 500 * attempt));
+          const PARALLEL = 4;
+          const failedAssets = [];
+          let nextIndex = 0;
+
+          async function prefetchWorker() {
+            while (nextIndex < assetsToPrefetch.length) {
+              const filename = assetsToPrefetch[nextIndex++];
+              let loaded = false;
+              for (let attempt = 0; attempt < 3; attempt++) {
+                try {
+                  if (attempt > 0) {
+                    await new Promise((r) => setTimeout(r, 500 * attempt));
+                  }
+                  const response = await fetch("assets/" + filename);
+                  if (!response.ok) continue;
+                  const buffer = await response.arrayBuffer();
+                  Module.registerAsset(filename, new Uint8Array(buffer));
+                  loaded = true;
+                  break;
+                } catch (error) {
+                  console.warn(`Attempt ${attempt + 1} failed for ${filename}:`, error);
                 }
-                const response = await fetch("assets/" + filename);
-                if (!response.ok) continue;
-                const buffer = await response.arrayBuffer();
-                Module.registerAsset(filename, new Uint8Array(buffer));
-                return;
-              } catch (error) {
-                console.warn(`Attempt ${attempt + 1} failed for ${filename}:`, error);
+              }
+              if (!loaded) {
+                console.error(`Error prefetching asset ${filename} after 3 attempts`);
+                failedAssets.push(filename);
               }
             }
-            console.error(`Error prefetching asset ${filename} after 3 attempts`);
-          });
+          }
 
-          Promise.all(assetPromises).then(() => {
-            Module.startApp();
-            reloadModel();
-          });
+          const workers = [];
+          for (let i = 0; i < Math.min(PARALLEL, assetsToPrefetch.length); i++) {
+            workers.push(prefetchWorker());
+          }
+          await Promise.all(workers);
+
+          if (failedAssets.length > 0) {
+            const msg = `Failed to load required assets (${failedAssets.join(", ")}). Please check server runfiles or connection and reload.`;
+            console.error(msg);
+            const errDiv = document.createElement("div");
+            errDiv.style.cssText =
+              "position:absolute;top:20px;left:20px;right:20px;padding:16px;background:#7a1a1a;color:#fff;font-family:sans-serif;font-size:14px;border-radius:8px;z-index:9999;box-shadow:0 4px 12px rgba(0,0,0,0.5);";
+            errDiv.textContent = msg;
+            document.body.appendChild(errDiv);
+            return;
+          }
+
+          Module.startApp();
+          reloadModel();
         },
       };
       // Set only the CSS size; SDL owns canvas.width/height. Use whole

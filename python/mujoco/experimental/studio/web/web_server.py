@@ -16,7 +16,7 @@
 This server runs in a child process with one asyncio loop on a single public
 port:
 
-  * Plain HTTP GET   serves static files (index.html, WASM, assets), /model.mjb.
+  * Plain HTTP GET   serves static files (index.html, WASM, assets), /model.
   * WebSocket /ui    serves the bridge to the headless NetImgui client, which
                      connects over loopback TCP (see headless_ui.cc).
   * WebSocket /state serves the latest-wins state payload broadcast at ~60Hz
@@ -375,7 +375,6 @@ def _find_static_files_dir() -> Optional[str]:
   if os.path.isdir(dist_dir):
     return dist_dir
 
-
   return None
 
 
@@ -449,7 +448,7 @@ def _run_server(
 
   def _serve_http(path: str) -> Response:
     """Builds the HTTP response for a non-WebSocket GET request."""
-    if path == "/model.mjb":
+    if path == "/model":
       if not mjb_data:
         return Response(404, "Not Found", Headers(), b"no model\n")
       # The model changes on hot-swap; never serve a cached copy.
@@ -480,8 +479,12 @@ def _run_server(
     content_type = _CONTENT_TYPES.get(
         os.path.splitext(full)[1], "application/octet-stream"
     )
+    cacheable = not rel.endswith("index.html")
     return Response(
-        200, "OK", _http_headers(content_type, len(body), cacheable=True), body
+        200,
+        "OK",
+        _http_headers(content_type, len(body), cacheable=cacheable),
+        body,
     )
 
   async def main_loop() -> None:
@@ -793,7 +796,7 @@ def _run_server(
       try:
         # Handshake: browser CmdVersion -> client; client CmdVersion -> browser.
         browser_version = await ws.recv()
-        my_writer.write(browser_version)
+        my_writer.write(browser_version)  # pyrefly: ignore[bad-argument-type]
         await my_writer.drain()
         server_version = await my_reader.readexactly(_NETIMGUI_CMD_VERSION_SIZE)
         await ws.send(server_version)
@@ -870,10 +873,10 @@ def _run_server(
           gen_before = generation.value
           if gen_before & 1:
             continue
-          (used,) = struct.unpack("<I", bytes(shm_array[:4]))
+          (used,) = struct.unpack("<I", bytes(shm_array[:4]))  # pyrefly: ignore[unsupported-operation]
           if used == 0 or used > shm_capacity:
             return None
-          data = bytes(shm_array[4 : 4 + used])
+          data = bytes(shm_array[4 : 4 + used])  # pyrefly: ignore[unsupported-operation]
           if generation.value == gen_before:
             return gen_before, data
         return None
@@ -959,15 +962,15 @@ def _run_server(
       if path in ("/ui", "/state", "/drop"):
         return None  # Proceed with the WebSocket handshake.
 
-      # Chunked model endpoint: the client fetches /model.mjb in parallel chunks
+      # Chunked model endpoint: the client fetches /model in parallel chunks
       #
-      #   GET /model.mjb?total_bytes                 -> {"total_bytes": <n>}
-      #   GET /model.mjb?offset_bytes=X&size_bytes=Y -> bytes [X, X+Y)
+      #   GET /model?total_bytes                 -> {"total_bytes": <n>}
+      #   GET /model?offset_bytes=X&size_bytes=Y -> bytes [X, X+Y)
       #
-      # Full model endpoint: the client fetches /model.mjb in a single request
+      # Full model endpoint: the client fetches /model in a single request
       #
-      #   GET /model.mjb  -> full model bytes
-      if path == "/model.mjb" and mjb_data and query_string:
+      #   GET /model  -> full model bytes
+      if path == "/model" and mjb_data and query_string:
         params = urllib.parse.parse_qs(query_string)
         if "total_bytes" in params or query_string == "total_bytes":
           body = json.dumps({"total_bytes": len(mjb_data)}).encode()
@@ -975,8 +978,11 @@ def _run_server(
               "application/json", len(body), cacheable=False
           )
           return Response(200, "OK", headers, body)
-        offset = int(params.get("offset_bytes", [0])[0])
-        size = int(params.get("size_bytes", [0])[0])
+        try:
+          offset = int(params.get("offset_bytes", [0])[0])
+          size = int(params.get("size_bytes", [0])[0])
+        except (ValueError, TypeError):
+          return Response(400, "Bad Request", Headers(), b"bad params\n")
         if size <= 0 or offset < 0 or offset >= len(mjb_data):
           return Response(400, "Bad Request", Headers(), b"bad range\n")
         chunk = mjb_data[offset : min(offset + size, len(mjb_data))]
@@ -1135,7 +1141,7 @@ def _run_server(
     tcp_port = tcp_sock.getsockname()[1]
     logger.debug(
         "[Http] Serving on http://%s:%d "
-        "(/, /model.mjb, /ui, /state; NetImgui TCP on 127.0.0.1:%d)",
+        "(/, /model, /ui, /state; NetImgui TCP on 127.0.0.1:%d)",
         http_host,
         http_port,
         tcp_port,
@@ -1185,7 +1191,7 @@ class WebServer:
       http_sock: The listening socket for HTTP and WebSocket traffic.
       tcp_sock: The listening socket for NetImgui traffic.
       static_files_dir: The directory containing the static files to serve.
-      mjb_data: The model data to serve from /model.mjb.
+      mjb_data: The model data to serve from /model.
       max_payload_size: The maximum size of the state payload.
       drop_queue: The queue to put dropped files onto.
       controller_sid_shared: The shared value containing the controller's

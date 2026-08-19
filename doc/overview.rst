@@ -425,7 +425,7 @@ the other objects in the simulation, so the number of contacts will be small for
 Texture
 ^^^^^^^
 
-Textures can be loaded from PNG files or synthesized by the compiler based on user-defined procedural parameters.
+Textures can be loaded from PNG or KTX files or synthesized by the compiler based on user-defined procedural parameters.
 There is also the option to leave the texture empty at model creation time and change it later at runtime -- so as to
 render video in a MuJoCo simulation, or create other dynamic effects. The visualizer supports two types of texture
 mapping: 2D and cube. 2D mapping is useful for planes and height fields. Cube mapping is useful for "shrink-wrapping"
@@ -804,13 +804,17 @@ section, prevents objects from falling through the floor or moving through walls
 the following situation:
 
 The user comments out the root joint of a floating-base model, perhaps in order to prevent it from falling; now that the
-base body is counted as static, new collisions appear that were not there before and the user is confused. There are two
-easy ways to avoid this problem:
+base body is counted as static, new collisions appear that were not there before and the user is confused. There are
+three easy ways to avoid this problem:
 
-1. Don't remove the root joint. Perhaps it is enough to :ref:`disable gravity<option-flag>` and possibly add some
+1. Make the newly static body a :ref:`mocap body<body-mocap>`. Mocap bodies are the root of their own body group for
+   the purposes of collision filtering, rather than being welded to the world, so the parent-child exclusion applies to
+   their children as usual. As a bonus, the body can be moved around interactively.
+
+2. Don't remove the root joint. Perhaps it is enough to :ref:`disable gravity<option-flag>` and possibly add some
    :ref:`fluid viscosity<option>` in order to prevent your model from moving around too much.
 
-2. Use :ref:`collision filtering<Collision>` to explicitly disable the unwanted collisions, either by setting the
+3. Use :ref:`collision filtering<Collision>` to explicitly disable the unwanted collisions, either by setting the
    relevant :at:`contype` and :at:`conaffinity` attributes, or by using a contact :ref:`exclude <contact-exclude>`
    directive.
 

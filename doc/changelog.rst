@@ -13,8 +13,13 @@ General
   grammar table, presence constraints, keyword maps, typed attribute bindings and save policies are generated from it
   and gated by tests, as are the schema's enum keywords and declared defaults against the C headers and
   default-constructors.
-- An XSD schema derived from the main schema is provided in
-  `model/mjcf.xsd <https://github.com/google-deepmind/mujoco/tree/main/src/xml/generated/mjcf.xsd>`__.
+
+.. admonition:: Breaking API changes
+   :class: attention
+
+   - Removed the custom binary texture format (``image/vnd.mujoco.texture``) and the automatic fallback to custom
+     textures when loading files with unrecognized extensions. Textures can now only be loaded from PNG (``image/png``)
+     and KTX (``image/ktx``) files.
 
 Actuation
 ^^^^^^^^^
@@ -26,37 +31,119 @@ Actuation
   identical to :ref:`position<actuator-position>`. The input signature is any subset of ``[pos, vel, ff]``, selected
   by :ref:`input<actuator-pid-input>`; absent setpoint inputs are fixed at zero, so the control vector contains no
   inert entries.
+- The :ref:`dcmotor<actuator-dcmotor>` on-board controller is redesigned: the
+  :ref:`input<actuator-dcmotor-input>` attribute selects any subset of ``[pos, vel, ff, voltage]``, where ``pos``
+  and ``vel`` are setpoints for the controller, ``ff`` is a torque feedforward, and ``voltage`` is the raw terminal
+  voltage (the default, a plain voltage-commanded motor). Controller gains are in torque space, as for
+  :ref:`pid<actuator-pid>`, and the drive voltage compensates back-EMF as in a current-controlled driver: commanded
+  torque is delivered exactly until a limit is reached. The keyword ``input="none"`` selects the empty signature:
+  the actuator has no control inputs and is purely passive, so friction, cogging and back-EMF braking can be used
+  as passive joint forces.
 
-.. admonition:: Breaking ABI changes
-   :class: caution
+.. admonition:: Breaking API changes
+   :class: attention
 
-   - :ref:`mjsActuator` gained ``velrange`` and ``ffrange`` fields, changing its size and layout. The :ref:`mjtGain`
-     and :ref:`mjtDyn` enums gained ``pid`` members, shifting the values of ``mjGAIN_USER`` and ``mjDYN_USER``.
+   - The mode-flag semantics of :ref:`dcmotor/input<actuator-dcmotor-input>` ("voltage", "position", "velocity",
+     selecting the interpretation of a single control) are replaced by input signatures, and the controller gains
+     changed from voltage space to torque space. The old velocity mode's integral term (integrated-velocity
+     tracking) is retired without replacement; the integrator always accumulates position error.
+
+     **Migration:** Voltage-commanded motors (the default) are unchanged. Replace ``input="position"`` with
+     ``input="pos"`` and ``input="velocity"`` with ``input="vel"``, and multiply the controller gains by
+     :math:`K/R` (torque per volt). The motor's back-EMF damping, previously felt in addition to the controller's
+     damping, is now compensated: to preserve behavior when the velocity setpoint is zero, add :math:`K^2/R` to the
+     converted :at-val:`kd`.
 
 Engine
 ^^^^^^
 
+- Optimized large-mesh convex collision detection with up to 2x speedup in certain cases.
 - Replaced the per-step sparse Cholesky factorization of the flex block of the implicit effective metric M + K with
   its prefactored per-vertex 3x3 diagonal blocks. The blocks precondition the CG constraint solver and drive an
   iterative solve for ``qacc_smooth``, which now converges on :ref:`tolerance<option-tolerance>` rather than a fixed
   threshold. Flexes with :ref:`elastic2d<flex-elasticity-elastic2d>` stretch stiffness step roughly twice as fast;
   bending-only flexes keep the exact constant factor and are unchanged.
+- Rewrote cleaner box-box SAT collider.
 
 .. admonition:: Breaking API changes
    :class: attention
+
+   - Contacts of a flex with :ref:`passive<flexcomp-contact-passive>` collisions are now integrated implicitly:
+     their stiffness is carried by the effective metric rather than applied as an explicit spring, and can be far
+     stiffer than the timestep would otherwise permit. Models using passive collisions should be re-checked: the
+     feature now requires :at:`implicit` or :at:`implicitfast` with the CG solver, pyramidal cones and sleep
+     disabled; passive handling covers flex-flex, self-, and static-geometry contact, while contact with a moving
+     body stays on the constraint solver; and the stiffness is now a mass-scaled natural frequency rather than a
+     fixed 1e4.
 
    - Removed ``mjData.efm_L_rownnz``, ``mjData.efm_L_rowadr`` and ``mjData.efm_L_colind``. They described the sparsity
      of the effective-metric Cholesky factor, which no longer exists; ``mjData.efm_L`` now holds dense 3x3 blocks,
      9 numbers per covered vertex. ``mjData.efm_active`` no longer takes the value 2: nothing selects a solve path on
      preconditioner exactness, so it is now a plain 0/1 flag.
+   - Changed the default value of :ref:`bvactive<visual-global-bvactive>` from "true" to "false". This avoids
+     unnecessarily clearing bounding volume hierarchy visualization flags at every simulation step, which can be a
+     bottleneck for models with large meshes.
+   - Mocap bodies and their dof-less descendants are now the root of their own weld group: ``mjModel.body_weldid`` of a
+     mocap body equals its own id rather than 0. Consequences: dragging a mocap body into sleeping objects now wakes
+     them; children of mocap bodies receive standard :ref:`parent-child collision filtering<SurprisingCollisions>`;
+     mocap bodies no longer count as static geometry for ray casting, and contact-matching sensors aggregate their
+     contacts under the mocap body rather than the world; and geom pairs where neither body can move no longer generate
+     contacts.
 
 Models
 ^^^^^^
+
+- Added `drape <https://github.com/google-deepmind/mujoco/blob/main/model/flex/drape.xml>`__ example model: three
+  cloths draped over a sphere, demonstrating :ref:`passive<flex-contact-passive>` collisions. It replaces the
+  ``sphere_passive`` model, which has been removed.
 
 - Added `bag <https://github.com/google-deepmind/mujoco/blob/main/model/flex/bag.xml>`__ example model: a cloth bag,
   held open by pinning the ring of vertices around its mouth, catching the standard humanoid dropped in from above.
   Unlike the poncho models, which are bending-only, this model exercises the 2D
   :ref:`stretch<flex-elasticity-elastic2d>` elasticity of a flex.
+
+Rendering
+^^^^^^^^^
+
+.. admonition:: Breaking API changes
+   :class: attention
+
+   .. image:: https://www.gstatic.com/mujoco/doc/images/changelog/primitives_textured.gif
+      :align: right
+      :width: 40%
+
+   - Added explicit texture coordinates to built-in geometries (Plane, Box, Sphere, Ellipsoid, Capsule,
+     Cylinder) in both the Classic renderer and Filament. 2D textures applied to primitive shapes will look different
+     as textures are mapped using canonical UV parameterizations rather than projecting onto the :math:`x,y` plane.
+
+     For finite planes, textures are now anchored to the bottom-left corner instead of the center. This will cause the
+     most common visual breakage, as common procedural checker textures will be phase shifted. Infinite planes continue
+     to be anchored at the origin with no visual changes.
+
+     .. image:: images/changelog/plane_uv_tiling.png
+        :align: center
+        :width: 70%
+   - Added :ref:`light/softness<body-light-softness>`: edge softness for spotlights under physically-based lighting
+     models, given as the fraction of the cone over which intensity falls to zero. The default of 0.2 is a semi-soft
+     cone which delivers the full :ref:`intensity<body-light-intensity>` everywhere inside it, so that illuminance
+     follows :math:`E = I/d^2` independent of the :ref:`cutoff<body-light-cutoff>` angle. Previously the filament
+     renderer treated the entire cone as penumbra, dimming spotlights well below their rated intensity, increasingly
+     so for narrow cutoffs.
+
+     **Migration:** Set :at:`softness` to 1 to reproduce the previous appearance of existing models.
+
+MJX
+^^^
+
+.. admonition:: Breaking API changes
+   :class: attention
+
+   - :func:`mjx.render` and :func:`mjx.render_with_segmentation` now return the updated :class:`mjx.Data` as the last
+     element in their return tuple (i.e. ``(rgb, depth, d)`` and ``(rgb, depth, seg, d)``). This ensures JAX/XLA
+     strictly enforces causal scheduling between sequential ``refit_bvh`` and ``render`` calls.
+
+     **Migration:** Update unpacking calls from ``pixels, depth = mjx.render(mx, d, rc)`` to
+     ``pixels, depth, d = mjx.render(mx, d, rc)``.
 
 Bug fixes
 ^^^^^^^^^
@@ -74,6 +161,33 @@ Bug fixes
   it is positive semi-definite exactly when the edge is in tension, and its consumers require an SPD operator; the
   stretch force itself is unchanged. This affects the implicit integrators and the implicit effective metric, so
   flexes using ``elastic2d="stretch"`` integrate slightly differently. Bending-only flexes are unaffected.
+
+OpenUSD
+^^^^^^^
+
+- Upgraded Newton USD schemas support to version 0.4.0:
+
+  - ``NewtonJointAPI`` (``newton:armature``, ``newton:damping``, ``newton:friction``) deprecates the ``MjcJointAPI``
+    equivalent ``mjc:armature``, ``mjc:damping``, and ``mjc:frictionloss`` attributes.
+  - ``NewtonMassAPI`` (``newton:massModel``, ``newton:inertia``) deprecates the ``MjcCollisionAPI``
+    equivalent ``mjc:shellinertia`` and ``MjcMeshCollisionAPI`` ``mjc:inertia`` attributes. This completes the
+    deprecation of all ``MjcMeshCollisionAPI`` attributes, slating it for removal in a future release.
+  - Added support for ``NewtonSiteAPI`` to declare sites, ``MjcSiteAPI`` auto applies this schema, but remains
+    as an extension for the ``mjc:group`` attribute.
+  - Added support for ``NewtonMaterialAPI`` (``newton:contactAdhesion``, ``newton:torsionalFriction``,
+    ``newton:rollingFriction``). This deprecates ``MjcMaterialAPI`` which will be removed in a future release.
+  - Added support for ``NewtonMimicAPI`` (``newton:mimicJoint``, ``newton:mimicCoef0``, ``newton:mimicCoef1``) as a
+    base for ``MjcEqualityJointAPI``, this deprecates the ``mjc:coef0`` and ``mjc:coef1`` attributes and the
+    ``mjc:target`` relationship.
+  - Added support for ``NewtonArticulationRootAPI`` (``newton:jointsAddMobility``).
+
+.. admonition:: Breaking ABI changes
+   :class: caution
+
+   - :ref:`mjsActuator` gained ``velrange`` and ``ffrange`` fields, changing its size and layout. The :ref:`mjtGain`
+     and :ref:`mjtDyn` enums gained ``pid`` members, shifting the values of ``mjGAIN_USER`` and ``mjDYN_USER``.
+   - :ref:`mjResource` gained an ``args`` field (changing its size and layout), used to hold optional extra encoding and
+     decoding arguments formatted as URI query parameters (separated by ``&``).
 
 Version 3.11.0 (July 27, 2026)
 ------------------------------

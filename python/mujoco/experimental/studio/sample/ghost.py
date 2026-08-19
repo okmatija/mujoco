@@ -117,7 +117,7 @@ class GhostRenderer:
     self._viewer.extra_geoms.clear()
     if self._last_time is None or data.time < self._last_time:
       self._history.clear()
-    if not self._history or data.time > self._last_time:
+    if not self._history or data.time > self._last_time:  # pyrefly: ignore[unsupported-operation]
       self._history.append((
           data.time,
           data.geom_xpos.copy(),
@@ -129,7 +129,7 @@ class GhostRenderer:
     while len(self._history) > 1 and self._history[1][0] <= target_time:
       self._history.popleft()
 
-    _, xpos, xmat = self._history[0]
+    _, xpos, xmat = self._history[0]  # pyrefly: ignore[bad-assignment]
     if len(xpos) != model.ngeom or len(xmat) != model.ngeom:
       return
 
@@ -162,7 +162,9 @@ def main(argv: list[str]) -> None:
       argv[1] if len(argv) > 1 and not argv[1].startswith('--') else None
   )
   if not model_path:
-    raise _app.UsageError('Please provide a model path argument or --model flag.')
+    raise _app.UsageError(
+        'Please provide a model path argument or --model flag.'
+    )
 
   data = None
   try:
@@ -185,7 +187,7 @@ def main(argv: list[str]) -> None:
 
   with launch_passive.launch_passive(
       config,
-      viewer_handlers=[ghost_renderer],
+      viewer_plugins=[ghost_renderer],
   ) as handle:
     handle.send_to_viewer(messages.ModelEvent(model=model))
 

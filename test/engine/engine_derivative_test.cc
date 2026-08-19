@@ -1414,7 +1414,7 @@ TEST_F(DerivativeTest, DCMotorStatefulDerivative) {
     </worldbody>
     <actuator>
       <dcmotor name="dc" joint="j" motorconst="2.0" resistance="0.5"
-               inductance="0 0.001" input="position" controller="10 0 5"/>
+               inductance="0 0.001" input="pos vel" controller="10 0 5"/>
     </actuator>
   </mujoco>
   )";
@@ -1437,10 +1437,10 @@ TEST_F(DerivativeTest, DCMotorStatefulDerivative) {
   // extract diagonal of qDeriv
   mjtNum qDeriv_diag = d->qDeriv[m->D_rowadr[0] + m->D_rownnz[0] - 1];
 
-  // expected: K*(dVdw - K)*(1 - exp(-h/te))/R
-  // with K=2, R=0.5, te=0.001, h=0.002, kd=5, dVdw=-5
-  mjtNum K = 2.0, R = 0.5, te = 0.001, h = 0.002, kd = 5.0;
-  mjtNum expected = K * (-kd - K) * (1 - mju_exp(-h / te)) / R;
+  // expected: K*(dVdw - K)*(1 - exp(-h/te))/R with the torque-space map
+  // dVdw = -kd*R/K + K, so the expression reduces to -kd*(1 - exp(-h/te))
+  mjtNum te = 0.001, h = 0.002, kd = 5.0;
+  mjtNum expected = -kd * (1 - mju_exp(-h / te));
   EXPECT_NEAR(qDeriv_diag, expected, 1e-10)
       << "stateful DC motor derivative should match analytical formula";
 }
@@ -1459,7 +1459,7 @@ TEST_F(DerivativeTest, DCMotorStatefulConvergesToStateless) {
     </worldbody>
     <actuator>
       <dcmotor name="dc" joint="j" motorconst="1.0" resistance="1.0"
-               input="position" controller="10 0 5"/>
+               input="pos vel" controller="10 0 5"/>
     </actuator>
   </mujoco>
   )";
@@ -1476,7 +1476,7 @@ TEST_F(DerivativeTest, DCMotorStatefulConvergesToStateless) {
     </worldbody>
     <actuator>
       <dcmotor name="dc" joint="j" motorconst="1.0" resistance="1.0"
-               inductance="0 1e-8" input="position" controller="10 0 5"/>
+               inductance="0 1e-8" input="pos vel" controller="10 0 5"/>
     </actuator>
   </mujoco>
   )";
@@ -2153,13 +2153,13 @@ TEST_F(DerivativeTest, FlexStiffAssemble) {
   std::vector<int> rownnz(nv), rowadr(nv);
   int nnz = mjd_flexStiff_assemble(model.get(), data.get(), rownnz.data(),
                                    rowadr.data(), NULL, NULL, s1, s2,
-                                   /*flg_bend=*/1, /*flg_stretch=*/1, NULL);
+                                   /*flg_bend=*/1, /*flg_stretch=*/1, /*flg_contact=*/0, NULL);
   ASSERT_GT(nnz, 0);
   std::vector<int> colind(nnz);
   std::vector<mjtNum> val(nnz);
   mjd_flexStiff_assemble(model.get(), data.get(), rownnz.data(), rowadr.data(),
                          colind.data(), val.data(), s1, s2, /*flg_bend=*/1,
-                         /*flg_stretch=*/1, NULL);
+                         /*flg_stretch=*/1, /*flg_contact=*/0, NULL);
 
   // compare CSR apply vs operators on test vectors
   for (int trial = 0; trial < 3; trial++) {
@@ -2220,13 +2220,13 @@ TEST_F(DerivativeTest, FlexStiffAssembleInterp) {
   mjtNum s1 = 4e-6, s2 = 2e-3;
   std::vector<int> rownnz(nv), rowadr(nv);
   int nnz = mjd_flexStiff_assemble(model.get(), data.get(), rownnz.data(), rowadr.data(),
-                                   NULL, NULL, s1, s2, /*flg_bend=*/0, /*flg_stretch=*/0,
+                                   NULL, NULL, s1, s2, /*flg_bend=*/0, /*flg_stretch=*/0, /*flg_contact=*/0,
                                    krot.data());
   ASSERT_GT(nnz, 0);
   std::vector<int> colind(nnz);
   std::vector<mjtNum> val(nnz);
   mjd_flexStiff_assemble(model.get(), data.get(), rownnz.data(), rowadr.data(),
-                         colind.data(), val.data(), s1, s2, /*flg_bend=*/0, /*flg_stretch=*/0,
+                         colind.data(), val.data(), s1, s2, /*flg_bend=*/0, /*flg_stretch=*/0, /*flg_contact=*/0,
                          krot.data());
 
   // compare CSR apply vs the operator called with negated scales (its convention)

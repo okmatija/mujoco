@@ -19,6 +19,7 @@
 #include <stddef.h>
 
 #include <mujoco/mjexport.h>
+#include <mujoco/mjmodel.h>
 #include <mujoco/mjtype.h>
 
 #include "engine/engine_collision_convex.h"
@@ -81,7 +82,8 @@ typedef struct {
 // data produced from running GJK and EPA
 typedef struct {
   // geom distance information
-  mjtNum dist;                  // distance between geoms
+  int separated;                // set to true if geoms are verified to be separated
+  mjtNum dist[mjMAXCONPAIR];    // distance between witness points
   mjtNum x1[3 * mjMAXCONPAIR];  // witness points for geom 1
   mjtNum x2[3 * mjMAXCONPAIR];  // witness points for geom 2
   int nx;                       // number of witness points

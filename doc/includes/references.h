@@ -698,7 +698,7 @@ typedef struct mjModel_ {
   // bodies
   int*      body_parentid;        // id of body's parent                      (nbody x 1)
   int*      body_rootid;          // ancestor that is direct child of world   (nbody x 1)
-  int*      body_weldid;          // top ancestor with no dofs to this body   (nbody x 1)
+  int*      body_weldid;          // top dof-less ancestor; mocap: own root   (nbody x 1)
   int*      body_mocapid;         // id of mocap data; -1: none               (nbody x 1)
   int*      body_jntnum;          // number of joints for this body           (nbody x 1)
   int*      body_jntadr;          // start addr of joints; -1: no joints      (nbody x 1)
@@ -860,6 +860,7 @@ typedef struct mjModel_ {
   mjtNum*   light_dir0;           // global direction in qpos0                (nlight x 3)
   float*    light_attenuation;    // OpenGL attenuation (quadratic model)     (nlight x 3)
   float*    light_cutoff;         // OpenGL cutoff                            (nlight x 1)
+  float*    light_softness;       // spotlight edge softness                  (nlight x 1)
   float*    light_exponent;       // OpenGL exponent                          (nlight x 1)
   float*    light_ambient;        // ambient rgb (alpha=1)                    (nlight x 3)
   float*    light_diffuse;        // diffuse rgb (alpha=1)                    (nlight x 3)
@@ -966,6 +967,7 @@ typedef struct mjModel_ {
   int*      mesh_texcoordadr;     // texcoord data address; -1: no texcoord   (nmesh x 1)
   int*      mesh_texcoordnum;     // number of texcoord                       (nmesh x 1)
   int*      mesh_graphadr;        // graph data address; -1: no graph         (nmesh x 1)
+  int*      mesh_extrema;         // extremum vertices in 3x3x3 directions    (nmesh x 27)
   float*    mesh_vert;            // vertex positions for all meshes          (nmeshvert x 3)
   float*    mesh_normal;          // normals for all meshes                   (nmeshnormal x 3)
   float*    mesh_texcoord;        // vertex texcoords for all meshes          (nmeshtexcoord x 2)
@@ -1250,6 +1252,8 @@ typedef struct mjResource_ {
   mjVFS* vfs;                                   // pointer to the VFS
   char timestamp[512];                          // timestamp of the resource
   const struct mjpResourceProvider* provider;   // pointer to the provider
+  const char* args;  // resource arguments/hints, URI query format key=val&...
+                     // (optional)
 } mjResource;
 typedef struct mjpResourceProvider {
   const char* prefix;               // prefix for match against a resource name
@@ -1606,6 +1610,7 @@ typedef struct mjrfLightParams_ {
   mjtBool cast_shadows;            // if true, cast shadows
   float range;                     // effective range of light, in meters
   float spot_cone_angle;           // spot light cone angle, in degrees
+  float spot_softness;             // spot light edge softness, fraction of cone angle in [0, 1]
   int shadow_map_size;             // size of shadow map texture, 0 to use default size
   float bulb_radius;               // bulb radius, used for soft shadows
   float vsm_blur_width;            // variance shadow map blur width
@@ -1999,6 +2004,7 @@ typedef struct mjsLight_ {         // light specification
   float range;                     // range of effectiveness
   float attenuation[3];            // OpenGL attenuation (quadratic model)
   float cutoff;                    // OpenGL cutoff
+  float softness;                  // spotlight edge softness
   float exponent;                  // OpenGL exponent
   float ambient[3];                // ambient color
   float diffuse[3];                // diffuse color
@@ -2542,7 +2548,9 @@ typedef enum mjtCtrlChart {       // so3 input signature (actuator_ctrlspec): or
 typedef enum mjtCtrlInput {       // servo input signature (actuator_ctrlspec): present-input bits
   mjINPUT_POS         = 1,        // position setpoint input
   mjINPUT_VEL         = 2,        // velocity setpoint input
-  mjINPUT_FF          = 4         // feedforward input
+  mjINPUT_FF          = 4,        // feedforward input, in the actuator's output space
+  mjINPUT_VOLTAGE     = 8,        // raw terminal voltage input (dcmotor)
+  mjINPUT_NONE        = 16        // explicitly no inputs: purely passive (dcmotor)
 } mjtCtrlInput;
 typedef enum mjtObj {             // type of MujoCo object
   mjOBJ_UNKNOWN       = 0,        // unknown object type
@@ -3291,6 +3299,7 @@ typedef struct mjvLight_ {        // OpenGL light
   float    bulbradius;            // bulb radius for soft shadows
   float    intensity;             // intensity, in candelas
   float    range;                 // range of effectiveness
+  float    softness;              // spotlight edge softness
 } mjvLight;
 typedef struct mjvOption_ {          // abstract visualization options
   int      label;                    // what objects to label (mjtLabel)
@@ -4011,7 +4020,7 @@ const char* mjs_setToAdhesion(mjsActuator* actuator, double gain);
 const char* mjs_setToDCMotor(mjsActuator* actuator, double motorconst[2], double resistance,
                              double nominal[3], double saturation[3], double inductance[2],
                              double cogging[3], double controller[6], double thermal[6],
-                             double lugre[5], int input_mode);
+                             double lugre[5], int ctrlspec);
 mjsMesh* mjs_addMesh(mjSpec* s, const mjsDefault* def);
 mjsHField* mjs_addHField(mjSpec* s);
 mjsSkin* mjs_addSkin(mjSpec* s);

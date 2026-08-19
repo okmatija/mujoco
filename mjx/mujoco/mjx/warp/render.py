@@ -47,6 +47,7 @@ _cb = mjwp_types.Callback(
     **{f.name: None for f in dataclasses.fields(mjwp_types.Callback) if f.init}
 )
 
+
 @ffi.format_args_for_warp
 def _render_shim(
     # Model
@@ -89,11 +90,13 @@ def _render_shim(
     geom_xpos: wp.array2d[wp.vec3],
     light_xdir: wp.array2d[wp.vec3],
     light_xpos: wp.array2d[wp.vec3],
+    _jax_token: wp.array[int],
     # Registry
     rc_id: int,
     rgb: wp.array2d[wp.uint32],
     depth: wp.array2d[wp.float32],
     seg: wp.array2d[wp.vec2i],
+    output_token: wp.array[int],
 ):
   _m.stat = _s
   _m.opt = _o
@@ -142,6 +145,7 @@ def _render_shim(
   render_context.rgb_data = rgb
   render_context.depth_data = depth
   render_context.seg_data = seg
+  output_token.zero_()
   mjwarp.render(_m, _d, render_context)
 
 
@@ -151,10 +155,11 @@ def _render_jax_impl(m: types.Model, d: types.Data, ctx: RenderContextPytree):
       'rgb': render_ctx.rgb_data_shape,
       'depth': render_ctx.depth_data_shape,
       'seg': render_ctx.seg_data_shape,
+      'output_token': (d.qpos.shape[0],),
   }
   jf = ffi.jax_callable_variadic_tuple(
       _render_shim,
-      num_outputs=3,
+      num_outputs=4,
       output_dims=output_dims,
       vmap_method=None,
       in_out_argnames=set([]),
@@ -163,6 +168,7 @@ def _render_jax_impl(m: types.Model, d: types.Data, ctx: RenderContextPytree):
           'cam_intrinsic',
           'cam_xmat',
           'cam_xpos',
+          'flexvert_xpos',
           'geom_matid',
           'geom_rgba',
           'geom_size',
@@ -177,15 +183,18 @@ def _render_jax_impl(m: types.Model, d: types.Data, ctx: RenderContextPytree):
           'light_exponent',
           'light_specular',
           'light_type',
+          'light_xdir',
+          'light_xpos',
           'mat_emission',
           'mat_rgba',
           'mat_shininess',
           'mat_specular',
           'mat_texid',
+          'mat_texrepeat',
       ]),
       stage_out_argnames=set([]),
       graph_mode=m.opt._impl.graph_mode,
-      has_side_effect=False,
+      has_side_effect=True,
   )
   out = jf(
       render_ctx.nworld,
@@ -226,6 +235,7 @@ def _render_jax_impl(m: types.Model, d: types.Data, ctx: RenderContextPytree):
       d.geom_xpos,
       d._impl.light_xdir,
       d._impl.light_xpos,
+      d._impl._jax_token,
       ctx.key,
   )
   d = d.tree_replace({})
@@ -248,4 +258,4 @@ def render_vmap(
     ctx: RenderContextPytree,
 ):
   out = render(m, d, ctx)
-  return out, [True, True, True]
+  return out, [True, True, True, is_batched[1]._impl._jax_token]

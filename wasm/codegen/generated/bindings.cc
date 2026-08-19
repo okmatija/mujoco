@@ -2884,7 +2884,7 @@ std::string mjs_setToCylinder_wrapper(MjsActuator& actuator, double timeconst, d
   return std::string(mjs_setToCylinder(actuator.get(), timeconst, bias, area, diameter));
 }
 
-std::string mjs_setToDCMotor_wrapper(MjsActuator& actuator, const val& motorconst, double resistance, const val& nominal, const val& saturation, const val& inductance, const val& cogging, const val& controller, const val& thermal, const val& lugre, int input_mode) {
+std::string mjs_setToDCMotor_wrapper(MjsActuator& actuator, const val& motorconst, double resistance, const val& nominal, const val& saturation, const val& inductance, const val& cogging, const val& controller, const val& thermal, const val& lugre, int ctrlspec) {
   UNPACK_NULLABLE_VALUE(double, motorconst);
   UNPACK_NULLABLE_VALUE(double, nominal);
   UNPACK_NULLABLE_VALUE(double, saturation);
@@ -2893,7 +2893,7 @@ std::string mjs_setToDCMotor_wrapper(MjsActuator& actuator, const val& motorcons
   UNPACK_NULLABLE_VALUE(double, controller);
   UNPACK_NULLABLE_VALUE(double, thermal);
   UNPACK_NULLABLE_VALUE(double, lugre);
-  return std::string(mjs_setToDCMotor(actuator.get(), motorconst_.data(), resistance, nominal_.data(), saturation_.data(), inductance_.data(), cogging_.data(), controller_.data(), thermal_.data(), lugre_.data(), input_mode));
+  return std::string(mjs_setToDCMotor(actuator.get(), motorconst_.data(), resistance, nominal_.data(), saturation_.data(), inductance_.data(), cogging_.data(), controller_.data(), thermal_.data(), lugre_.data(), ctrlspec));
 }
 
 std::string mjs_setToDamper_wrapper(MjsActuator& actuator, double kv) {
@@ -3993,7 +3993,9 @@ EMSCRIPTEN_BINDINGS(mujoco_bindings) {
   enum_<mjtCtrlInput>("mjtCtrlInput")
     .value("mjINPUT_POS", mjINPUT_POS)
     .value("mjINPUT_VEL", mjINPUT_VEL)
-    .value("mjINPUT_FF", mjINPUT_FF);
+    .value("mjINPUT_FF", mjINPUT_FF)
+    .value("mjINPUT_VOLTAGE", mjINPUT_VOLTAGE)
+    .value("mjINPUT_NONE", mjINPUT_NONE);
   enum_<mjtDataType>("mjtDataType")
     .value("mjDATATYPE_REAL", mjDATATYPE_REAL)
     .value("mjDATATYPE_POSITIVE", mjDATATYPE_POSITIVE)
@@ -5102,6 +5104,7 @@ EMSCRIPTEN_BINDINGS(mujoco_bindings) {
     .property("light_pos0", &MjModel::light_pos0)
     .property("light_poscom0", &MjModel::light_poscom0)
     .property("light_range", &MjModel::light_range)
+    .property("light_softness", &MjModel::light_softness)
     .property("light_specular", &MjModel::light_specular)
     .property("light_targetbodyid", &MjModel::light_targetbodyid)
     .property("light_texid", &MjModel::light_texid)
@@ -5121,6 +5124,7 @@ EMSCRIPTEN_BINDINGS(mujoco_bindings) {
     .property("mat_texuniform", &MjModel::mat_texuniform)
     .property("mesh_bvhadr", &MjModel::mesh_bvhadr)
     .property("mesh_bvhnum", &MjModel::mesh_bvhnum)
+    .property("mesh_extrema", &MjModel::mesh_extrema)
     .property("mesh_face", &MjModel::mesh_face)
     .property("mesh_faceadr", &MjModel::mesh_faceadr)
     .property("mesh_facenormal", &MjModel::mesh_facenormal)
@@ -5893,6 +5897,7 @@ EMSCRIPTEN_BINDINGS(mujoco_bindings) {
     .property("mode", &MjsLight::mode, &MjsLight::set_mode, reference())
     .property("pos", &MjsLight::pos)
     .property("range", &MjsLight::range, &MjsLight::set_range, reference())
+    .property("softness", &MjsLight::softness, &MjsLight::set_softness, reference())
     .property("specular", &MjsLight::specular)
     .property("targetbody", &MjsLight::targetbody, &MjsLight::set_targetbody, reference())
     .property("texture", &MjsLight::texture, &MjsLight::set_texture, reference())
@@ -6170,6 +6175,7 @@ EMSCRIPTEN_BINDINGS(mujoco_bindings) {
     .property("intensity", &MjvLight::intensity, &MjvLight::set_intensity, reference())
     .property("pos", &MjvLight::pos)
     .property("range", &MjvLight::range, &MjvLight::set_range, reference())
+    .property("softness", &MjvLight::softness, &MjvLight::set_softness, reference())
     .property("specular", &MjvLight::specular)
     .property("texid", &MjvLight::texid, &MjvLight::set_texid, reference())
     .property("type", &MjvLight::type, &MjvLight::set_type, reference());

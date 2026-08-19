@@ -905,8 +905,8 @@ static void set0(mjModel* m, mjData* d) {
   // compute body_invweight0
   m->body_invweight0[0] = m->body_invweight0[1] = 0.0;
   for (int i=1; i < m->nbody; i++) {
-    // static bodies: zero invweight0
-    if (m->body_weldid[i] == 0) {
+    // bodies with no dofs (static and mocap): zero invweight0
+    if (m->body_dofnum[m->body_weldid[i]] == 0) {
       m->body_invweight0[2*i] = m->body_invweight0[2*i+1] = 0;
     }
 
@@ -1416,10 +1416,11 @@ static void setEfm0Factor(mjModel* m, mjData* d) {
   int* K_rownnz = mjSTACKALLOC(d, nv, int);
   int* K_rowadr = mjSTACKALLOC(d, nv, int);
   int nK = mjd_flexStiff_assemble(m, d, K_rownnz, K_rowadr, NULL, NULL, h*h, h,
-                                  /*flg_bend=*/1, /*flg_stretch=*/0, NULL);
+                                  /*flg_bend=*/1, /*flg_stretch=*/0, /*flg_contact=*/0,
+                                  NULL);
   int* K_colind = mjSTACKALLOC(d, nK > 0 ? nK : 1, int);
   mjtNum* K_val = mjSTACKALLOC(d, nK > 0 ? nK : 1, mjtNum);
-  mjd_flexStiff_assemble(m, d, K_rownnz, K_rowadr, K_colind, K_val, h*h, h, 1, 0, NULL);
+  mjd_flexStiff_assemble(m, d, K_rownnz, K_rowadr, K_colind, K_val, h*h, h, 1, 0, 0, NULL);
 
   // inverse map: dof address -> compact factor row (monotone: slots follow dof order)
   int* dofrow = mjSTACKALLOC(d, nv, int);

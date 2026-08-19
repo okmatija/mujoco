@@ -226,9 +226,9 @@ void Session::Update() {
 void Session::HandleRemoteUiState(RemoteUiState state, int close_code) {
   remote_ui_state_ = state;
   // No stream to manage, nothing left to claim (settled spectator), or the
-  // session itself is down or reloading — the /state policies rule then.
+  // session itself is down — the /state policies rule then.
   if (state == RemoteUiState::kNoSocket || role_ == SessionRole::kSpectating ||
-      reload_pending_ || server_close_code_ != 0) {
+      server_close_code_ != 0) {
     return;
   }
   const double now = emscripten_get_now() / 1000.0;
@@ -265,7 +265,7 @@ void Session::HandleRemoteUiState(RemoteUiState state, int close_code) {
 
 void Session::HandleMessage(const uint8_t* data, uint32_t num_bytes) {
   last_message_time_ = emscripten_get_now() / 1000.0;
-  if (reload_pending_ || !callbacks_.ReadyForPayload()) {
+  if (!callbacks_.ReadyForPayload()) {
     return;
   }
   bytes_accum_ += num_bytes;

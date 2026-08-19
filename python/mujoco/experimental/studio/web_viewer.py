@@ -13,12 +13,15 @@
 # limitations under the License.
 """Simulation-agnostic web viewer for MuJoCo models.
 
+See the documentation for viewer_app.py for more details on the architecture
+separating the viewer and simulation.
+
 The WebViewer streams UI and simulation state to a browser:
 
   * The ImGui UI is built into a headless ImGui context and streamed to the
     browser with the NetImgui protocol through a WebSocket-to-TCP proxy.
     Input captured in the browser flows back over the same connection and is
-    injected into the headless context, so all viewer-side handlers work
+    injected into the headless context, so all viewer-side plugins work
     unmodified.
   * Physics state and render function state are streamed to the browser over
     a WebSocket with latest-wins semantics. Note that Message types are only
@@ -138,7 +141,7 @@ class WebViewer(viewer_protocol.Viewer):
       *,
       model: mujoco.MjModel | None = None,
       model_path: str = '',
-      handlers: list[Any] | None = None,
+      plugins: list[Any] | None = None,
       camera: mujoco.MjvCamera | None = None,
       vis_options: mujoco.MjvOption | None = None,
       perturb: mujoco.MjvPerturb | None = None,
@@ -155,7 +158,7 @@ class WebViewer(viewer_protocol.Viewer):
       endpoint: The viewer endpoint for communication with the sim side.
       model: Optional initial MjModel. Forwarded to the base Viewer.
       model_path: Optional path to the model file.
-      handlers: Optional list of handler instances.
+      plugins: Optional list of plugin instances.
       camera: Camera parameters. Internal object is created if None.
       vis_options: Visualization options. Internal object is created if None.
       perturb: Perturbation parameters. Internal object is created if None.
@@ -163,7 +166,7 @@ class WebViewer(viewer_protocol.Viewer):
       extra_geoms: List of extra geoms. Internal list is created if None.
       host: Public interface the server binds to. The default "::" accepts both
         IPv6 and IPv4 connections (IPv4-only where IPv6 is unavailable).
-      http_port: The single public port: page, WASM, /model.mjb, and the /ui and
+      http_port: The single public port: page, WASM, /model, and the /ui and
         /state WebSocket paths. None falls back to config.http_port; 0 picks the
         first free port starting at 8080, so several viewers can run side by
         side.
@@ -176,7 +179,7 @@ class WebViewer(viewer_protocol.Viewer):
         endpoint,
         model=model,
         model_path=model_path,
-        handlers=handlers,
+        plugins=plugins,
         camera=camera,
         vis_options=vis_options,
         perturb=perturb,
@@ -245,13 +248,13 @@ class WebViewer(viewer_protocol.Viewer):
     """Starts (or restarts) the web server, serving the current model."""
     self._stop_servers()
 
-    # Serialize the compiled model to MJB bytes (served as /model.mjb).
+    # Serialize the compiled model to MJB bytes (served as /model).
     buffer = np.empty(mujoco.mj_sizeModel(self.model), np.uint8)
     mujoco.mj_saveModel(self.model, None, buffer)
     mjb_data = buffer.tobytes()
 
     # Identity of the served model, included in every state payload. When it
-    # changes, the browser refetches /model.mjb by reloading the page.
+    # changes, the browser refetches /model by reloading the page.
     self._model_crc32 = zlib.crc32(mjb_data)
 
     state_sig = int(mujoco.mjtState.mjSTATE_INTEGRATION)
@@ -283,7 +286,7 @@ class WebViewer(viewer_protocol.Viewer):
   def _on_model(self, event: messages.ModelEvent) -> bool:
     """Loads the new model, then restarts the servers to serve it.
 
-    The handler registry discovers handlers by name, so this override replaces
+    The plugin registry discovers handlers by name, so this override replaces
     the base Viewer's _on_model and must call it explicitly to load the model
     before the servers serialize it. The browser reconnects to the new state
     server, notices the changed model identity in the payload, and reloads

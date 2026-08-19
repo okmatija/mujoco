@@ -55,11 +55,11 @@ def main(argv: list[str]) -> None:
 
   with launch_passive.launch_passive(
       config,
-      viewer_handlers=[viewer_app.ViewerApp()],
+      viewer_plugins=[viewer_app.ViewerApp()],
   ) as handle:
     # Send the model to the viewer, if we have a model.
     if model is not None:
-      handle.send_to_viewer(messages.ModelEvent(model=model, path=model_path))
+      handle.send_to_viewer(messages.ModelEvent(model=model, path=model_path))  # pyrefly: ignore[bad-argument-type]
 
     # Run the simulation.
     step_control = sim.StepControl()

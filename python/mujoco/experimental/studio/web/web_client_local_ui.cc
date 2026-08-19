@@ -57,7 +57,7 @@ void DrawDisconnectWindow(const char* window_id,
 
 void DisconnectNotice::Draw(int server_close_code,
                             double seconds_since_last_payload,
-                            bool reload_pending) {
+                            bool is_downloading) {
   if (server_close_code != 0) {
     const char* reason = "Disconnected by the viewer.";
     if (server_close_code == kWsCloseSessionFull) {
@@ -74,10 +74,10 @@ void DisconnectNotice::Draw(int server_close_code,
   // silent, but only a killed one closes its sockets. Clears itself when
   // traffic resumes. Suppressed before the first payload (negative
   // staleness), after a deliberate server-side close (its own notice
-  // above), and during model-swap reloads.
+  // above), and while a new model is downloading.
   const bool link_stale =
       seconds_since_last_payload > kServerSilenceNoticeSec &&
-      server_close_code == 0 && !reload_pending;
+      server_close_code == 0 && !is_downloading;
   if (!link_stale) {
     logged_ = false;
     return;

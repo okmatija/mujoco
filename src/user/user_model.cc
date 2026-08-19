@@ -26,6 +26,7 @@
 #include <exception>
 #include <filesystem>  // NOLINT(build/c++17)
 #include <functional>
+#include <limits>
 #include <mutex>
 #include <set>
 #include <sstream>
@@ -3163,6 +3164,7 @@ void mjCModel::CopyTree(mjModel* m) {
       m->light_range[lid] = pl->range;
       mjuu_copyvec(m->light_attenuation+3*lid, pl->attenuation, 3);
       m->light_cutoff[lid] = pl->cutoff;
+      m->light_softness[lid] = pl->softness;
       m->light_exponent[lid] = pl->exponent;
       mjuu_copyvec(m->light_ambient+3*lid, pl->ambient, 3);
       mjuu_copyvec(m->light_diffuse+3*lid, pl->diffuse, 3);
@@ -3533,9 +3535,45 @@ void mjCModel::CopyObjects(mjModel* m) {
     } else {
       memset(m->mesh_facetexcoord + 3*face_adr, 0, 3*pme->nface()*sizeof(int));
     }
+    memset(m->mesh_extrema + 27*i, 0, 27*sizeof(int));
     if (pme->szgraph()) {
       pme->CopyGraph(m->mesh_graph + graph_adr);
+
+      // compute grid extrema (local indices in graph)
+      float max_val[27];
+      for (int k = 0; k < 27; k++) {
+        max_val[k] = std::numeric_limits<float>::lowest();
+      }
+
+      const int* graph = m->mesh_graph + graph_adr;
+      int numgraphvert = graph[0];
+      const int* vert_globalid = graph + 2 + numgraphvert;
+      const float* verts = m->mesh_vert + 3*vert_adr;
+
+      // map the 27 features (8 vertices, 6 faces, 12 edges) of a unit cube to the farthest
+      // vertex in the mesh
+      for (int local_id = 0; local_id < numgraphvert; local_id++) {
+        int global_id = vert_globalid[local_id];
+        float x = verts[3 * global_id + 0];
+        float y = verts[3 * global_id + 1];
+        float z = verts[3 * global_id + 2];
+
+        int k = 0;
+        for (int cx = -1; cx <= 1; cx++) {
+          for (int cy = -1; cy <= 1; cy++) {
+            for (int cz = -1; cz <= 1; cz++) {
+              float dot = x * cx + y * cy + z * cz;
+              if (dot > max_val[k]) {
+                max_val[k] = dot;
+                m->mesh_extrema[27*i + k] = local_id;
+              }
+              k++;
+            }
+          }
+        }
+      }
     }
+
     pme->CopyPolygonNormals(m->mesh_polynormal + 3*poly_adr);
     pme->CopyPolygons(m->mesh_polyvert + polyvert_adr, m->mesh_polyvertadr + poly_adr,
                       m->mesh_polyvertnum + poly_adr, polyvert_adr);
@@ -4470,8 +4508,8 @@ void mjCModel::FuseReindex(mjCBody* body) {
   // set parentid and weldid of children
   for (int i=0; i < body->bodies.size(); i++) {
     body->bodies[i]->parent = body;
-    body->bodies[i]->weldid = (!body->bodies[i]->joints.empty() ?
-                               body->bodies[i]->id : body->weldid);
+    bool weld_root = !body->bodies[i]->joints.empty() || body->bodies[i]->spec.mocap;
+    body->bodies[i]->weldid = (weld_root ? body->bodies[i]->id : body->weldid);
   }
 
   makelistid(joints_, body->joints);
@@ -5279,9 +5317,16 @@ void mjCModel::TryCompile(mjModel*& m, mjData*& d, const mjVFS* vfs) {
     if (geoms_[i]->mesh &&
         (geoms_[i]->spec.type == mjGEOM_MESH ||
          geoms_[i]->spec.type == mjGEOM_SDF) &&
-        (geoms_[i]->spec.contype || geoms_[i]->spec.conaffinity || is_in_pair ||
-         geoms_[i]->mesh->spec.inertia == mjMESH_INERTIA_CONVEX)) {
+        (geoms_[i]->spec.contype || geoms_[i]->spec.conaffinity || is_in_pair)) {
       geoms_[i]->mesh->SetNeedHull(true);
+    }
+  }
+
+  // convex inertia is computed from the hull, so it is needed whether or not
+  // any geom references the mesh
+  for (mjCMesh* mesh : meshes_) {
+    if (mesh->spec.inertia == mjMESH_INERTIA_CONVEX) {
+      mesh->SetNeedHull(true);
     }
   }
 

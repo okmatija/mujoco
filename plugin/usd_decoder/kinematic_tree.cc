@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include "kinematic_tree.h"
+#include "third_party/mujoco/plugin/usd_decoder/newton_tokens.h"
 
 #include <map>
 #include <memory>
@@ -27,13 +28,17 @@
 #include <mujoco/mujoco.h>
 #include <pxr/usd/sdf/path.h>
 #include <pxr/usd/usd/common.h>
+#include <pxr/usd/usd/primFlags.h>
 #include <pxr/usd/usd/primRange.h>
 #include <pxr/usd/usdGeom/gprim.h>
 #include <pxr/usd/usdGeom/xformCache.h>
+#include <pxr/usd/usdPhysics/articulationRootAPI.h>
 #include <pxr/usd/usdPhysics/collisionAPI.h>
 #include <pxr/usd/usdPhysics/joint.h>
 #include <pxr/usd/usdPhysics/rigidBodyAPI.h>
 #include <pxr/usd/usdPhysics/scene.h>
+
+using mujoco::NewtonTokens;
 
 bool GetJointBodies(const pxr::UsdPhysicsJoint& joint, pxr::SdfPath* from,
                     pxr::SdfPath* to) {
@@ -106,7 +111,8 @@ ExtractedPrims ExtractPrims(pxr::UsdStageRefPtr stage) {
   for (auto it = range.begin(); it != range.end(); ++it) {
     pxr::UsdPrim prim = *it;
 
-    bool is_body = prim.HasAPI<pxr::UsdPhysicsRigidBodyAPI>();
+    bool is_body = prim.HasAPI<pxr::UsdPhysicsRigidBodyAPI>() ||
+                   prim.HasAPI<pxr::UsdPhysicsArticulationRootAPI>();
     bool resets = xform_cache.GetResetXformStack(prim);
     // Only update (push/pop) the owner stack for bodies (becomes new owner) and
     // resetXformStack (reset owner to world).
@@ -155,7 +161,8 @@ ExtractedPrims ExtractPrims(pxr::UsdStageRefPtr stage) {
       }
     }
 
-    if (prim.HasAPI<pxr::MjcPhysicsSiteAPI>()) {
+    if (prim.HasAPI(NewtonTokens->NewtonSiteAPI) ||
+        prim.HasAPI<pxr::MjcPhysicsSiteAPI>()) {
       current_node->sites.push_back(prim_path);
       // Sites should not have children.
       it.PruneChildren();
@@ -248,9 +255,10 @@ std::unique_ptr<Node> BuildKinematicTree(const pxr::UsdStageRefPtr stage) {
     // nodes.
     extraction.nodes[to_idx]->joints.push_back(joint.GetPath());
 
-    // If the joint has MjcPhysicsEqualityJointAPI, also add it to constraints
+    // If the joint has NewtonMimicAPI or MjcPhysicsEqualityJointAPI, also add it to constraints
     // so that ParseConstraint is called to create the equality constraint.
-    if (joint.GetPrim().HasAPI<pxr::MjcPhysicsEqualityJointAPI>()) {
+    if (joint.GetPrim().HasAPI(NewtonTokens->NewtonMimicAPI) ||
+        joint.GetPrim().HasAPI<pxr::MjcPhysicsEqualityJointAPI>()) {
       extraction.nodes[to_idx]->constraints.push_back(joint.GetPath());
     }
   }

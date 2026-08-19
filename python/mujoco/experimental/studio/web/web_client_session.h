@@ -146,10 +146,6 @@ class Session : public SessionActions {
   // True only while the WebSocket is actually open.
   bool Connected() const { return connected_; }
 
-  // True once a payload with a new model has scheduled a page reload; all
-  // traffic is dropped from then on.
-  bool ReloadPending() const { return reload_pending_; }
-
   // The close code from the server deliberately ending this connection (codes
   // 4000-4999, e.g. kWsCloseSessionFull), else 0. Such conditions are transient
   // (a slot frees up, the user returns to the tab), so the page shows a notice
@@ -228,11 +224,10 @@ class Session : public SessionActions {
   EMSCRIPTEN_WEBSOCKET_T socket_ = 0;
   bool connected_ = false;
 
-  // CRC32 of the model this page loaded. When the payload's crc changes, the
-  // Python side has swapped models so reload the page; this refetches
-  // /model.mjb and reconnects everything.
+  // CRC32 of the model this page loaded. When the payload's CRC changes, the
+  // Python side has swapped models so we trigger an in-place reload that
+  // refetches /model and reinitializes the scene.
   std::optional<uint32_t> model_crc32_;
-  bool reload_pending_ = false;
 
   int server_close_code_ = 0;
 

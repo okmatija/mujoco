@@ -58,6 +58,7 @@ public const int mjNSOLVER = 200;
 public const int mjNISLAND = 20;
 public const bool THIRD_PARTY_MUJOCO_INCLUDE_MJPLUGIN_H_ = true;
 public const bool mjEXTERNC = true;
+public const bool THIRD_PARTY_MUJOCO_INCLUDE_MJPROFILE_H_ = true;
 public const bool THIRD_PARTY_MUJOCO_MJRENDER_H_ = true;
 public const int mjNAUX = 10;
 public const int mjMAXTEXTURE = 1000;
@@ -117,7 +118,7 @@ public const int mjMAXLINEPNT = 1001;
 public const int mjMAXPLANEGRID = 200;
 public const bool THIRD_PARTY_MUJOCO_MJXMACRO_H_ = true;
 public const bool THIRD_PARTY_MUJOCO_MUJOCO_H_ = true;
-public const int mjVERSION_HEADER = 3011001;
+public const int mjVERSION_HEADER = 3012000;
 
 
 // ------------------------------------Enums------------------------------------
@@ -304,6 +305,8 @@ public enum mjtCtrlInput : int{
   mjINPUT_POS = 1,
   mjINPUT_VEL = 2,
   mjINPUT_FF = 4,
+  mjINPUT_VOLTAGE = 8,
+  mjINPUT_NONE = 16,
 }
 public enum mjtObj : int{
   mjOBJ_UNKNOWN = 0,
@@ -1286,6 +1289,7 @@ public unsafe struct mjModel_ {
   public double* light_dir0;
   public float* light_attenuation;
   public float* light_cutoff;
+  public float* light_softness;
   public float* light_exponent;
   public float* light_ambient;
   public float* light_diffuse;
@@ -1386,6 +1390,7 @@ public unsafe struct mjModel_ {
   public int* mesh_texcoordadr;
   public int* mesh_texcoordnum;
   public int* mesh_graphadr;
+  public int* mesh_extrema;
   public float* mesh_vert;
   public float* mesh_normal;
   public float* mesh_texcoord;
@@ -6030,6 +6035,7 @@ public unsafe struct mjvLight_ {
   public float bulbradius;
   public float intensity;
   public float range;
+  public float softness;
 }
 
 [StructLayout(LayoutKind.Sequential)]

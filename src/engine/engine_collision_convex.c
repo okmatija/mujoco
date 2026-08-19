@@ -85,7 +85,7 @@ static inline int _libccd_wrapper(const mjModel* m, mjCCDObj* obj1, mjCCDObj* ob
 
 // find penetration info between two geoms; returns number of collisions found
 static int mjc_penetration(const mjModel* m, mjData* d, mjCCDObj* obj1, mjCCDObj* obj2,
-                           mjPreContact* con, int ncon, mjtNum margin) {
+                           mjPreContact* con, int nconmax, mjtNum margin) {
   if (mjDISABLED(mjDSBL_NATIVECCD)) {
     return _libccd_wrapper(m, obj1, obj2, con, margin);
   }
@@ -94,13 +94,12 @@ static int mjc_penetration(const mjModel* m, mjData* d, mjCCDObj* obj1, mjCCDObj
   mjCCDConfig config;
   mjCCDStatus status;
   mjtNum dist;
-  int nwitness = 0;
   void* buffer = ccd_buffer;
 
   // set config
   config.max_iterations = m->opt.ccd_iterations;
   config.tolerance = m->opt.ccd_tolerance;
-  config.max_contacts = ncon;
+  config.max_contacts = nconmax;
   config.dist_cutoff = 0;  // no geom distances needed
   config.npolygonmax = m->npolygonmax;
   config.nmeshdegmax = m->nmeshdegmax;
@@ -114,22 +113,23 @@ static int mjc_penetration(const mjModel* m, mjData* d, mjCCDObj* obj1, mjCCDObj
                                                      config.max_iterations), sizeof(mjtNum));
   }
 
+  int ncon = 0;
   if ((dist = mjc_ccd(&config, &status, obj1, obj2)) < 0) {
-    nwitness = status.nx;
+    int nwitness = status.nx;
     for (int i = 0; i < nwitness; i++) {
-      con[i].dist = margin + dist;
-      con[i].pos[0] = 0.5*(status.x1[3*i + 0] + status.x2[3*i + 0]);
-      con[i].pos[1] = 0.5*(status.x1[3*i + 1] + status.x2[3*i + 1]);
-      con[i].pos[2] = 0.5*(status.x1[3*i + 2] + status.x2[3*i + 2]);
+      con[i].dist = margin + status.dist[i];
+      mji_add3(con[i].pos, status.x1 + 3*i, status.x2 + 3*i);
+      mju_scl3(con[i].pos, con[i].pos, 0.5);
       mji_sub3(con[i].normal, status.x1 + 3*i, status.x2 + 3*i);
       mju_normalize3(con[i].normal);
       mji_zero3(con[i].tangent);
     }
+    ncon = nwitness;
   }
   if (!buffer) {
     mj_freeStack(d);
   }
-  return nwitness;
+  return ncon;
 }
 
 
@@ -407,7 +407,24 @@ static void mjc_hillclimbSupport(mjtNum res[3], mjCCDObj* obj, const mjtNum dir[
   mulMatTVec3(local_dir, mat, dir);
 
   int prev = -1;
-  int imax = obj->meshindex >= 0 ? obj->meshindex : 0;
+  int imax;
+
+  // map continuous direction to discrete 3x3x3 grid (-1, 0, 1) indices
+  int cx = (local_dir[0] > 0.4) - (local_dir[0] < -0.4) + 1;
+  int cy = (local_dir[1] > 0.4) - (local_dir[1] < -0.4) + 1;
+  int cz = (local_dir[2] > 0.4) - (local_dir[2] < -0.4) + 1;
+  int grid_idx = obj->data.mesh.extrema[cx*9 + cy*3 + cz];
+
+  if (obj->meshindex >= 0) {
+    // warm start: pick the better of cached vertex vs grid seed
+    mjtNum cached_dot = dot3f(local_dir, verts + 3*vert_globalid[obj->meshindex]);
+    mjtNum seed_dot = dot3f(local_dir, verts + 3*vert_globalid[grid_idx]);
+    imax = (seed_dot > cached_dot) ? grid_idx : obj->meshindex;
+  } else {
+    // cold start: use grid seed
+    imax = grid_idx;
+  }
+
   mjtNum max = dot3f(local_dir, verts + 3*vert_globalid[imax]);
 
   // hillclimb until no change
@@ -734,9 +751,11 @@ void mjc_initCCDObj(mjCCDObj* obj, const mjModel* m, const mjData* d, int g, mjt
       polyadr = m->mesh_polyadr[m->geom_dataid[g]];
       if (graphadr < 0 || m->mesh_vertnum[m->geom_dataid[g]] < mjMESH_HILLCLIMB_MIN) {
         obj->data.mesh.graph = NULL;
+        obj->data.mesh.extrema = NULL;
         obj->support = mjc_meshSupport;
       } else {
         obj->data.mesh.graph = m->mesh_graph + graphadr;
+        obj->data.mesh.extrema = m->mesh_extrema + 27 * m->geom_dataid[g];
         obj->support = mjc_hillclimbSupport;
       }
       obj->data.mesh.vert = m->mesh_vert + 3*vertadr;
@@ -1572,8 +1591,7 @@ int mjc_HFieldElem(const mjModel* m, mjData* d, mjPreContact* con, int g, int f,
   mjtNum xmin, xmax, ymin, ymax, zmin, zmax;
   int dr[2], cnt, rmin, rmax, cmin, cmax;
   mjCCDObj obj1;
-  obj1.center = mjc_center;
-  obj1.support = mjc_prism_support;
+  mjc_initCCDObj(&obj1, m, d, g, 0);
 
   // get hfield info
   int hid = m->geom_dataid[g];

@@ -43,7 +43,7 @@
 #include <imgui.h>
 #include <implot.h>
 #include <mujoco/mujoco.h>
-#include "experimental/platform/hal/renderer.h"
+#include "experimental/platform/hal/filament_renderer.h"
 #include "experimental/platform/hal/window.h"
 #include "experimental/platform/sim/model_holder.h"
 #include "experimental/platform/ux/interaction.h"
@@ -88,6 +88,13 @@ struct Telemetry {
   double last_rate_time = 0;
   uint64_t gui_bytes_per_sec = 0;
   uint64_t sim_bytes_per_sec = 0;
+};
+
+struct ModelDownloadStatus {
+  bool is_downloading = true;
+  size_t bytes_downloaded = 0;
+  size_t total_bytes = 0;
+  int retry_count = 0;
 };
 
 // The implementation of every interface needed by the session and remote UI.
@@ -135,12 +142,7 @@ struct App {
   // User-injected geoms received with the state payload.
   std::vector<mjvGeom> extra_geoms;
 
-  struct ModelDownloadStatus {
-    bool is_downloading = true;
-    size_t bytes_downloaded = 0;
-    size_t total_bytes = 0;
-    int retry_count = 0;
-  } download_status;
+  ModelDownloadStatus download_status;
 
   AppCallbacks callbacks;
   RemoteUi remote_ui{callbacks};
@@ -387,6 +389,9 @@ void AppCallbacks::OnPayload(const StatePayloadView& view) {
 }
 
 void AppCallbacks::OnModelChanged() {
+  // Mark downloading immediately so the main loop stops applying state updates
+  // to the old model while the new one downloads asynchronously.
+  g_app.download_status.is_downloading = true;
   EM_ASM({ reloadModel(); });
 }
 
@@ -409,7 +414,7 @@ void BuildBrowserGui() {
   const double stale_sec =
       last_msg > 0 ? emscripten_get_now() / 1000.0 - last_msg : -1.0;
   g_app.disconnect_notice.Draw(g_app.session.ServerCloseCode(), stale_sec,
-                               g_app.session.ReloadPending());
+                               g_app.download_status.is_downloading);
 
   SessionView view;
   g_app.session.FillView(&view);
@@ -459,9 +464,8 @@ void MainLoopImpl() {
   // using a gentler pace.
   const int state_retry_interval =
       g_app.session.ServerCloseCode() != 0 ? 300 : 60;
-  if (!g_app.session.HasSocket() && !g_app.session.ReloadPending() &&
-      g_app.model_holder && g_app.model_holder->ok() &&
-      !g_app.download_status.is_downloading &&
+  if (!g_app.session.HasSocket() && g_app.model_holder &&
+      g_app.model_holder->ok() && !g_app.download_status.is_downloading &&
       g_app.frame_count - g_app.last_state_retry_frame > state_retry_interval) {
     g_app.last_state_retry_frame = g_app.frame_count;
     LOG(Info, "State WebSocket down; reconnecting...");
@@ -590,18 +594,9 @@ void MainLoopImpl() {
 void SetupScene(const mjModel* m) {
   g_app.renderer->Init(m);
 
-  // Invalidate Dear ImGui and NetImgui texture caches so that after
-  // Renderer::Init(m) recreates the Filament context, all required fonts and
-  // streamed UI textures are re-uploaded.
-  if (ImGui::GetCurrentContext() && ImGui::GetIO().Fonts &&
-      ImGui::GetIO().Fonts->TexData) {
-    ImGui::GetIO().Fonts->TexData->SetStatus(ImTextureStatus_WantCreate);
-  }
-
-  // Upload any textures (e.g. the font atlas) that were buffered before the
-  // Filament context was available.
-  g_app.remote_ui.InvalidateTextures();
-  g_app.remote_ui.FlushPendingTextures();
+  // Invalidate all texture caches (ImGui font atlas + NetImgui streamed
+  // textures) and re-upload them on the new Filament context.
+  g_app.remote_ui.UpdateTextures();
 
   mjv_defaultPerturb(&g_app.perturb);
   mjv_defaultCamera(&g_app.camera);
@@ -668,8 +663,9 @@ void FinishModelLoad() {
   LOG(Info, "Model loaded and scene initialized successfully!");
 }
 
-// Direct WASM linear memory allocation for zero-copy streaming chunk downloads.
-// Avoids allocating a duplicate Uint8Array in the JS heap.
+// Allocates a buffer in WASM linear memory for zero-copy streaming chunk
+// downloads. The caller owns the returned pointer and must free it via
+// FreeModelBuffer when done.
 uintptr_t AllocModelBuffer(size_t size) {
   char* ptr = new (std::nothrow) char[size];
   if (!ptr) {
@@ -679,17 +675,16 @@ uintptr_t AllocModelBuffer(size_t size) {
   return reinterpret_cast<uintptr_t>(ptr);
 }
 
+// Frees a buffer previously returned by AllocModelBuffer.
 void FreeModelBuffer(uintptr_t ptr_val) {
   if (ptr_val) {
     delete[] reinterpret_cast<char*>(ptr_val);
   }
 }
 
+// Parses an MJB model from a buffer.
 void ParseModelBuffer(uintptr_t ptr_val, size_t size) {
-  char* ptr = reinterpret_cast<char*>(ptr_val);
-  bool ok = ParseModelBufferImpl(ptr, size);
-  delete[] ptr;
-  if (ok) {
+  if (ParseModelBufferImpl(reinterpret_cast<char*>(ptr_val), size)) {
     FinishModelLoad();
   }
 }
@@ -720,9 +715,30 @@ class AssetRegistry {
 };
 
 // Exposed to JS (see EMSCRIPTEN_BINDINGS): the page calls this once per asset.
-void RegisterAsset(std::string filename, std::string contents) {
-  AssetRegistry::Instance().RegisterAsset(std::move(filename),
-                                          std::move(contents));
+void RegisterAsset(std::string filename, emscripten::val contents) {
+  std::string data;
+  if (contents.typeOf().as<std::string>() == "string") {
+    data = contents.as<std::string>();
+  } else if (contents.instanceof(emscripten::val::global("Uint8Array")) ||
+             contents.hasOwnProperty("length")) {
+    size_t len = contents["length"].as<size_t>();
+    data.resize(len);
+    if (len > 0) {
+      emscripten::val memory_view =
+          emscripten::val(emscripten::typed_memory_view(len, data.data()));
+      memory_view.call<void>("set", contents);
+    }
+  } else if (contents.instanceof(emscripten::val::global("ArrayBuffer"))) {
+    emscripten::val u8 = emscripten::val::global("Uint8Array").new_(contents);
+    size_t len = u8["length"].as<size_t>();
+    data.resize(len);
+    if (len > 0) {
+      emscripten::val memory_view =
+          emscripten::val(emscripten::typed_memory_view(len, data.data()));
+      memory_view.call<void>("set", u8);
+    }
+  }
+  AssetRegistry::Instance().RegisterAsset(std::move(filename), std::move(data));
 }
 
 // Registers resource providers so that "filament:" and "font:" asset requests
@@ -762,13 +778,12 @@ void StartApp() {
                                                             1400, 720, config);
   ImPlot::CreateContext();  // Needed if the server app uses ImPlot.
 
-  g_app.renderer = new mujoco::platform::Renderer(
+  g_app.renderer = new mujoco::platform::FilamentRenderer(
       g_app.window->GetNativeWindowHandle(), config.gfx_mode);
 
   // Initialize an empty dummy scene so Filament and ImGui are ready to render
-  // the "DOWNLOADING..." progress bar while /model.mjb downloads asynchronously
-  g_app.model_holder =
-      mujoco::platform::ModelHolder::FromSpec(mj_makeSpec());
+  // the "DOWNLOADING..." progress bar while /model downloads asynchronously
+  g_app.model_holder = mujoco::platform::ModelHolder::FromSpec(mj_makeSpec());
   if (g_app.model_holder && g_app.model_holder->ok()) {
     SetupScene(g_app.model_holder->model());
   }
@@ -792,16 +807,14 @@ EMSCRIPTEN_BINDINGS(web_client_bindings) {
   // AssetRegistry before startApp() runs.
   emscripten::function("registerAsset", &RegisterAsset);
 
-  // Allocates a raw memory buffer in WASM linear heap for zero-copy streaming
-  // model chunk downloads from index.html.
+  // Allocates a buffer in WASM linear memory for zero-copy streaming model
+  // chunk downloads. The caller must free it via freeModelBuffer when done.
   emscripten::function("allocModelBuffer", &AllocModelBuffer);
 
-  // Frees a WASM model buffer allocated via allocModelBuffer if a download
-  // attempt fails or aborts.
+  // Frees a buffer previously allocated by allocModelBuffer.
   emscripten::function("freeModelBuffer", &FreeModelBuffer);
 
-  // Parses a completed .mjb model buffer residing in WASM memory, immediately
-  // deallocates the buffer, and reinitializes the Filament scene.
+  // Parses a completed MJB model buffer and reinitializes the Filament scene.
   emscripten::function("parseModelBuffer", &ParseModelBuffer);
 
   // Initializes the Filament window, ImGui context, WebSocket connections, and

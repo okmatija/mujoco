@@ -1497,7 +1497,7 @@ STRUCTS: Mapping[str, StructDecl] = dict([
                  type=PointerType(
                      inner_type=ValueType(name='int'),
                  ),
-                 doc='top ancestor with no dofs to this body',
+                 doc='top dof-less ancestor; mocap: own root',
                  array_extent=('nbody',),
              ),
              StructFieldDecl(
@@ -2645,6 +2645,14 @@ STRUCTS: Mapping[str, StructDecl] = dict([
                  array_extent=('nlight',),
              ),
              StructFieldDecl(
+                 name='light_softness',
+                 type=PointerType(
+                     inner_type=ValueType(name='float'),
+                 ),
+                 doc='spotlight edge softness',
+                 array_extent=('nlight',),
+             ),
+             StructFieldDecl(
                  name='light_exponent',
                  type=PointerType(
                      inner_type=ValueType(name='float'),
@@ -3443,6 +3451,14 @@ STRUCTS: Mapping[str, StructDecl] = dict([
                  ),
                  doc='graph data address; -1: no graph',
                  array_extent=('nmesh',),
+             ),
+             StructFieldDecl(
+                 name='mesh_extrema',
+                 type=PointerType(
+                     inner_type=ValueType(name='int'),
+                 ),
+                 doc='extremum vertices in 3x3x3 directions',
+                 array_extent=('nmesh', 27),
              ),
              StructFieldDecl(
                  name='mesh_vert',
@@ -8412,6 +8428,11 @@ STRUCTS: Mapping[str, StructDecl] = dict([
                  doc='OpenGL cutoff',
              ),
              StructFieldDecl(
+                 name='softness',
+                 type=ValueType(name='float'),
+                 doc='spotlight edge softness',
+             ),
+             StructFieldDecl(
                  name='exponent',
                  type=ValueType(name='float'),
                  doc='OpenGL exponent',
@@ -10632,6 +10653,11 @@ STRUCTS: Mapping[str, StructDecl] = dict([
                  name='range',
                  type=ValueType(name='float'),
                  doc='range of effectiveness',
+             ),
+             StructFieldDecl(
+                 name='softness',
+                 type=ValueType(name='float'),
+                 doc='spotlight edge softness',
              ),
          ),
      )),

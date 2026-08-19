@@ -439,6 +439,7 @@
     X   ( mjtNum,  light_dir0,            nlight,        3                    ) \
     X   ( float,   light_attenuation,     nlight,        3                    ) \
     X   ( float,   light_cutoff,          nlight,        1                    ) \
+    X   ( float,   light_softness,        nlight,        1                    ) \
     X   ( float,   light_exponent,        nlight,        1                    ) \
     X   ( float,   light_ambient,         nlight,        3                    ) \
     X   ( float,   light_diffuse,         nlight,        3                    ) \
@@ -543,6 +544,7 @@
     X   ( int,     mesh_texcoordadr,      nmesh,         1                    ) \
     X   ( int,     mesh_texcoordnum,      nmesh,         1                    ) \
     X   ( int,     mesh_graphadr,         nmesh,         1                    ) \
+    X   ( int,     mesh_extrema,          nmesh,         27                   ) \
     XNV ( float,   mesh_vert,             nmeshvert,     3                    ) \
     XNV ( float,   mesh_normal,           nmeshnormal,   3                    ) \
     XNV ( float,   mesh_texcoord,         nmeshtexcoord, 2                    ) \
