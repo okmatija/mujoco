@@ -152,6 +152,25 @@ class UpdateEvent(Event):
 
 
 @dataclasses.dataclass(frozen=True)
+class StepEvent(Event):
+  """Lifecycle event dispatched by every ``ViewerHandle.sync`` on the sim side.
+
+  Handlers advance the simulation, e.g. the default ``step_control.StepControl``
+  plugin steps CPU physics with real-time pacing; a custom plugin can step
+  differently (e.g. on the GPU). Dispatched locally to sim-side plugins after
+  incoming viewer messages are processed and before the state broadcast; never
+  crosses a channel.
+
+  Attributes:
+    model: The sim-side model to step.
+    data: The sim-side data to step.
+  """
+
+  model: mujoco.MjModel
+  data: mujoco.MjData
+
+
+@dataclasses.dataclass(frozen=True)
 class MjOptionSnapshot(Snapshot):
   """A snapshot sending mjOption state from viewer to sim each frame."""
 

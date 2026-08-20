@@ -18,7 +18,6 @@ import mujoco
 from mujoco.experimental.studio import endpoints
 from mujoco.experimental.studio import messages
 from mujoco.experimental.studio import plugin_registry
-from mujoco.experimental.studio import sim as _sim
 import numpy as np
 
 # Launcher-owned liveness check: returns True while the viewer is still alive.
@@ -71,7 +70,6 @@ class ViewerHandle:
     self._shutdown_fn = shutdown_fn
     self.model: mujoco.MjModel | None = None
     self.data: mujoco.MjData | None = None
-    self.step_control: _sim.StepControl | None = None
 
     # Instantiate handlers from user plugins + framework defaults.
     all_plugins: list[Any] = list(plugins or [])
@@ -119,24 +117,29 @@ class ViewerHandle:
       self,
       model: mujoco.MjModel | None,
       data: mujoco.MjData | None,
-      step_control: _sim.StepControl,
-  ) -> tuple[mujoco.MjModel | None, mujoco.MjData | None, _sim.StepControl]:
+  ) -> tuple[mujoco.MjModel | None, mujoco.MjData | None]:
     """Syncs the simulation with the viewer and returns the updated sim state.
 
-    This method processes incoming events from the viewer, updates the sim state
-    accordingly, and sends the current simulation state to the viewer as a
-    snapshot.
+    This method processes incoming messages from the viewer, dispatches a
+    ``StepEvent`` so sim-side plugins can advance the simulation, and sends the
+    resulting simulation state to the viewer as a snapshot.
+
+    Stepping and pacing are plugin responsibilities: pass
+    ``step_control.StepControl()`` in ``sim_plugins`` for the standard
+    real-time-paced CPU stepping, or your own plugin to step differently.
+    Without a stepping plugin nothing advances and ``sync`` never sleeps, so
+    the calling loop must pace itself to avoid busy-spinning.
 
     Args:
       model: The current model.
       data: The current data.
-      step_control: The current step control state.
 
     Returns:
-      The updated model, data, and step control state.
+      The updated model and data; rebind both, they may be new objects (e.g.
+      after the viewer sends a ModelEvent).
     """
 
-    self.model, self.data, self.step_control = model, data, step_control
+    self.model, self.data = model, data
 
     # Process incoming events from the viewer.
     for event in self._sim_endpoint.get_viewer_events():
@@ -146,11 +149,14 @@ class ViewerHandle:
     for snapshot in self._sim_endpoint.get_viewer_snapshots():
       self._plugins.dispatch(snapshot)
 
-    model, data, step_control = self.model, self.data, self.step_control
+    model, data = self.model, self.data
 
-    # Send the simulation state to the viewer process as a snapshot.
     if model is not None:
       assert data is not None
+      # Advance the simulation: dispatched locally to sim-side plugins.
+      self._plugins.dispatch(messages.StepEvent(model=model, data=data))
+
+      # Send the simulation state to the viewer process as a snapshot.
       integration_sig = int(mujoco.mjtState.mjSTATE_INTEGRATION)
       integration_size = mujoco.mj_stateSize(model, integration_sig)
       integration_state = np.empty(integration_size, np.float64)
@@ -166,14 +172,13 @@ class ViewerHandle:
           ),
       )
 
-    return model, data, step_control
+    return model, data
 
   @messages.handler(priority=messages.Priority.INTERNAL)
   def _on_model(self, event: messages.ModelEvent) -> bool:
     self.model = event.model
     self.data = mujoco.MjData(event.model)
     mujoco.mj_forward(self.model, self.data)
-    self.step_control = _sim.StepControl()
     return True
 
   @messages.handler(priority=messages.Priority.INTERNAL)
@@ -201,15 +206,6 @@ class ViewerHandle:
   @messages.handler(priority=messages.Priority.INTERNAL)
   def _on_exit(self, _: messages.ExitEvent) -> bool:
     self._is_running = False  # pylint: disable=protected-access
-    return True
-
-  @messages.handler(priority=messages.Priority.INTERNAL)
-  def _on_step_control(self, event: messages.StepControlSnapshot) -> bool:
-    sc = self.step_control
-    if sc is not None:
-      sc.set_pause_state(event.pause_state)
-      sc.set_speed(event.speed)
-      sc.set_noise_parameters(event.noise_scale, event.noise_rate)
     return True
 
   @messages.handler(priority=messages.Priority.INTERNAL)

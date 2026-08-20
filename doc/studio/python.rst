@@ -32,7 +32,7 @@ Quick start
    import mujoco
    from mujoco.experimental.studio import launch_passive
    from mujoco.experimental.studio import messages
-   from mujoco.experimental.studio import sim
+   from mujoco.experimental.studio import step_control
    from mujoco.experimental.studio import viewer_app
    from mujoco.experimental.studio import viewer_protocol
 
@@ -41,21 +41,26 @@ Quick start
 
    config = viewer_protocol.ViewerConfig(title='My tool')
    with launch_passive.launch_passive(
-       config, viewer_plugins=[viewer_app.ViewerApp()]) as handle:
+       config,
+       viewer_plugins=[viewer_app.ViewerApp()],
+       sim_plugins=[step_control.StepControl()]) as handle:
      handle.send_to_viewer(messages.ModelEvent(model=model, path='humanoid.xml'))
 
-     step_control = sim.StepControl()
      while handle.is_running():
-       step_control.advance(model, data)
-       model, data, step_control = handle.sync(model, data, step_control)
+       model, data = handle.sync(model, data)
 
 - Points to make: ``launch_passive`` returns immediately (viewer on a daemon thread); it takes *no model* — the
-  model travels as a ``ModelEvent`` like everything else; ``advance`` honors the GUI pause/speed controls;
-  ``ViewerApp`` provides the whole Studio UI and is optional (:ref:`below<StViewerApp>`).
+  model travels as a ``ModelEvent`` like everything else; the ``StepControl`` sim plugin steps the physics on each
+  ``sync``, honoring the GUI pause/speed controls, and is optional like ``ViewerApp`` — replace it with your own
+  plugin to step differently (e.g. a GPU simulation); ``ViewerApp`` provides the whole Studio UI and is optional
+  (:ref:`below<StViewerApp>`).
 - CLI: ``python -m mujoco.experimental.studio.viewer --mjcf=...`` with ``--gfx``, ``--width``, ``--height``,
   ``--viewer={native,web}``, ``--port``.
-- ``.. warning::`` — ``handle.sync`` *returns* model/data/step_control and the loop must rebind them (drag-and-drop
+- ``.. warning::`` — ``handle.sync`` *returns* model/data and the loop must rebind them (drag-and-drop
   loads a new model; ignoring the return value silently keeps simulating the old one).
+- ``.. warning::`` — pacing lives in the stepping plugin: ``StepControl.advance`` steps as much sim time as fits
+  the wall-clock budget of one iteration. A loop *without* a stepping plugin busy-spins (``sync`` never sleeps) and
+  must pace itself.
 
 .. _StViewing:
 
@@ -88,14 +93,16 @@ The web viewer
 The simulation side
 -------------------
 
-- Your script owns the loop; the framework never steps physics for you.
-- ``StepControl``: ``advance(model, data)`` → ``StepStatus`` (``OK``/``PAUSED``/``AUTO_RESET``/``DIVERGED``), GIL
-  released; speed get/set + measured; pause + ``request_single_step``; noise parameters; ``force_sync``.
-- ``ViewerHandle``: ``sync(model, data, step_control)`` (drains viewer messages → dispatches to sim handlers →
-  publishes state → returns possibly-replaced objects); ``send_to_viewer``; ``is_running`` (also detects a dead
-  viewer thread); ``close``; context manager.
-- ``sim_plugins=[...]``: run inside ``sync`` on your thread; typical use — react to custom messages from your GUI
-  code.
+- Your script owns the loop; stepping is a plugin responsibility, dispatched as a ``StepEvent`` on each ``sync``.
+- ``step_control.StepControl`` (sim plugin): owns a ``sim.StepControl`` and calls ``advance(model, data)`` on every
+  ``StepEvent`` — real-time pacing, GIL released; applies the GUI's ``StepControlSnapshot`` (pause/speed/noise);
+  resets pacing on ``ModelEvent``. Replace it with your own plugin to step differently (e.g. GPU physics stepping
+  into ``event.data`` so the state broadcast sees it).
+- ``ViewerHandle``: ``sync(model, data)`` (drains viewer messages → dispatches to sim plugins → dispatches
+  ``StepEvent`` → publishes state → returns possibly-replaced objects); ``send_to_viewer``; ``is_running`` (also
+  detects a dead viewer thread); ``close``; context manager.
+- ``sim_plugins=[...]``: run inside ``sync`` on your thread; typical uses — stepping (above) and reacting to custom
+  messages from your GUI code.
 
 .. _StPyMessages:
 
@@ -140,6 +147,8 @@ Messages and handlers
 
 - Viewer-side lifecycle events, dispatched every frame: ``UpdateEvent`` (input/per-frame logic), ``BuildGuiEvent``
   (build ImGui panels); plus ``ViewerInitEvent`` once at startup (carries the viewer).
+- Sim-side lifecycle event, dispatched by every ``sync``: ``StepEvent`` (carries model/data; advance the
+  simulation here — the default ``step_control.StepControl`` plugin handles it).
 - ``@messages.handler``: second parameter's type annotation = the subscription; any object with handler methods is a
   plugin and goes in ``viewer_plugins`` / ``sim_plugins``.
 - Worked example (short code block): define ``RewardSnapshot(messages.Snapshot)``; a ``RewardPanel`` class with an

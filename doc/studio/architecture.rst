@@ -102,8 +102,8 @@ Applications as assemblies
        access through MuJoCo resource providers.
    * - Studio App (Python)
      - ``ViewerApp`` re-assembles the panels and interaction handling from the ``ux`` bindings, with
-       ``Window``/``Renderer`` wrapped by the ``native_viewer`` and ``StepControl`` driving the user's own
-       simulation loop. Sim and viewer run on separate threads connected by :ref:`messages<StMessages>`. With the
+       ``Window``/``Renderer`` wrapped by the ``native_viewer`` and the ``StepControl`` sim plugin stepping the
+       physics inside the user's own simulation loop. Sim and viewer run on separate threads connected by :ref:`messages<StMessages>`. With the
        ``web_viewer``, the UI is drawn headless, streamed to the browser, and the scene is rendered there by a small
        WebAssembly client itself assembled from ``Window``, ``Renderer``, ``ModelHolder`` and ``interaction``.
    * - Custom Python apps
