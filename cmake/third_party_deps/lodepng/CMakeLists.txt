@@ -1,4 +1,4 @@
-# Copyright 2025 DeepMind Technologies Limited
+# Copyright 2026 DeepMind Technologies Limited
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,17 +12,22 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-set(MUJOCO_DEP_VERSION_implot
-    524f9fcd48d76c13fdf94c5ffbba8787a1ff7e39
-    CACHE STRING "Tag/version of `implot` to be fetched."
-)
-mark_as_advanced(MUJOCO_DEP_VERSION_implot)
+add_library(lodepng OBJECT)
 
-include(FindOrFetch)
+set_target_properties(lodepng PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
-fetchpackage(
-    PACKAGE_NAME  implot
-    GIT_REPO      https://github.com/epezent/implot.git
-    GIT_TAG       ${MUJOCO_DEP_VERSION_implot}
-    CUSTOM_CMAKE  "${CMAKE_SOURCE_DIR}/cmake/third_party_deps/implot/CMakeLists.txt"
+target_include_directories(lodepng
+  PUBLIC
+    $<BUILD_INTERFACE:${lodepng_SOURCE_DIR}>
+    $<INSTALL_INTERFACE:include>
 )
+
+target_sources(lodepng
+  PRIVATE
+    ${lodepng_SOURCE_DIR}/lodepng.cpp
+  PUBLIC
+    $<BUILD_INTERFACE:${lodepng_SOURCE_DIR}/lodepng.h>
+)
+
+target_compile_options(lodepng PRIVATE ${MUJOCO_MACOS_COMPILE_OPTIONS})
+target_link_options(lodepng PRIVATE ${MUJOCO_MACOS_LINK_OPTIONS})

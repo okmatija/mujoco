@@ -18,19 +18,13 @@ from mujoco.experimental.studio import sim
 
 
 class StepControl:
-  """Default sim plugin that steps CPU physics with real-time pacing.
+  """Default sim plugin that steps CPU physics with real-time pacing; pass your
+  own plugin instead to step differently (e.g. a GPU simulation).
 
-  Owns a ``sim.StepControl`` and advances it on every ``StepEvent``, honoring
-  the pause/speed/noise settings streamed from the viewer GUI as
-  ``StepControlSnapshot`` messages. Pass an instance in ``sim_plugins=[...]``
-  to get the standard interactive stepping behavior; pass your own plugin
-  instead to step differently (e.g. a GPU simulation).
-
-  Pacing: this plugin owns real-time pacing — ``advance`` steps as much sim
-  time as fits the wall-clock budget of one loop iteration. A sim loop
-  *without* a stepping plugin must pace itself: a bare
-  ``while handle.is_running(): handle.sync(...)`` loop busy-spins, since
-  ``sync`` itself never sleeps.
+  Pacing: this plugin owns real-time pacing. It steps as much sim time as fits
+  the wall-clock budget of one loop iteration. A sim loop without a stepping
+  plugin must pace itself: a bare while handle.is_running() and handle.sync(...)
+  loop busy-spins, since sync itself never sleeps.
   """
 
   def __init__(self) -> None:

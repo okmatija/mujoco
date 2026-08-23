@@ -1286,10 +1286,11 @@ void SensorGui(const mjModel* model, const mjData* data) {
     // Function that plots the current group of sensor bars.
     auto plot_lines = [](int sensor_idx, const ImPlotPoint* values, int count) {
       constexpr float bar_weight = 5.0f;
-      ImPlot::SetNextLineStyle(IMPLOT_AUTO_COL, bar_weight);
       std::string sensor_label = "Sensor " + std::to_string(sensor_idx);
       ImPlot::PlotLine(sensor_label.c_str(), &values->x, &values->y, count,
-                       ImPlotLineFlags_Segments, 0, 2 * sizeof(double));
+                       ImPlotSpec(ImPlotProp_Flags, ImPlotLineFlags_Segments,
+                                  ImPlotProp_Stride, 2 * sizeof(double),
+                                  ImPlotProp_LineWeight, bar_weight));
     };
 
     for (int n = 0; n < model->nsensor; n++) {
@@ -1486,7 +1487,11 @@ void WatchGui(const mjModel* model, const mjData* data, char* field_name,
   ImGui::PopItemWidth();
 }
 
-void PhysicsGui(mjModel* model, float min_width) {
+void PhysicsGui(mjModel* model, mjSpec* spec, float min_width) {
+  if (!model && !spec) {
+    return;
+  }
+
   const float available_width =
       GetStableAvailWidth() - ImGui::GetTreeNodeToLabelSpacing();
   const int num_cols = std::clamp(
@@ -1495,7 +1500,7 @@ void PhysicsGui(mjModel* model, float min_width) {
   const float item_width = ImGui::GetWindowWidth() * .6f;
   ImGui::PushItemWidth(item_width);
 
-  auto& opt = model->opt;
+  auto& opt = spec ? spec->option : model->opt;
 
   const char* opts0[] = {"Euler", "RK4", "implicit", "implicitfast"};
   ImGui::Combo("Integrator", &opt.integrator, opts0, IM_ARRAYSIZE(opts0));
@@ -1602,6 +1607,10 @@ void PhysicsGui(mjModel* model, float min_width) {
   }
 
   ImGui::PopItemWidth();
+
+  if (spec && model) {
+    model->opt = spec->option;
+  }
 }
 
 void VisualizationGui(mjModel* model, mjvOption* vis_options, mjvCamera* camera,
@@ -1924,7 +1933,6 @@ void ConvergenceGui(const mjModel* model, mjData* data, ImVec2 plot_size) {
   ImPlotFlags flags =
       ImPlot_SetupPlotFlags(plot_size) | ImPlotFlags_NoMouseText;
   if (ImPlot::BeginPlot("Convergence vs iter", plot_size, flags)) {
-    ImPlot::PushStyleVar(ImPlotStyleVar_LineWeight, 2.0f);
     ImPlot::SetupAxis(ImAxis_X1, "", ImPlotAxisFlags_AutoFit);
     ImPlot::SetupAxisLimits(ImAxis_X1, 0, xlim, ImPlotCond_Always);
     ImPlot::SetupAxisFormat(ImAxis_Y1, "%.0e");
@@ -1934,6 +1942,7 @@ void ConvergenceGui(const mjModel* model, mjData* data, ImVec2 plot_size) {
     ImPlot::SetupAxisTicks(ImAxis_Y1, ticks, 6);
     ImPlot::SetupLegend(ImPlotLocation_NorthEast);
     ImPlot::SetupFinish();
+    ImPlotSpec spec(ImPlotProp_LineWeight, 2.0f);
 
     const int nisland =
         data->nefc ? mjMAX(1, mjMIN(data->nisland, mjNISLAND)) : 0;
@@ -1951,7 +1960,7 @@ void ConvergenceGui(const mjModel* model, mjData* data, ImVec2 plot_size) {
             const float y = mju_max(mjMINVAL, stats[i].improvement);
             return ImPlotPoint{x, y};
           },
-          stats, npoints);
+          stats, npoints, spec);
 
       if (model->opt.solver == mjSOL_PGS) {
         continue;
@@ -1966,7 +1975,7 @@ void ConvergenceGui(const mjModel* model, mjData* data, ImVec2 plot_size) {
             const float y = mju_max(mjMINVAL, stats[i].gradient);
             return ImPlotPoint{x, y};
           },
-          stats, npoints);
+          stats, npoints, spec);
 
       ImPlot::PlotLineG(
           "lineslope",
@@ -1977,10 +1986,10 @@ void ConvergenceGui(const mjModel* model, mjData* data, ImVec2 plot_size) {
             const float y = mju_max(mjMINVAL, stats[i].lineslope);
             return ImPlotPoint{x, y};
           },
-          stats, npoints);
+          stats, npoints, spec);
     }
 
-    ImPlot::PopStyleVar();
+
     ImPlot::EndPlot();
   }
 }
@@ -1993,13 +2002,13 @@ void CountsGui(const mjModel* model, mjData* data, ImVec2 plot_size) {
   ImPlotFlags flags =
       ImPlot_SetupPlotFlags(plot_size) | ImPlotFlags_NoMouseText;
   if (ImPlot::BeginPlot("Counts vs iter", plot_size, flags)) {
-    ImPlot::PushStyleVar(ImPlotStyleVar_LineWeight, 2.0f);
     ImPlot::SetupAxis(ImAxis_X1, "", ImPlotAxisFlags_AutoFit);
     ImPlot::SetupAxisLimits(ImAxis_X1, 0, xlim, ImPlotCond_Always);
     ImPlot::SetupAxisFormat(ImAxis_Y1, "%.0f");
     ImPlot::SetupAxisLimits(ImAxis_Y1, 0, 80, ImPlotCond_Always);
     ImPlot::SetupLegend(ImPlotLocation_NorthEast);
     ImPlot::SetupFinish();
+    ImPlotSpec spec(ImPlotProp_LineWeight, 2.0f);
 
     const int nisland =
         data->nefc ? mjMAX(1, mjMIN(data->nisland, mjNISLAND)) : 0;
@@ -2018,7 +2027,7 @@ void CountsGui(const mjModel* model, mjData* data, ImVec2 plot_size) {
             const float y = *(static_cast<int*>(user_data));
             return ImPlotPoint{x, y};
           },
-          &nefc, npoints);
+          &nefc, npoints, spec);
 
       ImPlot::PlotLineG(
           "active",
@@ -2029,7 +2038,7 @@ void CountsGui(const mjModel* model, mjData* data, ImVec2 plot_size) {
             const float y = stats[i].nactive;
             return ImPlotPoint{x, y};
           },
-          stats, npoints);
+          stats, npoints, spec);
 
       ImPlot::PlotLineG(
           "changed",
@@ -2040,7 +2049,7 @@ void CountsGui(const mjModel* model, mjData* data, ImVec2 plot_size) {
             const float y = stats[i].nchange;
             return ImPlotPoint{x, y};
           },
-          stats, npoints);
+          stats, npoints, spec);
 
       if (model->opt.solver == mjSOL_PGS) {
         continue;
@@ -2055,7 +2064,7 @@ void CountsGui(const mjModel* model, mjData* data, ImVec2 plot_size) {
             const float y = stats[i].neval;
             return ImPlotPoint{x, y};
           },
-          stats, npoints);
+          stats, npoints, spec);
 
       if (model->opt.solver == mjSOL_CG) {
         continue;
@@ -2070,10 +2079,10 @@ void CountsGui(const mjModel* model, mjData* data, ImVec2 plot_size) {
             const float y = stats[i].nupdate;
             return ImPlotPoint{x, y};
           },
-          stats, npoints);
+          stats, npoints, spec);
     }
 
-    ImPlot::PopStyleVar();
+
     ImPlot::EndPlot();
   }
 }

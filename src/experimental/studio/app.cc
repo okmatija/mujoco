@@ -1282,7 +1282,7 @@ void App::ModelOptionsGui() {
 
   ImGui::BeginChild("PhysicsGui", {0, 0}, child_flags);
   if (platform::SectionHeader("Physics", node_flags, 0.65f)) {
-    platform::PhysicsGui(model(), min_width);
+    platform::PhysicsGui(model(), spec(), min_width);
     ImGui::TreePop();
   }
   ImGui::EndChild();
@@ -1457,10 +1457,13 @@ void App::SpecExplorerGui() {
 
   // Initialize the split height.
   const ImVec2 region = ImGui::GetContentRegionAvail();
-  if (tmp_.explorer_split < 0) {
-    tmp_.explorer_split = region.y * 0.7f;
+  if (region.y > 60.0f) {
+    if (tmp_.explorer_split < 0) {
+      tmp_.explorer_split = region.y * 0.7f;
+    }
+    tmp_.explorer_split =
+        std::clamp(tmp_.explorer_split, 20.0f, region.y - 40.0f);
   }
-  tmp_.explorer_split = std::clamp(tmp_.explorer_split, 20.f, region.y - 40.f);
 
   mjsElement* element = tmp_.curr_element;
   bool open = element != nullptr;
@@ -1601,10 +1604,13 @@ void App::SpecEditorGui() {
 
   // Initialize the split height.
   const ImVec2 region = ImGui::GetContentRegionAvail();
-  if (tmp_.editor_split < 0) {
-    tmp_.editor_split = region.y * 0.7f;
+  if (region.y > 60.0f) {
+    if (tmp_.editor_split < 0) {
+      tmp_.editor_split = region.y * 0.7f;
+    }
+    tmp_.editor_split =
+        std::clamp(tmp_.editor_split, 20.0f, region.y - 40.0f);
   }
-  tmp_.editor_split = std::clamp(tmp_.editor_split, 20.0f, region.y - 40.0f);
 
   mjsElement* element = spec_editor_.GetActiveElement();
 

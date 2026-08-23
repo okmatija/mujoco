@@ -354,6 +354,8 @@ class ViewerApp:
         )
       imgui.TreePop()
     if imgui.TreeNodeEx('Controls', node_flags):
+      # The GUI edits the viewer's local data.ctrl; forward any change to the
+      # sim, else the next incoming StateSnapshot reverts it.
       ctrl_before = self.data.ctrl.copy()
       ux.controls_gui(self.model, self.data, self.viewer.vis_options)
       if not np.array_equal(ctrl_before, self.data.ctrl):

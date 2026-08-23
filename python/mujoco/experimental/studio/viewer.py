@@ -62,8 +62,7 @@ def main(argv: list[str]) -> None:
     if model is not None:
       handle.send_to_viewer(messages.ModelEvent(model=model, path=model_path))  # pyrefly: ignore[bad-argument-type]
 
-    # Run the simulation. The StepControl sim plugin steps the physics on each
-    # sync; without a stepping plugin this loop would busy-spin.
+    # Run the simulation.
     try:
       while handle.is_running():
         model, data = handle.sync(model, data)

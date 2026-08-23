@@ -29,18 +29,6 @@ IsAliveFn = Callable[[], bool]
 # viewer release its resources before the interpreter tears itself down.
 ShutdownFn = Callable[[float], None]
 
-# State components whose edits require mj_forward to re-derive dependent
-# quantities. Force-like components (xfrc_applied, ctrl) only affect the next
-# step and skip the forward pass.
-_FORWARD_STATE_SIGS: int = (
-    int(mujoco.mjtState.mjSTATE_QPOS)
-    | int(mujoco.mjtState.mjSTATE_QVEL)
-    | int(mujoco.mjtState.mjSTATE_ACT)
-    | int(mujoco.mjtState.mjSTATE_MOCAP_POS)
-    | int(mujoco.mjtState.mjSTATE_MOCAP_QUAT)
-    | int(mujoco.mjtState.mjSTATE_EQ_ACTIVE)
-)
-
 
 class ViewerHandle:
   """A handle for interacting with a running viewer application from the sim."""
@@ -149,20 +137,20 @@ class ViewerHandle:
     for snapshot in self._sim_endpoint.get_viewer_snapshots():
       self._plugins.dispatch(snapshot)
 
-    model, data = self.model, self.data
-
-    if model is not None:
-      assert data is not None
+    if self.model is not None:
+      assert self.data is not None
       # Advance the simulation: dispatched locally to sim-side plugins.
-      self._plugins.dispatch(messages.StepEvent(model=model, data=data))
+      self._plugins.dispatch(
+          messages.StepEvent(model=self.model, data=self.data)
+      )
 
       # Send the simulation state to the viewer process as a snapshot.
       integration_sig = int(mujoco.mjtState.mjSTATE_INTEGRATION)
-      integration_size = mujoco.mj_stateSize(model, integration_sig)
+      integration_size = mujoco.mj_stateSize(self.model, integration_sig)
       integration_state = np.empty(integration_size, np.float64)
       mujoco.mj_getState(
-          model,
-          data,
+          self.model,
+          self.data,
           integration_state,
           integration_sig,
       )
@@ -172,7 +160,7 @@ class ViewerHandle:
           ),
       )
 
-    return model, data
+    return self.model, self.data
 
   @messages.handler(priority=messages.Priority.INTERNAL)
   def _on_model(self, event: messages.ModelEvent) -> bool:
@@ -189,8 +177,7 @@ class ViewerHandle:
       state_size = mujoco.mj_stateSize(model, event.state_sig)
       if len(event.state) == state_size:
         mujoco.mj_setState(model, data, event.state, event.state_sig)
-        if event.state_sig & _FORWARD_STATE_SIGS:
-          mujoco.mj_forward(model, data)
+        mujoco.mj_forward(model, data)
     return True
 
   @messages.handler(priority=messages.Priority.INTERNAL)
