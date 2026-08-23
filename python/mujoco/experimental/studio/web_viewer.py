@@ -319,7 +319,7 @@ class WebViewer(viewer_protocol.Viewer):
           self.vis_options,
           self.model,
           list(self.render_flags.flags),
-          self.extra_geoms[: state_payload.MAX_EXTRA_GEOMS],
+          self.display_geoms()[: state_payload.MAX_EXTRA_GEOMS],
           list(self.scene_viewport) if self.scene_viewport else [],
       )
       self._web_server.update_state(payload)

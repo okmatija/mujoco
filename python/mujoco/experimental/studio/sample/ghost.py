@@ -11,10 +11,13 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Example to run studio with a time-delayed ghost overlay of model geoms.
+"""Example to run studio with a time-delayed ghost overlay of the model.
 
-This script runs a Studio viewer that renders time-delayed semi-transparent
-ghosts of the primitive mjvGeoms in the model.
+This script runs a Studio viewer that renders a time-delayed semi-transparent
+ghost of the model, implemented with the viewer's model registry: the ghost is
+a second display-only model (sharing the simulated MjModel, with its own
+MjData) posed at the delayed time and drawn with a tint. The viewer derives
+the overlay geoms automatically — no per-geom bookkeeping in the plugin.
 """
 
 import collections
@@ -50,36 +53,42 @@ _HEIGHT = _flags.DEFINE_integer('height', 800, 'Height of the output image')
 
 
 class GhostRenderer:
-  """Handler that renders time-delayed semi-transparent ghost geoms."""
+  """Plugin that displays a time-delayed semi-transparent model ghost."""
 
   def __init__(self) -> None:
     self._viewer: viewer_protocol.Viewer | None = None
+    self._entry: viewer_protocol.ModelEntry | None = None
     self._delay: float = 0.5
     self._ghost_rgba: list[float] = [0.4, 0.5, 0.9, 0.5]
-    self._history: collections.deque[tuple[float, np.ndarray, np.ndarray]] = (
-        collections.deque()
-    )
+    # History of (time, qpos, mocap_pos, mocap_quat) snapshots.
+    self._history: collections.deque[
+        tuple[float, np.ndarray, np.ndarray, np.ndarray]
+    ] = collections.deque()
     self._last_time: float | None = None
 
-  def _is_fixed_body(self, body_id: int) -> bool:
-    """Check if a body is fixed (welded to world, not attached to mocap)."""
+  def _register_ghost(self) -> None:
+    """(Re)registers the ghost as a display model for the current model."""
     assert self._viewer is not None
-    model = self._viewer.model
-    is_weld = model.body_weldid[body_id] == 0
-    root_id = model.body_rootid[body_id]
-    return bool(is_weld and model.body_mocapid[root_id] < 0)
+    self._entry = self._viewer.add_model(
+        'ghost',
+        self._viewer.model,
+        tint=tuple(self._ghost_rgba),
+    )
 
   @messages.handler
   def on_viewer_init(self, event: viewer_protocol.ViewerInitEvent) -> None:
-    """Caches the Viewer reference for later access to model/data."""
+    """Caches the Viewer reference and registers the ghost model."""
     self._viewer = event.viewer
+    self._register_ghost()
 
   @messages.handler
   def on_model(self, event: messages.ModelEvent) -> bool:
-    """Resets ghost-specific state when the model changes."""
-    del event  # Model/data are accessed via self._viewer.
+    """Re-registers the ghost when the model changes."""
+    del event  # The Viewer already swapped its model (CRITICAL handler).
     self._history.clear()
     self._last_time = None
+    if self._viewer is not None:
+      self._register_ghost()
     return False
 
   @messages.handler
@@ -95,6 +104,8 @@ class GhostRenderer:
       changed_color, rgba = imgui.ColorEdit4('Color', self._ghost_rgba)
       if changed_color:
         self._ghost_rgba = rgba
+        if self._entry is not None:
+          self._entry.tint = tuple(rgba)
     imgui.End()
 
   @messages.handler
@@ -114,14 +125,14 @@ class GhostRenderer:
     )
     viewer_utils.apply_perturb(self._viewer, model, data)
 
-    self._viewer.extra_geoms.clear()
     if self._last_time is None or data.time < self._last_time:
       self._history.clear()
     if not self._history or data.time > self._last_time:  # pyrefly: ignore[unsupported-operation]
       self._history.append((
           data.time,
-          data.geom_xpos.copy(),
-          data.geom_xmat.copy(),
+          data.qpos.copy(),
+          data.mocap_pos.copy(),
+          data.mocap_quat.copy(),
       ))
       self._last_time = data.time
 
@@ -129,32 +140,19 @@ class GhostRenderer:
     while len(self._history) > 1 and self._history[1][0] <= target_time:
       self._history.popleft()
 
-    _, xpos, xmat = self._history[0]  # pyrefly: ignore[bad-assignment]
-    if len(xpos) != model.ngeom or len(xmat) != model.ngeom:
+    # Pose the ghost model at the delayed configuration; the viewer derives
+    # the overlay geoms from the registry entry.
+    entry = self._entry
+    if entry is None:
       return
-
-    ghost_rgba = np.array(self._ghost_rgba, dtype=np.float32)
-    for i in range(model.ngeom):
-      if (
-          self._is_fixed_body(model.geom_bodyid[i])
-          or model.geom_rgba[i, 3] == 0
-          or model.geom_group[i] > 2
-      ):
-        continue
-
-      geom = mujoco.MjvGeom()
-      mujoco.mjv_initGeom(
-          geom,
-          int(model.geom_type[i]),
-          model.geom_size[i],
-          xpos[i],
-          xmat[i].flatten(),
-          ghost_rgba,
-      )
-      geom.dataid = model.geom_dataid[i]
-      geom.objtype = int(mujoco.mjtObj.mjOBJ_GEOM)
-      geom.objid = i
-      self._viewer.extra_geoms.append(geom)
+    _, qpos, mocap_pos, mocap_quat = self._history[0]  # pyrefly: ignore[bad-assignment]
+    if len(qpos) != entry.model.nq:
+      return
+    entry.data.qpos[:] = qpos
+    if entry.model.nmocap > 0:
+      entry.data.mocap_pos[:] = mocap_pos
+      entry.data.mocap_quat[:] = mocap_quat
+    mujoco.mj_forward(entry.model, entry.data)
 
 
 def main(argv: list[str]) -> None:

@@ -115,7 +115,7 @@ class NativeViewer(viewer_protocol.Viewer):
         self.camera,
         self.vis_options,
         self.render_flags.flags,
-        self.extra_geoms,
+        self.display_geoms(),
     )
 
   # TODO(matijak): Remove stop() and rename callers to close().

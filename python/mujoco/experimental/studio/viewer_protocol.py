@@ -84,6 +84,42 @@ class ViewToSim:
 # -----------------------------------------------------------------------------
 
 
+# Reserved id of the simulated model in the viewer's model registry. It is
+# fed by StateSnapshots from the sim side; ``viewer.model`` / ``viewer.data``
+# alias this entry.
+DEFAULT_MODEL_ID = 'default'
+
+
+@dataclasses.dataclass
+class ModelEntry:
+  """A model registered with the viewer for display.
+
+  The entry with id ``DEFAULT_MODEL_ID`` is the simulated model. Additional
+  entries are viewer-local display models (ghosts, previews, props): the
+  plugin that adds them owns their lifecycle and poses their ``data``.
+
+  Attributes:
+    model: The model.
+    data: The data posed for display.
+    source: 'sim' when state arrives from the sim side, 'local' otherwise.
+    overlay: Whether the entry is drawn into the main 3D scene.
+    visible: Toggles drawing without removing the entry.
+    tint: Optional RGBA override applied to every overlay geom (e.g. a
+      semi-transparent ghost color); None keeps the model's own colors.
+    include_static: Whether overlay drawing includes geoms on static
+      (world-welded) bodies.
+  """
+
+  model: mujoco.MjModel
+  data: mujoco.MjData
+  source: str = 'local'
+  overlay: bool = True
+  visible: bool = True
+  tint: tuple[float, float, float, float] | None = None
+  include_static: bool = False
+  _scene: mujoco.MjvScene | None = dataclasses.field(default=None, repr=False)
+
+
 @dataclasses.dataclass(frozen=True)
 class ViewerInitEvent(messages.Event):
   """Lifecycle event dispatched once when the concrete Viewer is initialized.
@@ -93,6 +129,41 @@ class ViewerInitEvent(messages.Event):
   """
 
   viewer: 'Viewer'
+
+
+def _entry_overlay_geoms(entry: ModelEntry) -> list[mujoco.MjvGeom]:
+  """Extracts display geoms from a registry entry for main-scene overlay.
+
+  Runs mjv_updateScene on the entry's model/data into a per-entry scratch
+  scene and returns views of its geoms, with the entry's tint applied. The
+  views alias the scratch scene, which stays valid until the entry's next
+  extraction — consume them within the frame.
+  """
+  needed = entry.model.ngeom + 64
+  if entry._scene is None or entry._scene.maxgeom < needed:  # pylint: disable=protected-access
+    entry._scene = mujoco.MjvScene(entry.model, maxgeom=needed)  # pylint: disable=protected-access
+  scene = entry._scene  # pylint: disable=protected-access
+
+  vopt = mujoco.MjvOption()
+  camera = mujoco.MjvCamera()
+  catmask = (
+      mujoco.mjtCatBit.mjCAT_ALL
+      if entry.include_static
+      else mujoco.mjtCatBit.mjCAT_DYNAMIC
+  )
+  mujoco.mjv_updateScene(
+      entry.model, entry.data, vopt, None, camera, int(catmask), scene
+  )
+
+  out = []
+  for i in range(scene.ngeom):
+    geom = scene.geoms[i]
+    if geom.objtype != int(mujoco.mjtObj.mjOBJ_GEOM):
+      continue  # Skip decor elements (frames, labels, skybox).
+    if entry.tint is not None:
+      geom.rgba[:] = entry.tint
+    out.append(geom)
+  return out
 
 
 class Viewer(abc.ABC):
@@ -142,11 +213,11 @@ class Viewer(abc.ABC):
     self._is_running = True
     self._closed = False
 
-    # Viewer-owned model and data.
+    # Viewer-owned model registry. The DEFAULT_MODEL_ID entry is the
+    # simulated model; further entries are viewer-local display models.
+    self.models: dict[str, ModelEntry] = {}
     if model is None:
       model = mujoco.MjSpec().compile()
-    self.model: mujoco.MjModel
-    self.data: mujoco.MjData
     self.model_path: str = ''
     self.load_model(model, model_path)
 
@@ -210,13 +281,118 @@ class Viewer(abc.ABC):
     """Dispatches a message to registered handlers in priority order."""
     self.plugins.dispatch(message)
 
+  @property
+  def model(self) -> mujoco.MjModel:
+    """The simulated model (the DEFAULT_MODEL_ID registry entry)."""
+    return self.models[DEFAULT_MODEL_ID].model
+
+  @model.setter
+  def model(self, value: mujoco.MjModel) -> None:
+    self.models[DEFAULT_MODEL_ID].model = value
+
+  @property
+  def data(self) -> mujoco.MjData:
+    """The simulated model's data (the DEFAULT_MODEL_ID registry entry)."""
+    return self.models[DEFAULT_MODEL_ID].data
+
+  @data.setter
+  def data(self, value: mujoco.MjData) -> None:
+    self.models[DEFAULT_MODEL_ID].data = value
+
+  def add_model(
+      self,
+      name: str,
+      model: mujoco.MjModel,
+      data: mujoco.MjData | None = None,
+      *,
+      tint: tuple[float, float, float, float] | None = None,
+      overlay: bool = True,
+      include_static: bool = False,
+  ) -> ModelEntry:
+    """Registers a viewer-local display model and returns its entry.
+
+    The caller owns the entry's lifecycle: pose ``entry.data`` (e.g. set qpos
+    and call ``mj_forward``) and remove the entry when done. The model is not
+    copied.
+
+    Args:
+      name: Registry id; replaces any existing entry with the same name.
+      model: The model to display.
+      data: Optional data; a fresh forwarded MjData is created if None.
+      tint: Optional RGBA override for all overlay geoms.
+      overlay: Whether to draw the entry into the main 3D scene.
+      include_static: Whether overlay drawing includes static-body geoms.
+
+    Returns:
+      The registered ModelEntry.
+    """
+    if name == DEFAULT_MODEL_ID:
+      raise ValueError(f'{DEFAULT_MODEL_ID!r} is reserved for the sim model')
+    if data is None:
+      data = mujoco.MjData(model)
+      mujoco.mj_forward(model, data)
+    entry = ModelEntry(
+        model=model,
+        data=data,
+        source='local',
+        overlay=overlay,
+        tint=tint,
+        include_static=include_static,
+    )
+    self.models[name] = entry
+    return entry
+
+  def remove_model(self, name: str) -> None:
+    """Removes a viewer-local display model; missing names are ignored."""
+    if name == DEFAULT_MODEL_ID:
+      raise ValueError(f'cannot remove the {DEFAULT_MODEL_ID!r} entry')
+    self.models.pop(name, None)
+
+  def apply_state(self, model_id: str, state: Any, state_sig: int) -> bool:
+    """Applies a state vector to a registry entry (the chokepoint for all
+    incoming state, today always addressed to DEFAULT_MODEL_ID).
+
+    Args:
+      model_id: Registry id of the target entry.
+      state: The state vector (as in ``mj_getState``).
+      state_sig: The mjtState signature of the vector.
+
+    Returns:
+      True if the state was applied.
+    """
+    entry = self.models.get(model_id)
+    if entry is None:
+      return False
+    state_size = mujoco.mj_stateSize(entry.model, state_sig)
+    if len(state) != state_size:
+      return False
+    mujoco.mj_setState(entry.model, entry.data, state, state_sig)
+    mujoco.mj_forward(entry.model, entry.data)
+    return True
+
+  def display_geoms(self) -> list[mujoco.MjvGeom]:
+    """Returns extra_geoms plus the overlay geoms of local registry entries.
+
+    This is what viewers draw on top of the simulated model: the user's
+    ``extra_geoms`` list, then every visible local entry with ``overlay``
+    set, converted to display geoms (with the entry's tint applied).
+    """
+    out = list(self.extra_geoms)
+    for name, entry in self.models.items():
+      if name == DEFAULT_MODEL_ID or not entry.overlay or not entry.visible:
+        continue
+      out.extend(_entry_overlay_geoms(entry))
+    return out
+
   def load_model(self, model: mujoco.MjModel, model_path: str = '') -> None:
     """Deep-copies a model and creates fresh data for the viewer."""
     self.model_path = model_path
-    self.model = copy.deepcopy(model)
-    self.data = mujoco.MjData(self.model)
-    assert id(self.model) != id(model)
-    mujoco.mj_forward(self.model, self.data)
+    model = copy.deepcopy(model)
+    data = mujoco.MjData(model)
+    mujoco.mj_forward(model, data)
+    self.models[DEFAULT_MODEL_ID] = ModelEntry(
+        model=model, data=data, source='sim'
+    )
 
   @messages.handler(priority=messages.Priority.CRITICAL)
   def _on_model(self, event: messages.ModelEvent) -> bool:
@@ -227,11 +403,9 @@ class Viewer(abc.ABC):
 
   @messages.handler(priority=messages.Priority.CRITICAL)
   def _on_state(self, event: messages.StateSnapshot) -> bool:
-    """Applies incoming simulation state to the viewer's model/data."""
-    state_size = mujoco.mj_stateSize(self.model, event.state_sig)
-    if len(event.state) == state_size:
-      mujoco.mj_setState(self.model, self.data, event.state, event.state_sig)
-      mujoco.mj_forward(self.model, self.data)
+    """Applies incoming simulation state to the addressed registry entry."""
+    model_id = getattr(event, 'model_id', DEFAULT_MODEL_ID)
+    self.apply_state(model_id, event.state, event.state_sig)
     return False  # Do not consume; let other handlers see the event.
 
   @abc.abstractmethod
