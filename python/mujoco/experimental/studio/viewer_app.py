@@ -152,6 +152,7 @@ class ViewerApp:
         self.viewer.camera,
         self.viewer.vis_options,
         self.ux_state,
+        scene_rect=self.viewer.scene_viewport,
     )
 
   def handle_mouse_events(
@@ -165,6 +166,7 @@ class ViewerApp:
         self.viewer.vis_options,
         self.viewer.perturb,
         self.ux_state,
+        scene_rect=self.viewer.scene_viewport,
     )
 
   def reset_physics(self) -> None:
@@ -246,7 +248,16 @@ class ViewerApp:
   def build_gui(self) -> None:
     """Emit full Studio UI."""
     ux.setup_theme(self.theme)
-    ux.configure_docking_layout()
+    # The docking layout returns the central workspace rect. On viewers that
+    # support it, confine the 3D scene to that rect so the side panes,
+    # toolbar and status bar are never drawn on top of the scene (floating
+    # windows still straddle the boundary).
+    rect = ux.configure_docking_layout()
+    if self.viewer.supports_scene_viewport:
+      if rect[2] > 0 and rect[3] > 0:
+        self.viewer.scene_viewport = rect
+      else:
+        self.viewer.scene_viewport = None
 
     # -- Main menu bar --------------------------------------------------------
     if imgui.BeginMainMenuBar():

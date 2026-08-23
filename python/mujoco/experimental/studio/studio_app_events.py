@@ -20,6 +20,8 @@
 # bindings and mouse behaviour, the event handling functions will delegate to
 # code shared with the C++ studio application.
 
+from typing import Any
+
 import mujoco
 from mujoco.experimental.studio import sim
 from mujoco.experimental.studio import ux
@@ -388,24 +390,48 @@ def handle_keyboard_events(
   return False, cam_speed
 
 
+def _resolve_scene_rect(
+    io: Any,
+    scene_rect: tuple[float, float, float, float] | None,
+) -> tuple[float, float, float, float]:
+  """Returns the scene rectangle, falling back to the full display."""
+  if scene_rect is not None and scene_rect[2] > 0 and scene_rect[3] > 0:
+    return scene_rect
+  return (0.0, 0.0, io.DisplaySize.x, io.DisplaySize.y)
+
+
 def handle_camera_tracking_mouse_events(
     model: mujoco.MjModel,
     data: mujoco.MjData,
     camera: mujoco.MjvCamera,
     vis_options: mujoco.MjvOption,
     ux_state: ux.UxState,
+    scene_rect: tuple[float, float, float, float] | None = None,
 ) -> None:
-  """Handles mouse events for camera tracking."""
+  """Handles mouse events for camera tracking.
+
+  Args:
+    model: The model.
+    data: The data.
+    camera: The camera.
+    vis_options: The visualization options.
+    ux_state: The UX state.
+    scene_rect: Optional (x, y, w, h) window rectangle (logical px, top-left
+      origin) the 3D scene is confined to; None means the full window.
+  """
   io = imgui.GetIO()
   if imgui.GetIO().WantCaptureMouse:
     return
 
-  if io.DisplaySize.x <= 0 or io.DisplaySize.y <= 0:
+  rx, ry, rw, rh = _resolve_scene_rect(io, scene_rect)
+  if rw <= 0 or rh <= 0:
     return
 
-  mouse_x = io.MousePos.x / io.DisplaySize.x
-  mouse_y = io.MousePos.y / io.DisplaySize.y
-  aspect_ratio = io.DisplaySize.x / io.DisplaySize.y
+  mouse_x = (io.MousePos.x - rx) / rw
+  mouse_y = (io.MousePos.y - ry) / rh
+  if not (0.0 <= mouse_x <= 1.0 and 0.0 <= mouse_y <= 1.0):
+    return
+  aspect_ratio = rw / rh
 
   # Right double click.
   if imgui.IsMouseDoubleClicked(imgui.MouseButton.Right):
@@ -433,20 +459,34 @@ def handle_mouse_events(
     vis_options: mujoco.MjvOption,
     perturb: mujoco.MjvPerturb,
     ux_state: ux.UxState,
+    scene_rect: tuple[float, float, float, float] | None = None,
 ) -> None:
-  """Handles mouse events."""
+  """Handles mouse events.
+
+  Args:
+    model: The model.
+    data: The data.
+    camera: The camera.
+    vis_options: The visualization options.
+    perturb: The perturbation state.
+    ux_state: The UX state.
+    scene_rect: Optional (x, y, w, h) window rectangle (logical px, top-left
+      origin) the 3D scene is confined to; None means the full window.
+  """
   io = imgui.GetIO()
   if io.WantCaptureMouse:
     return
 
-  if io.DisplaySize.x <= 0 or io.DisplaySize.y <= 0:
+  rx, ry, rw, rh = _resolve_scene_rect(io, scene_rect)
+  if rw <= 0 or rh <= 0:
     return
 
-  mouse_x = io.MousePos.x / io.DisplaySize.x
-  mouse_y = io.MousePos.y / io.DisplaySize.y
-  mouse_dx = io.MouseDelta.x / io.DisplaySize.x
-  mouse_dy = io.MouseDelta.y / io.DisplaySize.y
+  mouse_x = (io.MousePos.x - rx) / rw
+  mouse_y = (io.MousePos.y - ry) / rh
+  mouse_dx = io.MouseDelta.x / rw
+  mouse_dy = io.MouseDelta.y / rh
   mouse_scroll = io.MouseWheel / 50.0
+  mouse_inside = 0.0 <= mouse_x <= 1.0 and 0.0 <= mouse_y <= 1.0
 
   is_mouse_moving = mouse_dx != 0.0 or mouse_dy != 0.0
   is_any_mouse_down = (
@@ -558,7 +598,11 @@ def handle_mouse_events(
       )
 
   # Mouse scroll.
-  if mouse_scroll != 0.0 and ux_state.camera_index != ux.FREE_CAMERA_IDX:
+  if (
+      mouse_scroll != 0.0
+      and mouse_inside
+      and ux_state.camera_index != ux.FREE_CAMERA_IDX
+  ):
     ux.MoveCamera(
         model,
         data,
@@ -568,10 +612,10 @@ def handle_mouse_events(
         -mouse_scroll,
     )
 
-  aspect_ratio = io.DisplaySize.x / io.DisplaySize.y
+  aspect_ratio = rw / rh
 
   # Left double click.
-  if imgui.IsMouseDoubleClicked(imgui.MouseButton.Left):
+  if mouse_inside and imgui.IsMouseDoubleClicked(imgui.MouseButton.Left):
     picked = ux.Pick(
         model,
         data,

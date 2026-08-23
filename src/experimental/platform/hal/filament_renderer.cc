@@ -165,13 +165,20 @@ void FilamentRenderer::Render(const mjModel* model, mjData* data,
     model_renderables_->MarkAsSelected(mjOBJ_UNKNOWN, -1);
   }
 
-  model_decorations_->Update(data, vis_option, perturb, camera, viewport,
+  // The main scene renders into scene_viewport_ when one is set; the UI pass
+  // always covers the full window.
+  mjrRect scene_viewport = viewport;
+  if (scene_viewport_.width > 0 && scene_viewport_.height > 0) {
+    scene_viewport = scene_viewport_;
+  }
+
+  model_decorations_->Update(data, vis_option, perturb, camera, scene_viewport,
                              DrawTextAt, extra_geoms);
 
   imgui_bridge_->Update();
 
   mjrfRenderRequest reqs[2];
-  BuildMainRenderRequest(&reqs[0], viewport,
+  BuildMainRenderRequest(&reqs[0], scene_viewport,
                          mjv_camera2GLCamera(model, data, camera));
   BuildUxRenderRequest(&reqs[1], viewport);
 

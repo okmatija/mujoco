@@ -118,7 +118,10 @@ class AppCallbacks final : public RemoteUi::Callbacks,
 struct App {
   std::unique_ptr<mujoco::platform::Window> window;
   std::unique_ptr<mujoco::platform::ModelHolder> model_holder;
-  mujoco::platform::Renderer* renderer = nullptr;
+  mujoco::platform::FilamentRenderer* renderer = nullptr;
+  // Scene viewport from the state payload (x, y, w, h in logical px, top-left
+  // origin); all zero = the scene fills the window.
+  float scene_viewport[4] = {0.0f, 0.0f, 0.0f, 0.0f};
   mjvPerturb perturb;
   mjvCamera camera;
   mjvOption vis_options;
@@ -253,6 +256,10 @@ void ApplyStatePayload(const StatePayloadView& view) {
     memcpy(g_app.extra_geoms.data(), view.extra_geoms,
            view.extra_geom_count * sizeof(mjvGeom));
   }
+
+  // Scene viewport (all zero when the payload carries none).
+  memcpy(g_app.scene_viewport, view.scene_viewport,
+         sizeof(g_app.scene_viewport));
 }
 
 void SetSpectatorCameraMode(int mode) {
@@ -581,6 +588,23 @@ void MainLoopImpl() {
     int height =
         static_cast<int>(g_app.window->GetHeight() * g_app.window->GetScale());
     if (width > 0 && height > 0) {
+      // Confine the scene to the payload's viewport rect: logical px with a
+      // top-left origin on the wire, framebuffer px with a bottom-left origin
+      // for the renderer.
+      mjrRect scene_rect = {0, 0, 0, 0};
+      if (g_app.scene_viewport[2] > 0 && g_app.scene_viewport[3] > 0) {
+        const float s = g_app.window->GetScale();
+        int vx = static_cast<int>(g_app.scene_viewport[0] * s);
+        int vy_top = static_cast<int>(g_app.scene_viewport[1] * s);
+        int vw = static_cast<int>(g_app.scene_viewport[2] * s);
+        int vh = static_cast<int>(g_app.scene_viewport[3] * s);
+        vx = std::clamp(vx, 0, width);
+        vy_top = std::clamp(vy_top, 0, height);
+        vw = std::clamp(vw, 0, width - vx);
+        vh = std::clamp(vh, 0, height - vy_top);
+        scene_rect = {vx, height - (vy_top + vh), vw, vh};
+      }
+      g_app.renderer->SetSceneViewport(scene_rect);
       g_app.renderer->Render(g_app.model_holder->model(),
                              g_app.model_holder->data(), &g_app.perturb,
                              &g_app.camera, &g_app.vis_options, width, height,

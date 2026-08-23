@@ -74,6 +74,12 @@ class FilamentRenderer : public Renderer {
   // Rendering flags.
   mjtByte* GetRenderFlags() override { return render_flags_; }
 
+  // Confines the main 3D scene to a sub-rectangle of the window, in
+  // framebuffer pixels with a bottom-left origin. A zero-sized rect (the
+  // default) renders the scene across the full window. The UI pass always
+  // covers the full window, so floating UI windows can straddle the boundary.
+  void SetSceneViewport(const mjrRect& viewport) { scene_viewport_ = viewport; }
+
   // Returns the current frame rate.
   double GetFps() override;
 
@@ -98,6 +104,7 @@ class FilamentRenderer : public Renderer {
   std::unique_ptr<ModelRenderables> model_renderables_;
   std::unique_ptr<ModelDecorations> model_decorations_;
   mjtByte render_flags_[mjNRNDFLAG];
+  mjrRect scene_viewport_ = {0, 0, 0, 0};
   int framebuffer_mode_ = 0;
   double fps_ = 0;
 };

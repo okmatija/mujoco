@@ -102,6 +102,11 @@ class Viewer(abc.ABC):
   objects. The application is rendered by calling ``sync()``.
   """
 
+  # Whether this viewer can confine the 3D scene to a window sub-rectangle
+  # (set per concrete class). When True, the GUI may set ``scene_viewport``
+  # and input handling maps mouse coordinates into that rectangle.
+  supports_scene_viewport = False
+
   def __init__(
       self,
       config: ViewerConfig,
@@ -144,6 +149,11 @@ class Viewer(abc.ABC):
     self.data: mujoco.MjData
     self.model_path: str = ''
     self.load_model(model, model_path)
+
+    # Scene viewport (x, y, w, h in logical px, top-left origin), set by the
+    # GUI each frame from the docking layout; None renders the scene across
+    # the full window.
+    self.scene_viewport: tuple[float, float, float, float] | None = None
 
     # Visual state.
     self.camera = camera or mujoco.MjvCamera()

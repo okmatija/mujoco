@@ -39,7 +39,8 @@ static py::bytes SerializeStatePayload(
     const mujoco::python::MjvOptionWrapper& vis_options,
     const mujoco::python::MjModelWrapper& model,
     const std::vector<uint8_t>& render_flags,
-    const std::vector<mujoco::python::MjvGeomWrapper>& extra_geoms) {
+    const std::vector<mujoco::python::MjvGeomWrapper>& extra_geoms,
+    const std::vector<float>& scene_viewport) {
   std::vector<mjvGeom> geoms;
   geoms.reserve(extra_geoms.size());
   for (const mujoco::python::MjvGeomWrapper& geom_wrapper : extra_geoms) {
@@ -47,6 +48,8 @@ static py::bytes SerializeStatePayload(
       geoms.push_back(*geom_wrapper.get());
     }
   }
+  const float* viewport =
+      scene_viewport.size() == 4 ? scene_viewport.data() : nullptr;
 
   std::string physics = physics_state;
   std::vector<std::byte> buffer;
@@ -56,7 +59,7 @@ static py::bytes SerializeStatePayload(
         model_crc32, physics_spec, physics.data(), physics.size(),
         *camera.get(), *perturb.get(), *vis_options.get(), model.get()->opt,
         model.get()->vis, model.get()->stat, render_flags, geoms.data(),
-        geoms.size());
+        geoms.size(), viewport);
   }
   return py::bytes(reinterpret_cast<const char*>(buffer.data()), buffer.size());
 }
@@ -71,6 +74,8 @@ PYBIND11_MODULE(state_payload, m, pybind11::mod_gil_not_used()) {
   py::module_::import("mujoco._structs");
   m.doc() = "MuJoCo web viewer state payload serialization";
 
+  // scene_viewport: [] for a full-window scene, or [x, y, w, h] in logical px
+  // (top-left origin) confining the 3D scene to a window sub-rectangle.
   m.def("serialize_state_payload", &SerializeStatePayload);
   m.def("max_state_payload_size", &MaxStatePayloadSize);
   m.attr("MAX_EXTRA_GEOMS") = mujoco::studio::kMaxExtraGeoms;

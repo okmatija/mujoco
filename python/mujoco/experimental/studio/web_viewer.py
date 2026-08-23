@@ -144,6 +144,8 @@ def _pick_drop_root(paths: list[str]) -> str | None:
 class WebViewer(viewer_protocol.Viewer):
   """Simulation-agnostic web viewer for MuJoCo models."""
 
+  supports_scene_viewport = True
+
   def __init__(
       self,
       config: viewer_protocol.ViewerConfig,
@@ -318,6 +320,7 @@ class WebViewer(viewer_protocol.Viewer):
           self.model,
           list(self.render_flags.flags),
           self.extra_geoms[: state_payload.MAX_EXTRA_GEOMS],
+          list(self.scene_viewport) if self.scene_viewport else [],
       )
       self._web_server.update_state(payload)
 

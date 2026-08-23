@@ -71,9 +71,12 @@ static_assert(sizeof(StatePayloadHeader) == 12);
 
 // Block tags. Readers must skip unknown tags.
 enum StateBlockTag : uint32_t {
-  kTagPhysicsState = 1,  // [i32 mjtState spec signature][mjtNum values...]
-  kTagRenderState = 2,   // fixed-size block of kRenderStateSize bytes
-  kTagExtraGeoms = 3,    // n x mjvGeom (n = size / sizeof(mjvGeom))
+  kTagPhysicsState = 1,   // [i32 mjtState spec signature][mjtNum values...]
+  kTagRenderState = 2,    // fixed-size block of kRenderStateSize bytes
+  kTagExtraGeoms = 3,     // n x mjvGeom (n = size / sizeof(mjvGeom))
+  kTagSceneViewport = 4,  // 4 x float: x, y, w, h in logical px, top-left
+                          // origin. The 3D scene is confined to this window
+                          // rectangle; it fills the window when absent.
 };
 
 struct StateBlockHeader {
@@ -99,12 +102,15 @@ constexpr uint32_t kMaxExtraGeoms = 1024;
 size_t MaxStatePayloadSize(size_t physics_bytes);
 
 // Serialize the complete state payload sent over the state WebSocket.
+// `scene_viewport` is null, or 4 floats (x, y, w, h in logical px, top-left
+// origin) confining the scene; a zero-sized rect is treated as absent.
 std::vector<std::byte> SerializeStatePayload(
     uint32_t model_crc32, int32_t physics_spec, const void* physics,
     size_t physics_bytes, const mjvCamera& camera, const mjvPerturb& perturb,
     const mjvOption& vis_options, const mjOption& opt, const mjVisual& vis,
     const mjStatistic& stat, const std::vector<uint8_t>& render_flags,
-    const mjvGeom* extra_geoms, size_t extra_geom_count);
+    const mjvGeom* extra_geoms, size_t extra_geom_count,
+    const float* scene_viewport = nullptr);
 
 // Parsed view into a serialized payload. Pointers alias the input buffer and
 // are NOT guaranteed to be aligned; so you must memcpy the data out before use.
@@ -116,6 +122,9 @@ struct StatePayloadView {
   const std::byte* render_state = nullptr;  // kRenderStateSize bytes when non-null
   const std::byte* extra_geoms = nullptr;   // extra_geom_count * sizeof(mjvGeom)
   size_t extra_geom_count = 0;
+  // Scene viewport (x, y, w, h in logical px, top-left origin); all zero when
+  // the payload carries no kTagSceneViewport block (scene fills the window).
+  float scene_viewport[4] = {0.0f, 0.0f, 0.0f, 0.0f};
 };
 
 // Parses a payload produced by SerializeStatePayload. Returns false if the

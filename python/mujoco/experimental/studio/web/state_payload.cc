@@ -106,9 +106,9 @@ void ParseRenderState(const std::byte* data, RenderStateView* out) {
 }
 
 size_t MaxStatePayloadSize(size_t physics_bytes) {
-  return sizeof(StatePayloadHeader) + 3 * sizeof(StateBlockHeader) +
+  return sizeof(StatePayloadHeader) + 4 * sizeof(StateBlockHeader) +
          (sizeof(int32_t) + physics_bytes) + kRenderStateSize +
-         kMaxExtraGeoms * sizeof(mjvGeom);
+         kMaxExtraGeoms * sizeof(mjvGeom) + 4 * sizeof(float);
 }
 
 std::vector<std::byte> SerializeStatePayload(
@@ -116,14 +116,17 @@ std::vector<std::byte> SerializeStatePayload(
     size_t physics_bytes, const mjvCamera& camera, const mjvPerturb& perturb,
     const mjvOption& vis_options, const mjOption& opt, const mjVisual& vis,
     const mjStatistic& stat, const std::vector<uint8_t>& render_flags,
-    const mjvGeom* extra_geoms, size_t extra_geom_count) {
+    const mjvGeom* extra_geoms, size_t extra_geom_count,
+    const float* scene_viewport) {
   extra_geom_count =
       extra_geom_count > kMaxExtraGeoms ? kMaxExtraGeoms : extra_geom_count;
+  const bool has_viewport = scene_viewport != nullptr &&
+                            scene_viewport[2] > 0.0f && scene_viewport[3] > 0.0f;
   std::vector<std::byte> buffer;
   buffer.reserve(MaxStatePayloadSize(physics_bytes));
 
   StatePayloadHeader header;
-  header.nblocks = extra_geom_count > 0 ? 3 : 2;
+  header.nblocks = 2 + (extra_geom_count > 0 ? 1 : 0) + (has_viewport ? 1 : 0);
   header.model_crc32 = model_crc32;
   AppendBytes(buffer, &header, sizeof(header));
 
@@ -147,6 +150,12 @@ std::vector<std::byte> SerializeStatePayload(
   if (extra_geom_count > 0) {
     AppendStateBlock(buffer, kTagExtraGeoms, extra_geoms,
                      extra_geom_count * sizeof(mjvGeom));
+  }
+
+  // Scene viewport (only when the scene is confined to a window sub-rect).
+  if (has_viewport) {
+    AppendStateBlock(buffer, kTagSceneViewport, scene_viewport,
+                     4 * sizeof(float));
   }
 
   return buffer;
@@ -186,6 +195,10 @@ bool ParseStatePayload(const void* data, size_t size, StatePayloadView* out) {
         if (block.size % sizeof(mjvGeom) != 0) return false;
         out->extra_geoms = payload;
         out->extra_geom_count = block.size / sizeof(mjvGeom);
+        break;
+      case kTagSceneViewport:
+        if (block.size != 4 * sizeof(float)) return false;
+        memcpy(out->scene_viewport, payload, 4 * sizeof(float));
         break;
       default:
         break;  // Unknown tag: skip.
