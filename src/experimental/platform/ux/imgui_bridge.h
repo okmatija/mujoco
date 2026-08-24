@@ -43,6 +43,12 @@ class ImguiBridge {
   uintptr_t UploadImage(uintptr_t tex_id, const uint8_t* pixels, int width,
                         int height, int bpp);
 
+  // Registers an externally-owned texture (e.g. a render target's color
+  // texture) under the given ImGui texture id, or removes the registration
+  // when `texture` is null. The bridge does not take ownership; the caller
+  // must keep the texture alive (or remove it) while registered.
+  void SetExternalTexture(uintptr_t tex_id, mjrfTexture* texture);
+
   ImguiBridge(const ImguiBridge&) = delete;
   ImguiBridge& operator=(const ImguiBridge&) = delete;
 

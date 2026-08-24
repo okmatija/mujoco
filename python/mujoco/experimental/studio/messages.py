@@ -103,10 +103,15 @@ class EventChannel(Protocol):
 
 @dataclasses.dataclass(frozen=True)
 class StateSnapshot(Snapshot):
-  """A snapshot message that transports a MuJoCo state."""
+  """A snapshot message that transports a MuJoCo state.
+
+  ``model_id`` addresses an entry in the viewer's model registry; the default
+  addresses the simulated model.
+  """
 
   state: np.ndarray
   state_sig: int
+  model_id: str = 'default'
 
 
 @dataclasses.dataclass(frozen=True)
@@ -169,10 +174,14 @@ class ModelEvent(Event):
   Attributes:
     model: The compiled MuJoCo model.
     path: Optional file path the model was loaded from.
+    model_id: Registry entry this model addresses. The default is the
+      simulated model; any other id adds or replaces a display model in the
+      viewer's registry (e.g. assets for a gallery).
   """
 
   model: mujoco.MjModel
   path: str = ''
+  model_id: str = 'default'
 
 
 @dataclasses.dataclass(frozen=True)

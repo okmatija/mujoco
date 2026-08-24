@@ -222,6 +222,12 @@ class WebViewer(viewer_protocol.Viewer):
     # The persistent single-port server (HTTP + /ui + /state + /drop).
     self._model_crc32 = 0
 
+    # Serialized MJB cache for registry entries used by client views:
+    # name -> (id(entry.model), crc32, mjb bytes). The set of crcs last
+    # pushed to the web server tracks when /model?id= content must refresh.
+    self._entry_mjb_cache: dict[str, tuple[int, int, bytes]] = {}
+    self._served_registry_crcs: dict[str, int] = {}
+
     # Files dropped onto the browser page arrive here from the server thread as
     # a dict of relative path -> bytes.
     self._drop_queue: queue.Queue[Any] = queue.Queue()
@@ -303,6 +309,62 @@ class WebViewer(viewer_protocol.Viewer):
     """Advances to the next headless frame; returns False when disconnected."""
     return self._headless_ui.new_frame()
 
+  def _entry_mjb(self, name: str, model: mujoco.MjModel) -> tuple[int, bytes]:
+    """Returns (crc32, mjb bytes) for a registry entry, cached per model."""
+    cached = self._entry_mjb_cache.get(name)
+    if cached is not None and cached[0] == id(model):
+      return cached[1], cached[2]
+    buffer = np.empty(mujoco.mj_sizeModel(model), np.uint8)
+    mujoco.mj_saveModel(model, None, buffer)
+    mjb = buffer.tobytes()
+    crc = zlib.crc32(mjb)
+    self._entry_mjb_cache[name] = (id(model), crc, mjb)
+    return crc, mjb
+
+  def _registry_wire_blocks(self) -> tuple[list, list, list]:
+    """Builds the model-table, entry-state, and client-view payload blocks.
+
+    Only registry entries referenced by client views travel to the browser;
+    their MJB bytes are pushed to the web server for /model?id=<name>.
+    """
+    views = list(self.client_views.values())
+    needed = sorted(
+        {
+            v.model_id
+            for v in views
+            if v.model_id != viewer_protocol.DEFAULT_MODEL_ID
+        }
+    )
+    model_table = []
+    entry_states = []
+    mjb_map: dict[str, bytes] = {}
+    crcs: dict[str, int] = {}
+    for name in needed:
+      entry = self.models.get(name)
+      if entry is None:
+        continue
+      crc, mjb = self._entry_mjb(name, entry.model)
+      model_table.append((name, crc, len(mjb)))
+      mjb_map[name] = mjb
+      crcs[name] = crc
+      sig = int(mujoco.mjtState.mjSTATE_PHYSICS)
+      state = np.empty(mujoco.mj_stateSize(entry.model, sig), np.float64)
+      mujoco.mj_getState(entry.model, entry.data, state, sig)
+      entry_states.append((name, sig, state.tobytes()))
+
+    client_views = [
+        (v.name, v.model_id, v.tex_id, v.size[0], v.size[1], v.draw_mode,
+         v.camera)
+        for v in views
+        if v.model_id == viewer_protocol.DEFAULT_MODEL_ID
+        or v.model_id in mjb_map
+    ]
+
+    if crcs != self._served_registry_crcs and self._web_server is not None:
+      self._web_server.update_registry_models(mjb_map)
+      self._served_registry_crcs = crcs
+    return model_table, entry_states, client_views
+
   def sync(self) -> None:
     """Streams state to the browser and ends the headless ImGui frame."""
     if self._web_server is not None:
@@ -310,6 +372,7 @@ class WebViewer(viewer_protocol.Viewer):
       state_size = mujoco.mj_stateSize(self.model, state_sig)
       state = np.empty(state_size, np.float64)
       mujoco.mj_getState(self.model, self.data, state, state_sig)
+      model_table, entry_states, client_views = self._registry_wire_blocks()
       payload = state_payload.serialize_state_payload(
           self._model_crc32,
           state_sig,
@@ -321,6 +384,9 @@ class WebViewer(viewer_protocol.Viewer):
           list(self.render_flags.flags),
           self.display_geoms()[: state_payload.MAX_EXTRA_GEOMS],
           list(self.scene_viewport) if self.scene_viewport else [],
+          model_table,
+          entry_states,
+          client_views,
       )
       self._web_server.update_state(payload)
 

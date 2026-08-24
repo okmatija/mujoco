@@ -14,6 +14,7 @@
 
 #include "experimental/platform/hal/filament_renderer.h"
 
+#include <vector>
 #include <cstddef>
 #include <functional>
 #include <memory>
@@ -177,14 +178,25 @@ void FilamentRenderer::Render(const mjModel* model, mjData* data,
 
   imgui_bridge_->Update();
 
-  mjrfRenderRequest reqs[2];
-  BuildMainRenderRequest(&reqs[0], scene_viewport,
+  // Auxiliary requests (client viewports rendered into offscreen targets)
+  // are submitted before the main scene and the UI in the same frame, so the
+  // UI pass can sample their target textures.
+  std::vector<mjrfRenderRequest> reqs;
+  reqs.reserve(aux_requests_.size() + 2);
+  reqs.insert(reqs.end(), aux_requests_.begin(), aux_requests_.end());
+  mjrfRenderRequest main_req;
+  BuildMainRenderRequest(&main_req, scene_viewport,
                          mjv_camera2GLCamera(model, data, camera));
-  BuildUxRenderRequest(&reqs[1], viewport);
+  reqs.push_back(main_req);
+  mjrfRenderRequest ux_req;
+  BuildUxRenderRequest(&ux_req, viewport);
+  reqs.push_back(ux_req);
+  const size_t naux = aux_requests_.size();
 
   mjrfFrameHandle frame = 0;
   if (pixels.empty()) {
-    frame = mjrf_render(filament_context_.get(), &reqs[0], 2, nullptr, 0);
+    frame = mjrf_render(filament_context_.get(), reqs.data(),
+                        static_cast<int>(reqs.size()), nullptr, 0);
   } else {
     if (pixels.size() != width * height * 3) {
       mju_error("Offscreen mode requires a pixel buffer of size %d.",
@@ -192,8 +204,8 @@ void FilamentRenderer::Render(const mjModel* model, mjData* data,
     }
 
     mjrf_resizeRenderTarget(render_target_.get(), width, height);
-    reqs[0].target = render_target_.get();
-    reqs[1].target = render_target_.get();
+    reqs[naux].target = render_target_.get();
+    reqs[naux + 1].target = render_target_.get();
 
     mjrfReadPixelsRequest read_request;
     mjrf_defaultReadPixelsRequest(&read_request);
@@ -201,7 +213,8 @@ void FilamentRenderer::Render(const mjModel* model, mjData* data,
     read_request.output = pixels.data();
     read_request.num_bytes = viewport.width * viewport.height * 3;
 
-    frame = mjrf_render(filament_context_.get(), &reqs[0], 2, &read_request, 1);
+    frame = mjrf_render(filament_context_.get(), reqs.data(),
+                        static_cast<int>(reqs.size()), &read_request, 1);
   }
 
   mjrf_waitForFrame(filament_context_.get(), frame);
@@ -245,6 +258,13 @@ int FilamentRenderer::UploadImage(int texture_id, const std::byte* pixels,
   return imgui_bridge_->UploadImage(
       texture_id, reinterpret_cast<const unsigned char*>(pixels), width, height,
       bpp);
+}
+
+void FilamentRenderer::SetUiExternalTexture(uintptr_t tex_id,
+                                            mjrfTexture* texture) {
+  if (imgui_bridge_) {
+    imgui_bridge_->SetExternalTexture(tex_id, texture);
+  }
 }
 
 double FilamentRenderer::GetFps() { return fps_; }

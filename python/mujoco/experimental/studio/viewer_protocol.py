@@ -120,6 +120,42 @@ class ModelEntry:
   _scene: mujoco.MjvScene | None = dataclasses.field(default=None, repr=False)
 
 
+# Base ImGui texture id for client-rendered viewports. Viewers that render
+# client views map texture ids at or above this base to their render-target
+# textures; the range is far above anything the streamed-texture channel
+# allocates.
+CLIENT_VIEW_TEX_BASE = 1 << 20
+
+
+@dataclasses.dataclass
+class ClientView:
+  """A viewport of a registry entry, rendered by the viewer's client.
+
+  Declared by viewer-side plugins; executed by viewers that support
+  client-side rendering. The web viewer renders these in the browser with the
+  modular filament renderer (mjrfilament) and maps ``tex_id`` to the render
+  target's texture, so a plugin displays the live result simply with
+  ``imgui.Image(view.tex_id, size)``.
+
+  Attributes:
+    name: Unique view name.
+    model_id: The registry entry to render.
+    camera: The mjvCamera (free/tracking/fixed) to render from. The client
+      converts it against the entry's own model/data at render time, so
+      tracking and fixed cameras follow the freshest state with no latency.
+    size: (width, height) of the render target in pixels.
+    draw_mode: mjrDrawMode value (0 renders default PBR shading).
+    tex_id: ImGui texture id under which the rendered target is displayed.
+  """
+
+  name: str
+  model_id: str
+  camera: mujoco.MjvCamera
+  size: tuple[int, int]
+  draw_mode: int = 0
+  tex_id: int = 0
+
+
 @dataclasses.dataclass(frozen=True)
 class ViewerInitEvent(messages.Event):
   """Lifecycle event dispatched once when the concrete Viewer is initialized.
@@ -226,6 +262,10 @@ class Viewer(abc.ABC):
     # the full window.
     self.scene_viewport: tuple[float, float, float, float] | None = None
 
+    # Client-rendered viewports declared by plugins (see ClientView).
+    self.client_views: dict[str, ClientView] = {}
+    self._next_client_view_tex = CLIENT_VIEW_TEX_BASE
+
     # Visual state.
     self.camera = camera or mujoco.MjvCamera()
     self.cam_speed = 0.001
@@ -308,8 +348,9 @@ class Viewer(abc.ABC):
       tint: tuple[float, float, float, float] | None = None,
       overlay: bool = True,
       include_static: bool = False,
+      source: str = 'local',
   ) -> ModelEntry:
-    """Registers a viewer-local display model and returns its entry.
+    """Registers a display model in the registry and returns its entry.
 
     The caller owns the entry's lifecycle: pose ``entry.data`` (e.g. set qpos
     and call ``mj_forward``) and remove the entry when done. The model is not
@@ -322,6 +363,8 @@ class Viewer(abc.ABC):
       tint: Optional RGBA override for all overlay geoms.
       overlay: Whether to draw the entry into the main 3D scene.
       include_static: Whether overlay drawing includes static-body geoms.
+      source: 'sim' when the entry's state arrives from the sim side,
+        'local' when a viewer-side plugin owns and poses it.
 
     Returns:
       The registered ModelEntry.
@@ -334,7 +377,7 @@ class Viewer(abc.ABC):
     entry = ModelEntry(
         model=model,
         data=data,
-        source='local',
+        source=source,
         overlay=overlay,
         tint=tint,
         include_static=include_static,
@@ -347,6 +390,55 @@ class Viewer(abc.ABC):
     if name == DEFAULT_MODEL_ID:
       raise ValueError(f'cannot remove the {DEFAULT_MODEL_ID!r} entry')
     self.models.pop(name, None)
+
+  def add_client_view(
+      self,
+      name: str,
+      model_id: str = DEFAULT_MODEL_ID,
+      *,
+      camera: mujoco.MjvCamera | None = None,
+      size: tuple[int, int] = (320, 240),
+      draw_mode: int = 0,
+  ) -> ClientView:
+    """Declares a client-rendered viewport of a registry entry.
+
+    Args:
+      name: Unique view name; replaces an existing view of the same name
+        (keeping its texture id).
+      model_id: Registry entry to render.
+      camera: Camera to render from; a free camera framing the entry's model
+        is created if None. The caller may mutate it (orbit etc.) at any time.
+      size: (width, height) of the render target in pixels.
+      draw_mode: mjrDrawMode value (0 renders default PBR shading).
+
+    Returns:
+      The ClientView; display it with ``imgui.Image(view.tex_id, size)``.
+    """
+    if camera is None:
+      camera = mujoco.MjvCamera()
+      entry = self.models.get(model_id)
+      if entry is not None:
+        mujoco.mjv_defaultFreeCamera(entry.model, camera)
+    existing = self.client_views.get(name)
+    if existing is not None:
+      tex_id = existing.tex_id
+    else:
+      tex_id = self._next_client_view_tex
+      self._next_client_view_tex += 1
+    view = ClientView(
+        name=name,
+        model_id=model_id,
+        camera=camera,
+        size=size,
+        draw_mode=draw_mode,
+        tex_id=tex_id,
+    )
+    self.client_views[name] = view
+    return view
+
+  def remove_client_view(self, name: str) -> None:
+    """Removes a client view; missing names are ignored."""
+    self.client_views.pop(name, None)
 
   def apply_state(self, model_id: str, state: Any, state_sig: int) -> bool:
     """Applies a state vector to a registry entry (the chokepoint for all
@@ -396,9 +488,17 @@ class Viewer(abc.ABC):
 
   @messages.handler(priority=messages.Priority.CRITICAL)
   def _on_model(self, event: messages.ModelEvent) -> bool:
-    """Deep-copies the incoming model so the Viewer owns its data."""
-    self.load_model(event.model, event.path)
-    self.extra_geoms.clear()
+    """Deep-copies the incoming model into the addressed registry entry."""
+    model_id = getattr(event, 'model_id', DEFAULT_MODEL_ID)
+    if model_id == DEFAULT_MODEL_ID:
+      self.load_model(event.model, event.path)
+      self.extra_geoms.clear()
+    else:
+      # A display model sent from the sim side (e.g. a gallery asset). It is
+      # not drawn into the main scene by default; client views (or plugins)
+      # decide how it is shown.
+      model = copy.deepcopy(event.model)
+      self.add_model(model_id, model, overlay=False, source='sim')
     return False  # Do not consume; let other handlers see the event.
 
   @messages.handler(priority=messages.Priority.CRITICAL)

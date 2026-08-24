@@ -53,6 +53,17 @@ ImguiBridge::~ImguiBridge() {
   }
 }
 
+void ImguiBridge::SetExternalTexture(uintptr_t tex_id, mjrfTexture* texture) {
+  if (texture == nullptr) {
+    textures_.erase(tex_id);
+    return;
+  }
+  // Non-owning entry: a no-op deleter, since the texture belongs to its
+  // render target.
+  textures_.insert_or_assign(
+      tex_id, UniquePtr<mjrfTexture>(texture, [](mjrfTexture*) {}));
+}
+
 uintptr_t ImguiBridge::UploadImage(uintptr_t tex_id, const uint8_t* pixels,
                                    int width, int height, int bpp) {
   if (bpp != 4 && bpp != 3) {

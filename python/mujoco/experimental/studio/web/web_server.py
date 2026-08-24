@@ -876,6 +876,20 @@ def _run_server(
           )
         return None  # Proceed with the WebSocket handshake.
 
+      # Registry model endpoint: the client fetches a registry entry's MJB
+      #
+      #   GET /model?id=<name>  -> full model bytes
+      if path == "/model" and query_string:
+        id_params = urllib.parse.parse_qs(query_string)
+        if "id" in id_params:
+          data = server.registry_models.get(id_params["id"][0])
+          if data is None:
+            return Response(404, "Not Found", Headers(), b"no such model\n")
+          headers = _http_headers(
+              "application/octet-stream", len(data), cacheable=False
+          )
+          return Response(200, "OK", headers, data)
+
       # Chunked model endpoint: the client fetches /model in parallel chunks
       #
       #   GET /model?total_bytes                 -> {"total_bytes": <n>}
@@ -1107,6 +1121,9 @@ class WebServer:
     self.static_files_dir = static_files_dir or _find_static_files_dir()
     self.mjb_data = mjb_data
 
+    # Registry models served at /model?id=<name> (see update_registry_models).
+    self.registry_models: dict[str, bytes] = {}
+
     # Dropped-file bytes travel from the server thread back to the viewer thread
     # through this queue.
     self.drop_queue = drop_queue
@@ -1128,6 +1145,10 @@ class WebServer:
   def update_model(self, mjb_data: bytes) -> None:
     """Swaps the model bytes served at /model. No server restart needed."""
     self.mjb_data = mjb_data
+
+  def update_registry_models(self, models: dict[str, bytes]) -> None:
+    """Swaps the registry model bytes served at /model?id=<name>."""
+    self.registry_models = models
 
   def start(self) -> None:
     """Starts the server on a background daemon thread."""

@@ -30,8 +30,10 @@
 #include <cstring>
 #include <fstream>
 #include <initializer_list>
+#include <map>
 #include <memory>
 #include <new>
+#include <set>
 #include <span>
 #include <string>
 #include <string_view>
@@ -43,10 +45,13 @@
 #include <imgui.h>
 #include <implot.h>
 #include <mujoco/mujoco.h>
+#include "engine/engine_vis_interact.h"
 #include "experimental/platform/hal/filament_renderer.h"
 #include "experimental/platform/hal/window.h"
 #include "experimental/platform/sim/model_holder.h"
 #include "experimental/platform/ux/interaction.h"
+#include "render/filament/core/render_target.h"
+#include "render/filament/mjrfilament_cpp.h"
 #include <NetImgui_Api.h>
 #include "google/logging.h"
 #include "state_payload.h"
@@ -95,6 +100,34 @@ struct ModelDownloadStatus {
   size_t bytes_downloaded = 0;
   size_t total_bytes = 0;
   int retry_count = 0;
+};
+
+// A registry model mirrored from the viewer's model table: the model itself
+// (fetched from /model?id=<name>) plus the mjrf scene and helpers that
+// populate and pose it for client-side rendering.
+struct RegistryModel {
+  std::unique_ptr<mujoco::platform::ModelHolder> holder;
+  mujoco::UniquePtr<mjrfScene> scene{nullptr, nullptr};
+  std::unique_ptr<mujoco::ModelObjects> objects;
+  std::unique_ptr<mujoco::ModelRenderables> renderables;
+  std::unique_ptr<mujoco::ModelLights> lights;
+  uint32_t crc = 0;
+  bool fetching = false;
+  bool scene_ready = false;
+  // Latest per-entry state from the payload; applied on the main loop.
+  std::vector<mjtNum> pending_state;
+  int32_t pending_spec = 0;
+  bool state_dirty = false;
+};
+
+// One client-rendered viewport: the render target executing a StateClientView
+// descriptor. The target's color texture is registered with the UI bridge
+// under the descriptor's tex_id, so ImGui::Image(tex_id) shows the result.
+struct ClientViewSlot {
+  mujoco::studio::StateClientView desc;
+  mujoco::UniquePtr<mjrfRenderTarget> target{nullptr, nullptr};
+  int target_w = 0;
+  int target_h = 0;
 };
 
 // The implementation of every interface needed by the session and remote UI.
@@ -146,6 +179,11 @@ struct App {
   std::vector<mjvGeom> extra_geoms;
 
   ModelDownloadStatus download_status;
+
+  // Client-side model registry and viewports, driven by the state payload's
+  // model table / entry state / client view blocks.
+  std::map<std::string, RegistryModel> registry_models;
+  std::map<std::string, ClientViewSlot> client_views;
 
   AppCallbacks callbacks;
   RemoteUi remote_ui{callbacks};
@@ -200,6 +238,36 @@ std::string WsUrl(const char* path) {
 // is called from SetupScene after the async model fetch completes.
 bool IsFilamentReady() {
   return g_app.renderer && g_app.model_holder && g_app.model_holder->ok();
+}
+
+// Starts an asynchronous fetch of a registry model's MJB bytes from
+// /model?id=<name>. Completion lands in parseRegistryModelBuffer (below, via
+// EMSCRIPTEN_BINDINGS); failure clears the fetching flag so a later payload
+// retries.
+void FetchRegistryModel(const std::string& name) {
+  LOG(Info, "Fetching registry model '%s'", name.c_str());
+  EM_ASM(
+      {
+        const name = UTF8ToString($0);
+        fetch('/model?id=' + encodeURIComponent(name))
+            .then(function(r) {
+              if (!r.ok) throw new Error('HTTP ' + r.status);
+              return r.arrayBuffer();
+            })
+            .then(function(buf) {
+              const bytes = new Uint8Array(buf);
+              const ptr = Module.allocModelBuffer(bytes.length);
+              if (!ptr) throw new Error('allocation failed');
+              HEAPU8.set(bytes, ptr);
+              Module.parseRegistryModelBuffer(name, ptr, bytes.length);
+              Module.freeModelBuffer(ptr);
+            })
+            .catch(function(e) {
+              console.error('Registry model fetch failed:', name, e);
+              Module.registryModelFetchFailed(name);
+            });
+      },
+      name.c_str());
 }
 
 // Applies a parsed state payload to the app. Called via AppCallbacks::OnPayload
@@ -260,6 +328,52 @@ void ApplyStatePayload(const StatePayloadView& view) {
   // Scene viewport (all zero when the payload carries none).
   memcpy(g_app.scene_viewport, view.scene_viewport,
          sizeof(g_app.scene_viewport));
+
+  // Registry model table: fetch any model we don't hold at this version.
+  for (const mujoco::studio::StateModelTableEntry& entry : view.model_table) {
+    std::string name(entry.name);
+    RegistryModel& rm = g_app.registry_models[name];
+    if (rm.fetching || (rm.crc == entry.crc32 && rm.holder)) {
+      continue;
+    }
+    rm.crc = entry.crc32;
+    rm.fetching = true;
+    FetchRegistryModel(name);
+  }
+
+  // Per-entry state: stash the latest; applied on the main loop when the
+  // model and its scene are ready.
+  for (const mujoco::studio::EntryStateView& entry_state : view.entry_states) {
+    auto it = g_app.registry_models.find(entry_state.name);
+    if (it == g_app.registry_models.end()) {
+      continue;
+    }
+    RegistryModel& rm = it->second;
+    const size_t count = entry_state.nbytes / sizeof(mjtNum);
+    rm.pending_state.resize(count);
+    memcpy(rm.pending_state.data(), entry_state.values,
+           count * sizeof(mjtNum));
+    rm.pending_spec = entry_state.spec;
+    rm.state_dirty = true;
+  }
+
+  // Client views: reconcile the slots with the payload's descriptors.
+  std::set<std::string> seen_views;
+  for (const mujoco::studio::StateClientView& desc : view.client_views) {
+    ClientViewSlot& slot = g_app.client_views[desc.name];
+    slot.desc = desc;
+    seen_views.insert(desc.name);
+  }
+  for (auto it = g_app.client_views.begin(); it != g_app.client_views.end();) {
+    if (seen_views.count(it->first) == 0) {
+      if (g_app.renderer) {
+        g_app.renderer->SetUiExternalTexture(it->second.desc.tex_id, nullptr);
+      }
+      it = g_app.client_views.erase(it);
+    } else {
+      ++it;
+    }
+  }
 }
 
 void SetSpectatorCameraMode(int mode) {
@@ -443,6 +557,115 @@ void BuildBrowserGui() {
 //=================================================================================================
 void MainLoopImpl();
 
+// Poses the mirrored registry models and rebuilds the render requests for
+// the client viewports (the mjrf scenes/targets executing the viewer's
+// ClientView declarations); registers each target's color texture with the
+// UI bridge under the view's tex_id.
+void UpdateClientViews() {
+  mujoco::platform::FilamentRenderer* renderer = g_app.renderer;
+  if (renderer == nullptr) {
+    return;
+  }
+  mjrfContext* ctx = renderer->GetMjrfContext();
+  if (ctx == nullptr) {
+    return;
+  }
+
+  // Build scene-side objects for registry models whose model has arrived.
+  for (auto& [name, rm] : g_app.registry_models) {
+    if (rm.scene_ready || !rm.holder || !rm.holder->ok()) {
+      continue;
+    }
+    const mjModel* m = rm.holder->model();
+    rm.scene = mujoco::CreateScene(ctx, {});
+    mjrf_configureSceneFromModel(rm.scene.get(), m);
+    rm.objects = std::make_unique<mujoco::ModelObjects>(m, ctx);
+    rm.lights =
+        std::make_unique<mujoco::ModelLights>(rm.scene.get(), rm.objects.get());
+    rm.renderables = std::make_unique<mujoco::ModelRenderables>(
+        rm.scene.get(), rm.objects.get());
+    rm.renderables->Update(rm.holder->data());
+    rm.lights->Update(rm.holder->data());
+    rm.scene_ready = true;
+    LOG(Info, "Registry model '%s' scene ready", name.c_str());
+  }
+
+  // Apply freshly arrived per-entry state.
+  for (auto& [name, rm] : g_app.registry_models) {
+    if (!rm.state_dirty || !rm.scene_ready) {
+      continue;
+    }
+    mjModel* m = rm.holder->model();
+    mjData* d = rm.holder->data();
+    const int expected = mj_stateSize(m, rm.pending_spec);
+    if (expected == static_cast<int>(rm.pending_state.size())) {
+      mj_setState(m, d, rm.pending_state.data(), rm.pending_spec);
+      mj_forward(m, d);
+      rm.renderables->Update(d);
+      rm.lights->Update(d);
+    }
+    rm.state_dirty = false;
+  }
+
+  // Build this frame's viewport render requests.
+  std::vector<mjrfRenderRequest> aux;
+  aux.reserve(g_app.client_views.size());
+  for (auto& [name, slot] : g_app.client_views) {
+    const mujoco::studio::StateClientView& desc = slot.desc;
+    mjrfScene* scene = nullptr;
+    const mjModel* m = nullptr;
+    mjData* d = nullptr;
+    if (std::strcmp(desc.model_id, "default") == 0) {
+      if (g_app.model_holder && g_app.model_holder->ok()) {
+        scene = renderer->GetMainScene();
+        m = g_app.model_holder->model();
+        d = g_app.model_holder->data();
+      }
+    } else {
+      auto it = g_app.registry_models.find(desc.model_id);
+      if (it != g_app.registry_models.end() && it->second.scene_ready) {
+        scene = it->second.scene.get();
+        m = it->second.holder->model();
+        d = it->second.holder->data();
+      }
+    }
+    if (!scene || !m || !d || desc.width == 0 || desc.height == 0) {
+      continue;
+    }
+
+    if (!slot.target) {
+      mjrfRenderTargetConfig config;
+      mjrf_defaultRenderTargetConfig(&config);
+      config.color_format = mjPIXEL_FORMAT_RGBA8;
+      config.depth_format = mjPIXEL_FORMAT_DEPTH32F;
+      slot.target = mujoco::CreateRenderTarget(ctx, config);
+      slot.target_w = 0;
+      slot.target_h = 0;
+    }
+    if (slot.target_w != desc.width || slot.target_h != desc.height) {
+      mjrf_resizeRenderTarget(slot.target.get(), desc.width, desc.height);
+      slot.target_w = desc.width;
+      slot.target_h = desc.height;
+    }
+    // (Re)register the target's color texture each frame: resizes and
+    // context resets recreate it.
+    renderer->SetUiExternalTexture(
+        desc.tex_id, mujoco::RenderTarget::downcast(slot.target.get())
+                         ->GetColorTexture());
+
+    mjvCamera view_camera = desc.camera;
+    mjrfRenderRequest request;
+    mjrf_defaultRenderRequest(&request);
+    request.scene = scene;
+    request.camera = mjv_camera2GLCamera(m, d, &view_camera);
+    request.viewport = {0, 0, desc.width, desc.height};
+    request.target = slot.target.get();
+    request.draw_mode = desc.draw_mode;
+    aux.push_back(request);
+  }
+  renderer->SetAuxRenderRequests(std::move(aux));
+}
+
 void MainLoop() {
   // An exception escaping the requestAnimationFrame callback kills the main
   // loop silently causing the canvas to freeze on the last rendered frame and
@@ -583,6 +806,10 @@ void MainLoopImpl() {
       g_app.backend_state_dirty = false;
     }
 
+    // Pose registry models and (re)build the client viewports' render
+    // requests for this frame.
+    UpdateClientViews();
+
     int width =
         static_cast<int>(g_app.window->GetWidth() * g_app.window->GetScale());
     int height =
@@ -617,6 +844,25 @@ void MainLoopImpl() {
 
 void SetupScene(const mjModel* m) {
   g_app.renderer->Init(m);
+
+  // Init() recreated the filament context: drop the registry models' scenes
+  // and the viewport targets so they are rebuilt against the new context
+  // (the fetched models themselves are kept), and clear the render requests
+  // that point at the destroyed objects.
+  g_app.renderer->SetAuxRenderRequests({});
+  for (auto& [name, rm] : g_app.registry_models) {
+    rm.renderables.reset();
+    rm.lights.reset();
+    rm.objects.reset();
+    rm.scene.reset();
+    rm.scene_ready = false;
+    rm.state_dirty = true;
+  }
+  for (auto& [name, slot] : g_app.client_views) {
+    slot.target.reset();
+    slot.target_w = 0;
+    slot.target_h = 0;
+  }
 
   // Invalidate all texture caches (ImGui font atlas + NetImgui streamed
   // textures) and re-upload them on the new Filament context.
@@ -685,6 +931,43 @@ void FinishModelLoad() {
   }
   g_app.download_status.is_downloading = false;
   LOG(Info, "Model loaded and scene initialized successfully!");
+}
+
+// Parses a fetched registry model's MJB bytes into its RegistryModel slot;
+// the scene-side objects are (re)built on the next frame (UpdateClientViews).
+void ParseRegistryModelBuffer(std::string name, uintptr_t ptr_val,
+                              size_t size) {
+  auto it = g_app.registry_models.find(name);
+  if (it == g_app.registry_models.end()) {
+    return;
+  }
+  RegistryModel& rm = it->second;
+  rm.fetching = false;
+  rm.renderables.reset();
+  rm.lights.reset();
+  rm.objects.reset();
+  rm.scene.reset();
+  rm.scene_ready = false;
+  rm.holder = mujoco::platform::ModelHolder::FromBuffer(
+      std::span<const std::byte>(reinterpret_cast<const std::byte*>(ptr_val),
+                                 size),
+      "application/mjb", name + ".mjb");
+  if (rm.holder && rm.holder->ok()) {
+    LOG(Info, "Registry model '%s' loaded (%zu bytes)", name.c_str(), size);
+  } else {
+    LOG(Error, "Failed to load registry model '%s': %s", name.c_str(),
+        rm.holder ? rm.holder->error().data() : "unknown error");
+    rm.holder.reset();
+  }
+}
+
+// Marks a failed registry model fetch so a later payload retries it.
+void RegistryModelFetchFailed(std::string name) {
+  auto it = g_app.registry_models.find(name);
+  if (it != g_app.registry_models.end()) {
+    it->second.fetching = false;
+    it->second.crc = 0;
+  }
 }
 
 // Allocates a buffer in WASM linear memory for zero-copy streaming chunk
@@ -840,6 +1123,11 @@ EMSCRIPTEN_BINDINGS(web_client_bindings) {
 
   // Parses a completed MJB model buffer and reinitializes the Filament scene.
   emscripten::function("parseModelBuffer", &ParseModelBuffer);
+
+  // Registry models (client-rendered viewports): parse a fetched model's MJB
+  // bytes, or record a failed fetch for retry.
+  emscripten::function("parseRegistryModelBuffer", &ParseRegistryModelBuffer);
+  emscripten::function("registryModelFetchFailed", &RegistryModelFetchFailed);
 
   // Initializes the Filament window, ImGui context, WebSocket connections, and
   // starts the Emscripten main simulation loop.

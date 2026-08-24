@@ -16,8 +16,10 @@
 #define MUJOCO_SRC_EXPERIMENTAL_PLATFORM_HAL_FILAMENT_RENDERER_H_
 
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <span>
+#include <vector>
 
 #include <mujoco/mjrfilament.h>
 #include <mujoco/mujoco.h>
@@ -80,6 +82,24 @@ class FilamentRenderer : public Renderer {
   // covers the full window, so floating UI windows can straddle the boundary.
   void SetSceneViewport(const mjrRect& viewport) { scene_viewport_ = viewport; }
 
+  // Auxiliary render requests (e.g. client viewports rendered into offscreen
+  // targets with the mjrf API) submitted before the main scene and the UI in
+  // every Render() call until replaced. The requests' scenes and targets must
+  // stay valid while set.
+  void SetAuxRenderRequests(std::vector<mjrfRenderRequest> requests) {
+    aux_requests_ = std::move(requests);
+  }
+
+  // The renderer's mjrf context (null until Init) and main scene, for
+  // composing additional mjrf objects (scenes, targets, model helpers).
+  mjrfContext* GetMjrfContext() const { return filament_context_.get(); }
+  mjrfScene* GetMainScene() const { return main_scene_.get(); }
+
+  // Registers an externally-owned texture (e.g. a render target's color
+  // texture) under an ImGui texture id, so streamed or local UI can display
+  // it with ImGui::Image. Pass nullptr to remove; the caller keeps ownership.
+  void SetUiExternalTexture(uintptr_t tex_id, mjrfTexture* texture);
+
   // Returns the current frame rate.
   double GetFps() override;
 
@@ -105,6 +125,7 @@ class FilamentRenderer : public Renderer {
   std::unique_ptr<ModelDecorations> model_decorations_;
   mjtByte render_flags_[mjNRNDFLAG];
   mjrRect scene_viewport_ = {0, 0, 0, 0};
+  std::vector<mjrfRenderRequest> aux_requests_;
   int framebuffer_mode_ = 0;
   double fps_ = 0;
 };

@@ -117,7 +117,10 @@ std::vector<std::byte> SerializeStatePayload(
     const mjvOption& vis_options, const mjOption& opt, const mjVisual& vis,
     const mjStatistic& stat, const std::vector<uint8_t>& render_flags,
     const mjvGeom* extra_geoms, size_t extra_geom_count,
-    const float* scene_viewport) {
+    const float* scene_viewport,
+    const std::vector<StateModelTableEntry>& model_table,
+    const std::vector<EntryStateInput>& entry_states,
+    const std::vector<StateClientView>& client_views) {
   extra_geom_count =
       extra_geom_count > kMaxExtraGeoms ? kMaxExtraGeoms : extra_geom_count;
   const bool has_viewport = scene_viewport != nullptr &&
@@ -126,7 +129,10 @@ std::vector<std::byte> SerializeStatePayload(
   buffer.reserve(MaxStatePayloadSize(physics_bytes));
 
   StatePayloadHeader header;
-  header.nblocks = 2 + (extra_geom_count > 0 ? 1 : 0) + (has_viewport ? 1 : 0);
+  header.nblocks = 2 + (extra_geom_count > 0 ? 1 : 0) + (has_viewport ? 1 : 0) +
+                   (model_table.empty() ? 0 : 1) +
+                   static_cast<uint16_t>(entry_states.size()) +
+                   (client_views.empty() ? 0 : 1);
   header.model_crc32 = model_crc32;
   AppendBytes(buffer, &header, sizeof(header));
 
@@ -158,6 +164,29 @@ std::vector<std::byte> SerializeStatePayload(
                      4 * sizeof(float));
   }
 
+  // Registry model table, per-entry state, and client views (only when the
+  // viewer uses the model registry beyond the simulated model).
+  if (!model_table.empty()) {
+    AppendStateBlock(buffer, kTagModelTable, model_table.data(),
+                     model_table.size() * sizeof(StateModelTableEntry));
+  }
+  for (const EntryStateInput& entry : entry_states) {
+    StateEntryStateHeader entry_header;
+    memcpy(entry_header.name, entry.name, kMaxWireName);
+    entry_header.name[kMaxWireName - 1] = '\0';
+    entry_header.spec = entry.spec;
+    StateBlockHeader block_header{
+        kTagEntryState,
+        static_cast<uint32_t>(sizeof(entry_header) + entry.nbytes)};
+    AppendBytes(buffer, &block_header, sizeof(block_header));
+    AppendBytes(buffer, &entry_header, sizeof(entry_header));
+    AppendBytes(buffer, entry.values, entry.nbytes);
+  }
+  if (!client_views.empty()) {
+    AppendStateBlock(buffer, kTagClientViews, client_views.data(),
+                     client_views.size() * sizeof(StateClientView));
+  }
+
   return buffer;
 }
 
@@ -170,6 +199,9 @@ bool ParseStatePayload(const void* data, size_t size, StatePayloadView* out) {
   if (header.magic != kStatePayloadMagic) return false;
   if (header.version != kStatePayloadVersion) return false;
   out->model_crc32 = header.model_crc32;
+  out->model_table.clear();
+  out->entry_states.clear();
+  out->client_views.clear();
 
   size_t offset = sizeof(StatePayloadHeader);
   for (uint16_t i = 0; i < header.nblocks; ++i) {
@@ -200,6 +232,33 @@ bool ParseStatePayload(const void* data, size_t size, StatePayloadView* out) {
         if (block.size != 4 * sizeof(float)) return false;
         memcpy(out->scene_viewport, payload, 4 * sizeof(float));
         break;
+      case kTagModelTable: {
+        if (block.size % sizeof(StateModelTableEntry) != 0) return false;
+        const size_t n = block.size / sizeof(StateModelTableEntry);
+        out->model_table.resize(n);
+        memcpy(out->model_table.data(), payload, block.size);
+        break;
+      }
+      case kTagEntryState: {
+        if (block.size < sizeof(StateEntryStateHeader)) return false;
+        StateEntryStateHeader entry_header;
+        memcpy(&entry_header, payload, sizeof(entry_header));
+        EntryStateView view;
+        memcpy(view.name, entry_header.name, kMaxWireName);
+        view.name[kMaxWireName - 1] = '\0';
+        view.spec = entry_header.spec;
+        view.values = payload + sizeof(entry_header);
+        view.nbytes = block.size - sizeof(entry_header);
+        out->entry_states.push_back(view);
+        break;
+      }
+      case kTagClientViews: {
+        if (block.size % sizeof(StateClientView) != 0) return false;
+        const size_t n = block.size / sizeof(StateClientView);
+        out->client_views.resize(n);
+        memcpy(out->client_views.data(), payload, block.size);
+        break;
+      }
       default:
         break;  // Unknown tag: skip.
     }

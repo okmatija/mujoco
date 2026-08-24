@@ -77,6 +77,42 @@ enum StateBlockTag : uint32_t {
   kTagSceneViewport = 4,  // 4 x float: x, y, w, h in logical px, top-left
                           // origin. The 3D scene is confined to this window
                           // rectangle; it fills the window when absent.
+  kTagModelTable = 5,     // n x StateModelTableEntry: registry models the
+                          // client must hold (fetch /model?id=<name>).
+  kTagEntryState = 6,     // repeatable, one per registry entry:
+                          // [StateEntryStateHeader][mjtNum values...]
+  kTagClientViews = 7,    // n x StateClientView: viewports the client
+                          // renders with the modular filament renderer.
+};
+
+// Maximum length of a registry entry / view name on the wire, including the
+// NUL terminator.
+constexpr size_t kMaxWireName = 32;
+
+// One registry model the client must mirror (kTagModelTable).
+struct StateModelTableEntry {
+  char name[kMaxWireName];  // registry id (NUL-terminated)
+  uint32_t crc32;           // CRC32 of the entry's MJB bytes
+  uint32_t nbytes;          // MJB byte size
+};
+
+// Header of a per-entry state block (kTagEntryState); mjtNum values follow.
+struct StateEntryStateHeader {
+  char name[kMaxWireName];  // registry id (NUL-terminated)
+  int32_t spec;             // mjtState signature of the values
+};
+
+// One client-rendered viewport (kTagClientViews). The camera is the plugin's
+// mjvCamera; the client converts it against the entry's own model/data with
+// mjv_camera2GLCamera at render time.
+struct StateClientView {
+  char name[kMaxWireName];      // view name
+  char model_id[kMaxWireName];  // registry entry to render
+  uint32_t tex_id;              // ImGui texture id showing the render target
+  uint16_t width;               // render target width in pixels
+  uint16_t height;              // render target height in pixels
+  int32_t draw_mode;            // mjrDrawMode
+  mjvCamera camera;             // camera to render from
 };
 
 struct StateBlockHeader {
@@ -101,19 +137,41 @@ constexpr uint32_t kMaxExtraGeoms = 1024;
 // memory buffer. `physics_bytes` is mj_stateSize(...) * sizeof(mjtNum).
 size_t MaxStatePayloadSize(size_t physics_bytes);
 
+// Serializer-side description of one per-entry state block (kTagEntryState).
+struct EntryStateInput {
+  char name[kMaxWireName];
+  int32_t spec;
+  const void* values;
+  size_t nbytes;
+};
+
 // Serialize the complete state payload sent over the state WebSocket.
 // `scene_viewport` is null, or 4 floats (x, y, w, h in logical px, top-left
 // origin) confining the scene; a zero-sized rect is treated as absent.
+// `model_table`, `entry_states` and `client_views` describe the registry
+// models, their per-frame state and the client-rendered viewports; all three
+// may be empty.
 std::vector<std::byte> SerializeStatePayload(
     uint32_t model_crc32, int32_t physics_spec, const void* physics,
     size_t physics_bytes, const mjvCamera& camera, const mjvPerturb& perturb,
     const mjvOption& vis_options, const mjOption& opt, const mjVisual& vis,
     const mjStatistic& stat, const std::vector<uint8_t>& render_flags,
     const mjvGeom* extra_geoms, size_t extra_geom_count,
-    const float* scene_viewport = nullptr);
+    const float* scene_viewport = nullptr,
+    const std::vector<StateModelTableEntry>& model_table = {},
+    const std::vector<EntryStateInput>& entry_states = {},
+    const std::vector<StateClientView>& client_views = {});
 
 // Parsed view into a serialized payload. Pointers alias the input buffer and
 // are NOT guaranteed to be aligned; so you must memcpy the data out before use.
+// Parsed view of one per-entry state block; `values` aliases the payload.
+struct EntryStateView {
+  char name[kMaxWireName];
+  int32_t spec = 0;
+  const std::byte* values = nullptr;
+  size_t nbytes = 0;
+};
+
 struct StatePayloadView {
   uint32_t model_crc32 = 0;
   int32_t physics_spec = 0;
@@ -125,6 +183,10 @@ struct StatePayloadView {
   // Scene viewport (x, y, w, h in logical px, top-left origin); all zero when
   // the payload carries no kTagSceneViewport block (scene fills the window).
   float scene_viewport[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+  // Registry models, per-entry states, and client-rendered viewports.
+  std::vector<StateModelTableEntry> model_table;
+  std::vector<EntryStateView> entry_states;
+  std::vector<StateClientView> client_views;
 };
 
 // Parses a payload produced by SerializeStatePayload. Returns false if the
