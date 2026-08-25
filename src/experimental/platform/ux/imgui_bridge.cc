@@ -195,18 +195,6 @@ void ImguiBridge::Update() {
   constexpr size_t kExpectedVertexSize =
       sizeof(float) * 4 + sizeof(uint8_t) * 4;
 
-  int num_elements = 0;
-  for (int n = 0; n < commands->CmdListsCount; ++n) {
-    const ImDrawList* cmds = commands->CmdLists[n];
-    if (kExpectedVertexSize != sizeof(cmds->VtxBuffer.Data[0])) {
-      mju_error("Invalid vertex buffer size.");
-    }
-    if (sizeof(uint16_t) != sizeof(cmds->IdxBuffer.Data[0])) {
-      mju_error("Invalid index buffer size.");
-    }
-    num_elements += cmds->CmdBuffer.size();
-  }
-
   if (commands->Textures != nullptr) {
     for (ImTextureData* tex : *commands->Textures) {
       if (tex->Status == ImTextureStatus_WantCreate) {
@@ -216,6 +204,27 @@ void ImguiBridge::Update() {
       } else if (tex->Status == ImTextureStatus_WantDestroy &&
                  tex->UnusedFrames >= 3) {
         DestroyTexture(tex);
+      }
+    }
+  }
+
+  // Count the commands that will actually draw. Commands with no elements or
+  // an unresolved texture are skipped entirely: an elem_count of 0 would draw
+  // the mesh's whole index buffer (the SetMesh convention), and a missing
+  // texture (e.g. an external texture not registered this frame) would
+  // sample undefined data.
+  int num_elements = 0;
+  for (int n = 0; n < commands->CmdListsCount; ++n) {
+    const ImDrawList* cmds = commands->CmdLists[n];
+    if (kExpectedVertexSize != sizeof(cmds->VtxBuffer.Data[0])) {
+      mju_error("Invalid vertex buffer size.");
+    }
+    if (sizeof(uint16_t) != sizeof(cmds->IdxBuffer.Data[0])) {
+      mju_error("Invalid index buffer size.");
+    }
+    for (const ImDrawCmd& command : cmds->CmdBuffer) {
+      if (command.ElemCount > 0 && GetTexture(command.GetTexID()) != nullptr) {
+        ++num_elements;
       }
     }
   }
@@ -259,6 +268,13 @@ void ImguiBridge::Update() {
 
     int index_offset = 0;
     for (const ImDrawCmd& command : cmds->CmdBuffer) {
+      mjrfTexture* texture = GetTexture(command.GetTexID());
+      if (command.ElemCount == 0 || texture == nullptr) {
+        // Skipped during counting; no renderable was reserved for it.
+        index_offset += command.ElemCount;
+        continue;
+      }
+
       const int width = size.x * scale.x;
       const int height = size.y * scale.y;
 
@@ -268,7 +284,7 @@ void ImguiBridge::Update() {
 
       mjrfMaterial material;
       mjrf_defaultMaterial(&material);
-      material.color_texture = GetTexture(command.GetTexID());
+      material.color_texture = texture;
 
       material.decor_ux = true;
       // Scale clip rects to physical pixels here instead of using

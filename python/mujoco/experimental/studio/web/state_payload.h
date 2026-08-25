@@ -89,6 +89,12 @@ enum StateBlockTag : uint32_t {
 // NUL terminator.
 constexpr size_t kMaxWireName = 32;
 
+// First ImGui texture id reserved for client views. The viewer allocates
+// StateClientView::tex_id values from this namespace (CLIENT_VIEW_TEX_BASE in
+// viewer_protocol.py); ids at or above this value bypass the streamed-texture
+// remap in the browser and resolve directly to client-view render targets.
+constexpr uint64_t kClientViewTexBase = 1ull << 20;
+
 // One registry model the client must mirror (kTagModelTable).
 struct StateModelTableEntry {
   char name[kMaxWireName];  // registry id (NUL-terminated)

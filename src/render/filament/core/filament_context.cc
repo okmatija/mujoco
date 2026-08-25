@@ -115,6 +115,16 @@ mjrfFrameHandle FilamentContext::Render(
   }
   material_manager_->RemoveUnusedMaterials();
 
+  if (!read_requests.empty()) {
+    bool has_target_request = false;
+    for (const mjrfRenderRequest& request : requests) {
+      has_target_request |= request.target != nullptr;
+    }
+    if (!has_target_request) {
+      mju_error("Cannot read pixels from the window.");
+    }
+  }
+
   bool render_began = false;
   mjrfRenderTarget* current_target = nullptr;
   for (const mjrfRenderRequest& request : requests) {
@@ -125,41 +135,37 @@ mjrfFrameHandle FilamentContext::Render(
     current_target = request.target;
 
     if (current_target == nullptr) {
-      if (!read_requests.empty()) {
-        mju_error("Cannot read pixels from the window.");
-      }
-
       if (!render_began) {
         render_began = renderer_->beginFrame(window_swap_chain_);
       }
       if (!render_began) {
         break;
       }
-      if (render_began) {
-        SceneView* scene_view = SceneView::downcast(request.scene);
-        scene_view->Render(renderer_, request);
-      }
+      SceneView* scene_view = SceneView::downcast(request.scene);
+      scene_view->Render(renderer_, request);
     } else {
-      if (read_requests.empty()) {
-        mju_error(
-            "Rendering to a render target without a read request is "
-            "pointless.");
-      }
-
-      const mjrfReadPixelsRequest& read_request = read_requests[0];
-      if (read_request.num_bytes == 0) {
-        mju_error("Output buffer size is zero.");
-      }
-
+      // Rendering to a target without a read request is a valid use: the
+      // target's color texture can be sampled by a later request in the same
+      // frame (e.g. UI viewports).
       if (!render_began) {
         render_began = renderer_->beginFrame(offscreen_swap_chain_);
       }
       if (!render_began) {
         break;
       }
-      if (render_began) {
-        SceneView* scene_view = SceneView::downcast(request.scene);
-        scene_view->Render(renderer_, request);
+      SceneView* scene_view = SceneView::downcast(request.scene);
+      scene_view->Render(renderer_, request);
+
+      // Read pixels back for read requests aimed at this target. A read
+      // request without a target reads back whichever target is rendered.
+      for (const mjrfReadPixelsRequest& read_request : read_requests) {
+        if (read_request.target != nullptr &&
+            read_request.target != request.target) {
+          continue;
+        }
+        if (read_request.num_bytes == 0) {
+          mju_error("Output buffer size is zero.");
+        }
         RenderTarget* render_target = RenderTarget::downcast(request.target);
         render_target->ReadColorPixels(renderer_, (uint8_t*)read_request.output,
                                        read_request.num_bytes);

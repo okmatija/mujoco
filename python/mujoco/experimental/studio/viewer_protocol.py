@@ -123,7 +123,7 @@ class ModelEntry:
 # Base ImGui texture id for client-rendered viewports. Viewers that render
 # client views map texture ids at or above this base to their render-target
 # textures; the range is far above anything the streamed-texture channel
-# allocates.
+# allocates. Keep in sync with kClientViewTexBase in web/state_payload.h.
 CLIENT_VIEW_TEX_BASE = 1 << 20
 
 

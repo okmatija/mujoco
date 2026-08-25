@@ -19,6 +19,7 @@
 #include <string>
 
 #include "google/logging.h"
+#include "state_payload.h"
 
 namespace mujoco::studio {
 
@@ -552,17 +553,25 @@ void RemoteUi::ProcessCmdDrawFrame(CmdDrawFrame* cmd_draw_frame) {
         command_dst[draw_idx].UserCallback = nullptr;
         command_dst[draw_idx].UserCallbackData = nullptr;
 
-        // Map remote ClientTextureID -> local GL handle.
+        // Map remote ClientTextureID -> local GL handle. Reserved client-view
+        // ids pass through unmapped: they are not streamed textures but
+        // render targets the client registered with the UI bridge itself
+        // (SetUiExternalTexture), under exactly the streamed id.
         ClientTextureID client_tex_id = draw_src[draw_idx].mClientTexId;
         auto it = texture_map_.find(client_tex_id);
-        if (it != texture_map_.end() && it->second != 0) {
+        if (client_tex_id >= kClientViewTexBase) {
+          command_dst[draw_idx].TexRef._TexData = nullptr;
+          command_dst[draw_idx].TexRef._TexID =
+              static_cast<ImTextureID>(client_tex_id);
+        } else if (it != texture_map_.end() && it->second != 0) {
           command_dst[draw_idx].TexRef._TexData = nullptr;
           command_dst[draw_idx].TexRef._TexID =
               static_cast<ImTextureID>(it->second);
         } else {
           LogUnmappedTexture(client_tex_id, texture_map_.size(), draw_idx,
                              texture_map_);
-          // Skip draw commands with unmapped textures.
+          // Zero the count so the bridge skips the command (it draws
+          // nothing for empty or unresolved-texture commands).
           command_dst[draw_idx].ElemCount = 0;
         }
       }
