@@ -14,7 +14,7 @@
 """Simulation-agnostic native viewer for MuJoCo models.
 
 See the documentation for studio_app.py for more details on the architecture
-separating the viewer and simulation. See the sample/ folder for examples of how
+separating the viewer and simulation. See the how_to/ folder for examples of how
 to use these classes.
 """
 

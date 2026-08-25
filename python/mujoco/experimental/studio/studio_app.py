@@ -29,7 +29,7 @@ functions that get called each frame. This class is also viewer-agnostic and as
 such does not own camera, vis_options or perturb objects (these are provided by
 the viewer).
 
-See the sample/ folder for usage examples.
+See the how_to/ folder for usage examples.
 """
 
 import os

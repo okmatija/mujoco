@@ -26,9 +26,10 @@ set(BUILD_SHARED_LIBS OFF)
 # Filament's ShaderMinifier.cpp uses strlen without including <cstring>, and
 # PostProcessManager.h uses std::optional without including <optional>.
 set(CMAKE_CXX_FLAGS_OLD "${CMAKE_CXX_FLAGS}")
-if(MSVC)
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /FI cstring /FI optional")
-else()
+# LOCAL BUILD FIX (do not commit): with the VS generator the /FI forced
+# includes get hoisted into filament's generated C files (fxaa.c) and fail
+# with STL1003/C1189. MSVC builds fine without them.
+if(NOT MSVC)
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -include cstring -include optional")
 endif()
 

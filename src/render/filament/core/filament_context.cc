@@ -110,7 +110,6 @@ mjrfFrameHandle FilamentContext::Render(
   for (auto& [scene, requests] : scene_to_requests) {
     SceneView::downcast(scene)->PrepareToRender(requests);
   }
-  material_manager_->RemoveUnusedMaterials();
 
   bool render_began = false;
   mjrfRenderTarget* current_target = nullptr;
@@ -167,6 +166,14 @@ mjrfFrameHandle FilamentContext::Render(
   if (render_began) {
     renderer_->endFrame();
   }
+  // LOCAL FIX (candidate upstream fix, do not commit as-is): destroy unused
+  // material instances only AFTER the frame has been rendered. UI (ImGui)
+  // material instances are marked used during the render pass itself, so
+  // removing "unused" instances before rendering (as introduced in 3e33f93d)
+  // destroys instances still referenced by live UI renderables and trips
+  // Filament's precondition:
+  //   "destroying MaterialInstance 'unlit_ui' which is still in use".
+  material_manager_->RemoveUnusedMaterials();
   if constexpr (!UTILS_HAS_THREADING) {
     engine_->execute();
   }
