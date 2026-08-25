@@ -92,9 +92,15 @@ if(EMSCRIPTEN)
   # Phone browsers (iOS Safari in particular) reject multi-GB shared-memory
   # allocations outright, which kills the app before the first frame. Start
   # small and let the heap grow; 2GB still fits mid-sized models.
+  # GL_ASSERTIONS surfaces WebGL errors through console.error — which the
+  # page's mobile console relay forwards to the server — because phone GL
+  # failures are otherwise invisible (glGetError is wrapped to a no-op and
+  # browser-generated GL warnings can't be intercepted by the page).
+  # TODO(matijak): drop GL_ASSERTIONS once mobile rendering is stable.
   target_link_options(web_client_mobile PRIVATE
     -sINITIAL_MEMORY=512mb
     -sMAXIMUM_MEMORY=2gb
+    -sGL_ASSERTIONS=1
   )
 
   # Stage the mobile variant's artifacts into dist/ next to the desktop ones

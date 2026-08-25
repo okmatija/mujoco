@@ -278,6 +278,12 @@ void SceneView::Render(filament::Renderer* renderer,
   if (render_target) {
     // We need to disable msaa in order to render to texture.
     view->setMultiSampleAntiAliasingOptions({.enabled = false});
+  } else if (!request.enable_post_processing) {
+    // No post-processing means rendering directly into the swapchain; MSAA
+    // would silently reintroduce the intermediate buffer + resolve pass that
+    // the caller is asking to avoid (some mobile GPU drivers render those
+    // intermediates as black under WebGL).
+    view->setMultiSampleAntiAliasingOptions({.enabled = false});
   }
 
   SetupCamera(request.camera, viewport, camera_);
@@ -332,7 +338,7 @@ void SceneView::Render(filament::Renderer* renderer,
     outliner_->Render(renderer, view, filament_render_target);
   }
 
-  if (request.target) {
+  if (request.target || !request.enable_post_processing) {
     view->setMultiSampleAntiAliasingOptions(options);
   }
 }
