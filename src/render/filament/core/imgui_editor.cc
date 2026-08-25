@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <any>
 #include <cstdint>
+#include <functional>
 #include <numbers>
 #include <optional>
 #include <span>
@@ -35,6 +36,7 @@
 #include <mujoco/mjrfilament.h>
 #include "render/filament/core/color_grading_options.h"
 #include "render/filament/core/scene_view.h"
+#include "render/filament/mjrfilament_cpp.h"
 
 namespace mujoco {
 
@@ -639,6 +641,233 @@ void DrawLightGui(filament::LightManager& lm,
     }
     ImGui::TreePop();
   }
+}
+
+namespace {
+
+// Emits one command-palette entry for a single Filament option. `get`/`set` do
+// the same value roundtrip the inline editor does; the widget is drawn with a
+// hidden ("###") label so only the host's own name column shows the option path,
+// and the modified highlight / right-click-to-revert come from Ui() itself.
+template <typename T>
+void EmitValue(const FilamentEditorEntrySink& sink, const std::string& path,
+               std::function<T()> get, std::function<void(T)> set) {
+  const std::string id = "###flm:" + path;
+  auto draw = [get = std::move(get), set = std::move(set), id] {
+    T value = get();
+    if (Ui(id, &value)) {
+      set(value);
+    }
+  };
+  sink.emit(path, std::move(draw), /*reset=*/{}, /*modified=*/false);
+}
+
+// Reads `member` out of the options struct returned by `get`, edits it, and
+// writes the struct back via `set` so sibling fields are preserved. `Opts` and
+// `T` are deduced from the `T Opts::*` member pointer in normal function-template
+// context, which MSVC handles reliably -- deducing them via decltype inside the
+// nested generic lambda below mis-deduces enum members to their underlying
+// integer type (enum combo becomes an int drag, and the write-back won't compile).
+template <typename Get, typename Set, typename Opts, typename T>
+void EmitField(const FilamentEditorEntrySink& sink, SceneView* sv,
+               const std::string& path, Get get, Set set, T Opts::* member) {
+  EmitValue<T>(
+      sink, path, [sv, get, member]() -> T { return get(sv).*member; },
+      [sv, get, set, member](T value) {
+        Opts opts = get(sv);
+        opts.*member = value;
+        set(sv, opts);
+      });
+}
+
+}  // namespace
+
+void VisitFilamentEditorEntries(mjrfScene* scene,
+                                const FilamentEditorEntrySink& sink) {
+  if (scene == nullptr || !sink.emit) {
+    return;
+  }
+  SceneView* sv = SceneView::downcast(scene);
+  if (sv == nullptr) {
+    return;
+  }
+  namespace fl = filament;
+
+  // Binds a section's options getter/setter so each option below only needs its
+  // member pointer; the returned helper reads the struct, edits one member, and
+  // writes it back so sibling fields are preserved (as the DrawXxxGui blocks do).
+  auto section = [&sink, sv](const std::string& prefix, auto get_opts,
+                             auto set_opts) {
+    return [&sink, sv, prefix, get_opts, set_opts](const char* opt,
+                                                   auto member) {
+      EmitField(sink, sv, prefix + opt, get_opts, set_opts, member);
+    };
+  };
+
+  // Standalone booleans that map to an enum/flag rather than an options struct.
+  auto toggle = [&sink](const std::string& path, std::function<bool()> get,
+                        std::function<void(bool)> set) {
+    EmitValue<bool>(sink, path, std::move(get), std::move(set));
+  };
+
+  auto ao = section(
+      "Ambient Occlusion > ",
+      [](SceneView* v) {
+        return v->GetDefaultRenderView()->getAmbientOcclusionOptions();
+      },
+      [](SceneView* v, const auto& o) {
+        v->GetDefaultRenderView()->setAmbientOcclusionOptions(o);
+      });
+  ao("Enabled", &fl::AmbientOcclusionOptions::enabled);
+  ao("Radius (m)", &fl::AmbientOcclusionOptions::radius);
+  ao("Power", &fl::AmbientOcclusionOptions::power);
+  ao("Bias (m)", &fl::AmbientOcclusionOptions::bias);
+  ao("Resolution Scale", &fl::AmbientOcclusionOptions::resolution);
+  ao("Intensity", &fl::AmbientOcclusionOptions::intensity);
+  ao("Bent Normals", &fl::AmbientOcclusionOptions::bentNormals);
+  ao("Bilateral Threshold", &fl::AmbientOcclusionOptions::bilateralThreshold);
+  ao("Min Horizon Angle (rad)",
+     &fl::AmbientOcclusionOptions::minHorizonAngleRad);
+  ao("Quality", &fl::AmbientOcclusionOptions::quality);
+  ao("Low Pass Filter", &fl::AmbientOcclusionOptions::lowPassFilter);
+  ao("Upsampling", &fl::AmbientOcclusionOptions::upsampling);
+
+  toggle(
+      "Post Processing > Enabled",
+      [sv] { return sv->GetDefaultRenderView()->isPostProcessingEnabled(); },
+      [sv](bool v) { sv->GetDefaultRenderView()->setPostProcessingEnabled(v); });
+
+  auto bloom = section(
+      "Post Processing > Bloom > ",
+      [](SceneView* v) { return v->GetDefaultRenderView()->getBloomOptions(); },
+      [](SceneView* v, const auto& o) {
+        v->GetDefaultRenderView()->setBloomOptions(o);
+      });
+  bloom("Enabled", &fl::BloomOptions::enabled);
+  bloom("Strength", &fl::BloomOptions::strength);
+  bloom("Quality", &fl::BloomOptions::quality);
+  bloom("Resolution", &fl::BloomOptions::resolution);
+  bloom("Levels", &fl::BloomOptions::levels);
+  bloom("Blend Mode", &fl::BloomOptions::blendMode);
+  bloom("Threshold", &fl::BloomOptions::threshold);
+  bloom("Highlight", &fl::BloomOptions::highlight);
+  bloom("Lens Flare", &fl::BloomOptions::lensFlare);
+  bloom("Starburst", &fl::BloomOptions::starburst);
+  bloom("Chromatic Aberration", &fl::BloomOptions::chromaticAberration);
+  bloom("Ghost Count", &fl::BloomOptions::ghostCount);
+  bloom("Ghost Spacing", &fl::BloomOptions::ghostSpacing);
+  bloom("Ghost Threshold", &fl::BloomOptions::ghostThreshold);
+  bloom("Halo Radius", &fl::BloomOptions::haloRadius);
+  bloom("Halo Thickness", &fl::BloomOptions::haloThickness);
+  bloom("Halo Threshold", &fl::BloomOptions::haloThreshold);
+
+  auto dof = section(
+      "Post Processing > Depth of Field > ",
+      [](SceneView* v) {
+        return v->GetDefaultRenderView()->getDepthOfFieldOptions();
+      },
+      [](SceneView* v, const auto& o) {
+        v->GetDefaultRenderView()->setDepthOfFieldOptions(o);
+      });
+  dof("Enabled", &fl::DepthOfFieldOptions::enabled);
+  dof("Filter", &fl::DepthOfFieldOptions::filter);
+  dof("Max Aperture", &fl::DepthOfFieldOptions::maxApertureDiameter);
+  dof("Native Resolution", &fl::DepthOfFieldOptions::nativeResolution);
+  dof("COC Scale", &fl::DepthOfFieldOptions::cocScale);
+  dof("COC Aspect Ratio", &fl::DepthOfFieldOptions::cocAspectRatio);
+  dof("Max COC (Foreground)", &fl::DepthOfFieldOptions::maxForegroundCOC);
+  dof("Max COC (Background)", &fl::DepthOfFieldOptions::maxBackgroundCOC);
+  dof("Foreground Ring Count", &fl::DepthOfFieldOptions::foregroundRingCount);
+  dof("Background Ring Count", &fl::DepthOfFieldOptions::backgroundRingCount);
+  dof("Fast Gather Ring Count", &fl::DepthOfFieldOptions::fastGatherRingCount);
+
+  auto fog = section(
+      "Post Processing > Fog > ",
+      [](SceneView* v) { return v->GetDefaultRenderView()->getFogOptions(); },
+      [](SceneView* v, const auto& o) {
+        v->GetDefaultRenderView()->setFogOptions(o);
+      });
+  fog("Enabled", &fl::FogOptions::enabled);
+  fog("Color", &fl::FogOptions::color);
+  fog("Use IBL Color", &fl::FogOptions::fogColorFromIbl);
+  fog("Density", &fl::FogOptions::density);
+  fog("Distance", &fl::FogOptions::distance);
+  fog("Cutoff Distance", &fl::FogOptions::cutOffDistance);
+  fog("Max Opacity", &fl::FogOptions::maximumOpacity);
+  fog("Height", &fl::FogOptions::height);
+  fog("Height Falloff", &fl::FogOptions::heightFalloff);
+  fog("In-Scattering Start", &fl::FogOptions::inScatteringStart);
+  fog("In-Scattering Size", &fl::FogOptions::inScatteringSize);
+
+  auto vignette = section(
+      "Post Processing > Vignette > ",
+      [](SceneView* v) {
+        return v->GetDefaultRenderView()->getVignetteOptions();
+      },
+      [](SceneView* v, const auto& o) {
+        v->GetDefaultRenderView()->setVignetteOptions(o);
+      });
+  vignette("Enabled", &fl::VignetteOptions::enabled);
+  vignette("Color", &fl::VignetteOptions::color);
+  vignette("Midpoint", &fl::VignetteOptions::midPoint);
+  vignette("Roundness", &fl::VignetteOptions::roundness);
+  vignette("Feather", &fl::VignetteOptions::feather);
+
+  auto msaa = section(
+      "Post Processing > MSAA > ",
+      [](SceneView* v) {
+        return v->GetDefaultRenderView()->getMultiSampleAntiAliasingOptions();
+      },
+      [](SceneView* v, const auto& o) {
+        v->GetDefaultRenderView()->setMultiSampleAntiAliasingOptions(o);
+      });
+  msaa("Enabled", &fl::MultiSampleAntiAliasingOptions::enabled);
+  msaa("Samples", &fl::MultiSampleAntiAliasingOptions::sampleCount);
+  msaa("Custom Resolve", &fl::MultiSampleAntiAliasingOptions::customResolve);
+
+  auto taa = section(
+      "Post Processing > Temporal AA > ",
+      [](SceneView* v) {
+        return v->GetDefaultRenderView()->getTemporalAntiAliasingOptions();
+      },
+      [](SceneView* v, const auto& o) {
+        v->GetDefaultRenderView()->setTemporalAntiAliasingOptions(o);
+      });
+  taa("Enabled", &fl::TemporalAntiAliasingOptions::enabled);
+  taa("Filter Width", &fl::TemporalAntiAliasingOptions::filterWidth);
+  taa("Feedback", &fl::TemporalAntiAliasingOptions::feedback);
+  taa("Lod Bias", &fl::TemporalAntiAliasingOptions::lodBias);
+  taa("Sharpness", &fl::TemporalAntiAliasingOptions::sharpness);
+  taa("Upscaling", &fl::TemporalAntiAliasingOptions::upscaling);
+  taa("Filter History", &fl::TemporalAntiAliasingOptions::filterHistory);
+  taa("Filter Input", &fl::TemporalAntiAliasingOptions::filterInput);
+  taa("Use YCoCg", &fl::TemporalAntiAliasingOptions::useYCoCg);
+  taa("Box Type", &fl::TemporalAntiAliasingOptions::boxType);
+  taa("Box Clipping", &fl::TemporalAntiAliasingOptions::boxClipping);
+  taa("Jitter Pattern", &fl::TemporalAntiAliasingOptions::jitterPattern);
+  taa("Variance Gamma", &fl::TemporalAntiAliasingOptions::varianceGamma);
+  taa("Prevent Flickering", &fl::TemporalAntiAliasingOptions::preventFlickering);
+
+  toggle(
+      "Post Processing > Anti Aliasing (FXAA) > Enabled",
+      [sv] {
+        return sv->GetDefaultRenderView()->getAntiAliasing() ==
+               fl::AntiAliasing::FXAA;
+      },
+      [sv](bool v) {
+        sv->GetDefaultRenderView()->setAntiAliasing(
+            v ? fl::AntiAliasing::FXAA : fl::AntiAliasing::NONE);
+      });
+  toggle(
+      "Post Processing > Dithering > Enabled",
+      [sv] {
+        return sv->GetDefaultRenderView()->getDithering() !=
+               fl::Dithering::NONE;
+      },
+      [sv](bool v) {
+        sv->GetDefaultRenderView()->setDithering(
+            v ? fl::Dithering::TEMPORAL : fl::Dithering::NONE);
+      });
 }
 
 }  // namespace mujoco

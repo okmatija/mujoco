@@ -600,7 +600,7 @@ void CommandPalette::Draw(const std::vector<Command>& commands,
     return;
   }
 
-  constexpr float kWidth = 480.0f;
+  constexpr float kWidth = 760.0f;
   // Centered horizontally; the caller supplies the top edge (rect.y).
   ImGui::SetNextWindowPos(ImVec2(rect.x + rect.z * 0.5f, rect.y),
                           ImGuiCond_Always, ImVec2(0.5f, 0.0f));

@@ -91,6 +91,11 @@ class Renderer {
   mjtByte* GetRenderFlags() { return scene_.flags; }
   mjvScene* GetScene() { return &scene_; }
 
+  // Visits each Filament view-editor option as a flat (path, value-widget) list
+  // so a host UI (e.g. the command palette) can surface them individually. No-op
+  // unless the Filament backend is active.
+  void VisitFilamentEditorEntries(const FilamentEditorEntrySink& sink);
+
   // Returns the current frame rate.
   double GetFps();
 

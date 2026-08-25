@@ -342,6 +342,13 @@ void Renderer::DoReadPixels(int width, int height, unsigned char* rgb) {
 
 double Renderer::GetFps() { return fps_; }
 
+void Renderer::VisitFilamentEditorEntries(
+    const FilamentEditorEntrySink& sink) {
+  if (scene_bridge_) {
+    mujoco::VisitFilamentEditorEntries(scene_bridge_->GetScene(), sink);
+  }
+}
+
 void Renderer::UpdateFps() {
   if (IsClassic(gfx_)) {
     TimePoint now = std::chrono::steady_clock::now();

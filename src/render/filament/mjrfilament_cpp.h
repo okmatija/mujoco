@@ -15,6 +15,7 @@
 #ifndef MUJOCO_SRC_RENDER_FILAMENT_MJRFILAMENT_CPP_H_
 #define MUJOCO_SRC_RENDER_FILAMENT_MJRFILAMENT_CPP_H_
 
+#include <functional>
 #include <memory>
 #include <string>
 
@@ -68,6 +69,23 @@ inline UniquePtr<mjrfRenderTarget> CreateRenderTarget(
 }
 
 std::string ResolveFilamentAssetPath(const std::string& filename);
+
+// Visits each option of the experimental Filament view editor (the data shown in
+// the "Plugins -> Filament" window) as a flat list, so a host UI such as the
+// command palette can surface the options individually rather than as one
+// monolithic window. For every option `emit` is called with a hierarchical
+// `path` ("Section > Subsection > Option"), a `draw` closure that renders just
+// that option's value widget (and applies edits in place), an optional `reset`
+// closure that reverts to the captured initial value, and whether the value is
+// currently modified. Safe to call for any scene; does nothing if `scene` is
+// null or not a Filament scene.
+struct FilamentEditorEntrySink {
+  std::function<void(const std::string& path, std::function<void()> draw,
+                     std::function<void()> reset, bool modified)>
+      emit;
+};
+void VisitFilamentEditorEntries(mjrfScene* scene,
+                                const FilamentEditorEntrySink& sink);
 
 }  // namespace mujoco
 

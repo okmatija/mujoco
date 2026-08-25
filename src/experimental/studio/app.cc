@@ -1165,6 +1165,20 @@ std::vector<CommandPalette::Command> App::CollectCommands() {
   // The '.' field editors, one call per MuJoCo struct.
   platform::RegisterMjvOptionFields(commands, "mjvOption", &vis_options_);
   platform::RegisterMjvSceneFields(commands, "mjvScene", renderer_->GetScene());
+
+  // The Filament view-editor options (the "Plugins -> Filament" window) as
+  // individual palette entries: "Plugin > Filament > Section > Option" with the
+  // option's value widget inline. No-op unless the Filament backend is active.
+  {
+    mujoco::FilamentEditorEntrySink sink;
+    sink.emit = [&commands](const std::string& path, std::function<void()> draw,
+                            std::function<void()> reset, bool modified) {
+      platform::RegisterCustomField(commands, "Plugin > Filament > " + path,
+                                    std::move(draw), std::move(reset), modified,
+                                    "");
+    };
+    renderer_->VisitFilamentEditorEntries(sink);
+  }
   if (has_model()) {
     platform::RegisterMjOptionFields(commands, "mjModel.opt", &model()->opt);
     platform::RegisterMjVisualFields(commands, "mjModel.vis", &model()->vis);
