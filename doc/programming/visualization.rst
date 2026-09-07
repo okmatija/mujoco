@@ -6,9 +6,8 @@ Visualization
 .. admonition:: MuJoCo Studio
    :class: note
 
-   We are actively developing a new visualizer platform called
-   `MuJoCo Studio <https://github.com/google-deepmind/mujoco/blob/main/src/experimental/studio>`__. We will update this
-   section once it becomes more established.
+   We are actively developing a new visualizer platform called :ref:`MuJoCo Studio<Studio>`, documented in its own
+   chapter. This section describes the classic visualization pipeline.
 
 MuJoCo has a native 3D visualizer. Its use is illustrated in the :ref:`simulate.cc <saSimulate>` code sample and in
 the simpler :ref:`basic.cc <saBasic>` code sample. While it is not a full-featured rendering engine, it is a
@@ -504,3 +503,6 @@ MuJoCo's current integration with the Filament renderer is done by setting `MUJO
 configuration. This effectively replaces the OpenGL-based `mjr` function implementations with Filament-based ones. It
 also makes the underlying Filament `mjrf` :ref:`types <tyFilamentRenderStructure>` and
 :ref:`functions <FilamentRenderingApi>` available for use.
+
+Filament is the default renderer of :ref:`MuJoCo Studio<Studio>`, and its WebGL backend is what enables Studio's
+browser-based applications.
