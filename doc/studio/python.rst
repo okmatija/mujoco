@@ -169,7 +169,7 @@ Customizing the viewer
 - **Custom overlays**: append ``mujoco.MjvGeom`` to ``viewer.extra_geoms`` from an ``UpdateEvent`` handler — the
   Studio counterpart of ``user_scn``; persists across frames, cleared on model change, works in native and web.
 - **Interaction**: ``ux.move_camera`` / ``pick`` / ``init_perturb`` / ``move_perturb``; Studio's keyboard/mouse
-  behavior is in ``studio_app_events`` free functions (transitional; will be replaced by a key-binding API).
+  behavior is in ``viewer_app_events`` free functions (transitional; will be replaced by a key-binding API).
 - **Beyond panels**: subclass ``viewer_protocol.Viewer`` (the native and web viewers are the two reference
   implementations).
 
@@ -185,7 +185,7 @@ The ViewerApp class
 - Bootstraps via ``ViewerInitEvent``; then dispatches ``ViewerAppInitEvent`` carrying itself — handle it to keep a
   reference (e.g. to read the current selection from a panel).
 - Optional: without it you get a bare viewer (rendering + message plumbing + lifecycle events, no built-in UI), and
-  your handlers build whatever interface the tool needs from ``ux`` / ``studio_app_events``.
+  your handlers build whatever interface the tool needs from ``ux`` / ``viewer_app_events``.
 
 .. _StSamples:
 
