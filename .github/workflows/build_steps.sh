@@ -27,6 +27,10 @@ if command -v ccache >/dev/null 2>&1; then
     CCACHE_ARGS="-DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache"
 fi
 
+# Portable parallel job count. getconf works on Linux and macOS; on Windows we
+# fall back to the NUMBER_OF_PROCESSORS environment variable, then to 4.
+NJOBS="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo "${NUMBER_OF_PROCESSORS:-4}")"
+
 
 # Emit the build matrix for build.yml as a step output. On pull_request we run
 # only the representative "core" compiler set; on push (e.g. to main) we run the
@@ -400,7 +404,7 @@ build_mujoco_live() {
         -DMUJOCO_BUILD_TESTS=OFF \
         -DMUJOCO_BUILD_EXAMPLES=OFF \
         -DMUJOCO_BUILD_SIMULATE=OFF
-    cmake --build build_host --target matc resgen cmgen mujoco_filament_assets -j$(nproc)
+    cmake --build build_host --target matc resgen cmgen mujoco_filament_assets -j"${NJOBS}"
 
     echo "Building WASM app..."
     emcmake cmake -S . -B build_wasm -G Ninja \
@@ -409,7 +413,166 @@ build_mujoco_live() {
         -DMUJOCO_USE_FILAMENT=ON \
         -DMUJOCO_BUILD_TESTS_WASM=OFF \
         -DMUJOCO_NATIVE_BUILD_DIR=$(pwd)/build_host
-    cmake --build build_wasm --target mujoco_studio -j$(nproc)
+    cmake --build build_wasm --target mujoco_studio -j"${NJOBS}"
+}
+
+
+# Full native build of MuJoCo, Studio, and Filament into build_host/.
+build_web_viewer_native() {
+    echo "Building native MuJoCo + Studio + Filament (host)..."
+    cmake -S . -B build_host -G Ninja \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_INTERPROCEDURAL_OPTIMIZATION:BOOL=OFF \
+        -DUSE_STATIC_LIBCXX=OFF \
+        -DMUJOCO_BUILD_STUDIO=ON \
+        -DMUJOCO_USE_FILAMENT=ON \
+        -DMUJOCO_BUILD_TESTS=OFF \
+        -DMUJOCO_BUILD_EXAMPLES=OFF \
+        -DMUJOCO_BUILD_SIMULATE=OFF \
+        ${CCACHE_ARGS} \
+        ${CMAKE_ARGS}
+    cmake --build build_host -j"${NJOBS}"
+}
+
+
+# Builds the web viewer browser client (WASM).
+# The output is platform-independent, so it can be built once on any OS and the
+# resulting web/dist reused across every per-platform wheel build.
+build_web_viewer_wasm() {
+    echo "Setting up Emscripten SDK..."
+    source emsdk/emsdk_env.sh
+
+    echo "Building web viewer browser client (WASM)..."
+    emcmake cmake -S . -B build_wasm -G Ninja \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DMUJOCO_BUILD_STUDIO=ON \
+        -DMUJOCO_USE_FILAMENT=ON \
+        -DMUJOCO_BUILD_TESTS_WASM=OFF \
+        -DMUJOCO_NATIVE_BUILD_DIR=$(pwd)/build_host \
+        ${CCACHE_ARGS}
+    cmake --build build_wasm --target web_client -j"${NJOBS}"
+}
+
+
+# Gathers headers, libraries, plugins, and assets from build_host/ into
+# build/mujoco_install/ so the wheel build can compile the native extensions.
+install_mujoco_for_web_viewer() {
+    echo "Gathering the headers + libraries the web viewer wheel compiles against..."
+    local build_dir prefix deps plugin_ext plugin_dir
+    build_dir="$(cd build_host && pwd -P)"
+    mkdir -p build/mujoco_install
+    prefix="$(cd build/mujoco_install && pwd)"
+
+    # Per-OS engine-plugin layout.
+    case "$(uname -s)" in
+        Darwin) plugin_ext="dylib"; plugin_dir="${build_dir}/lib" ;;
+        MINGW*|MSYS*|CYGWIN*) plugin_ext="dll"; plugin_dir="${build_dir}/bin" ;;
+        *) plugin_ext="so"; plugin_dir="${build_dir}/lib" ;;
+    esac
+
+    # Portable copy helpers.
+    _copy_headers() {  # $1=src dir, $2=dst dir — only *.h/*.inl, keep subdirs
+        local s="${1%/}"
+        (cd "${s}" && find . \( -name '*.h' -o -name '*.inl' \) -print0 |
+            while IFS= read -r -d '' f; do
+                mkdir -p "$2/${f%/*}" && cp "${f}" "$2/${f}"
+            done)
+    }
+    _copy_tree() {  # $1=src dir, $2=dst dir — the whole subtree
+        local s="${1%/}"
+        mkdir -p "$2" && cp -r "${s}/." "$2/"
+    }
+
+    # 1. Standard install: libmujoco + public headers + models.
+    cmake --install "${build_dir}" --prefix "${prefix}"
+
+    # 2. Engine plugins (setup.py packages them from MUJOCO_PLUGIN_PATH).
+    mkdir -p "${prefix}/mujoco_plugin"
+    for plugin in actuator elasticity sensor sdf_plugin; do
+        find "${plugin_dir}" -name "*${plugin}.${plugin_ext}" \
+            -exec cp {} "${prefix}/mujoco_plugin/" \; 2>/dev/null || true
+    done
+
+    # 3. Static archives: mujoco_platform + every dependency archive; the Python
+    #    build looks each one up by name with find_library().
+    mkdir -p "${prefix}/lib"
+    find "${build_dir}" \( -name "*.a" -o -name "*.lib" \) -exec cp -u {} "${prefix}/lib/" \;
+
+    # 4. Source-tree headers for platform / filament-compat / render.
+    _copy_headers src/experimental "${prefix}/include/mujoco/experimental"
+    _copy_headers src/render "${prefix}/include/mujoco/render"
+
+    # 5. Third-party headers.
+    deps="${build_dir}/_deps"
+    # Dear ImGui.
+    cp "${deps}/dear_imgui-src/"im*.h "${prefix}/include/"
+    mkdir -p "${prefix}/include/misc/cpp"
+    cp "${deps}/dear_imgui-src/misc/cpp/imgui_stdlib.h" "${prefix}/include/misc/cpp/"
+    mkdir -p "${prefix}/include/backends"
+    cp "${deps}/dear_imgui-src/backends/"imgui_impl_{sdl2,opengl3}.h \
+        "${prefix}/include/backends/" 2>/dev/null || true
+    # ImPlot.
+    cp "${deps}/implot-src/"implot*.h "${prefix}/include/"
+    # SDL2.
+    mkdir -p "${prefix}/include/SDL2"
+    cp "${deps}/sdl2-src/include/"*.h "${prefix}/include/SDL2/"
+    cp -f "${deps}/sdl2-build/include/"*.h "${prefix}/include/SDL2/" 2>/dev/null || true
+    cp -f "${deps}/sdl2-build/include-config-"*/*.h "${prefix}/include/SDL2/" 2>/dev/null || true
+    # Filament support libraries (math/, utils/, filament/, backend/, ...).
+    for lib in math utils filament backend filabridge ibl; do
+        [[ -d "${deps}/filament-src/libs/${lib}/include/" ]] &&
+            _copy_tree "${deps}/filament-src/libs/${lib}/include" "${prefix}/include"
+    done
+    _copy_tree "${deps}/filament-src/filament/include" "${prefix}/include"
+    _copy_tree "${deps}/filament-src/filament/backend/include" "${prefix}/include"
+
+    # 6. Studio assets (fonts + Filament materials) for the wheel.
+    mkdir -p "${prefix}/assets"
+    if [[ -d "${build_dir}/bin/assets" ]]; then
+        cp -r "${build_dir}/bin/assets/." "${prefix}/assets/"
+    else
+        echo "WARNING: ${build_dir}/bin/assets not found; Studio fonts will be missing." >&2
+    fi
+
+    echo "Gathered web viewer compile inputs at ${prefix}"
+}
+
+
+# Builds the self-contained web viewer wheel from the sdist and the compile
+# inputs gathered by install_mujoco_for_web_viewer.
+build_web_viewer_wheel() {
+    echo "Building the self-contained web viewer wheel..."
+
+    # In CI the venv lives under ${TMPDIR}; for local dev, activate your own
+    # virtualenv before calling this.
+    if [[ -n "${TMPDIR:-}" && -f "${TMPDIR}/venv/bin/activate" ]]; then
+        source "${TMPDIR}/venv/bin/activate"
+    fi
+
+    # Build the sdist first: it carries web/dist (see MANIFEST.in) so the wheel
+    # bundles the browser client.
+    (cd python && ./make_sdist.sh)
+    local prefix
+    prefix="$(cd build/mujoco_install && pwd)"
+
+    # See build_python_bindings for why CCACHE_BASEDIR/SLOPPINESS are set.
+    export CCACHE_BASEDIR="${TMPDIR:-$(pwd)}"
+    export CCACHE_SLOPPINESS="time_macros,include_file_mtime,include_file_ctime,pch_defines,locale"
+    MUJOCO_PATH="${prefix}" \
+    MUJOCO_PLUGIN_PATH="${prefix}/mujoco_plugin" \
+    MUJOCO_CMAKE_ARGS="-DCMAKE_INTERPROCEDURAL_OPTIMIZATION:BOOL=OFF ${CCACHE_ARGS} ${CMAKE_ARGS}" \
+    pip wheel -v --no-deps -w python/dist python/dist/mujoco-*.tar.gz
+}
+
+
+# Top-level entry point building a web viewer wheel, called by the web_viewer*
+# jobs in build.yml. Assumes a toolchain is ready (prepare_python, setup_emsdk).
+# This is both the single CI build step and the one-liner for local development.
+build_web_viewer() {
+    build_web_viewer_native
+    build_web_viewer_wasm
+    install_mujoco_for_web_viewer
+    build_web_viewer_wheel
 }
 
 
