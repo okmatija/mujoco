@@ -40,7 +40,7 @@ from mujoco.experimental.studio import launch_passive
 from mujoco.experimental.studio import messages
 from mujoco.experimental.studio import parser
 from mujoco.experimental.studio import sim
-from mujoco.experimental.studio import studio_app_events
+from mujoco.experimental.studio import viewer_app_events
 from mujoco.experimental.studio import ux
 from mujoco.experimental.studio import viewer_protocol
 
@@ -191,7 +191,7 @@ class Gallery:
           # Hover start: re-sync pacing so the card doesn't try to catch up
           # the wall-clock time it spent frozen.
           card.step_control.force_sync()
-        studio_app_events.handle_reset_keyboard_events(entry.model, entry.data)
+        viewer_app_events.handle_reset_keyboard_events(entry.model, entry.data)
         card.step_control.advance(entry.model, entry.data)
       card.hovered = hovered
 

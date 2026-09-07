@@ -256,7 +256,7 @@ void ModelRenderables::Update(const mjData* data) {
     UpdateSpatialTendons(data, i);
   }
 
-  for (int i = 0; i < model->nu; i++) {
+  for (int i = 0; i < model->nactuator; i++) {
     if (model->actuator_trntype[i] == mjTRN_SLIDERCRANK) {
       UpdateSliderCranks(data, i);
     }
@@ -524,7 +524,7 @@ void ModelRenderables::AddSliderCrankGeoms() {
   mjrfRenderableParams params;
   mjrf_defaultRenderableParams(&params);
 
-  for (int i = 0; i < model->nu; i++) {
+  for (int i = 0; i < model->nactuator; i++) {
     if (model->actuator_trntype[i] != mjTRN_SLIDERCRANK) {
       continue;
     }
@@ -715,7 +715,7 @@ int ModelRenderables::GetSegmentationId(mjtObj obj_type, int obj_index) {
   if (obj_type == mjOBJ_ACTUATOR) {
     return id + obj_index;
   } else {
-    id += model->nu;
+    id += model->nactuator;
   }
   mju_error("Unsupported object type: %d", obj_type);
   return -1;
@@ -1005,7 +1005,7 @@ void ModelRenderables::SetVisibility(mjtObj obj_type, int idx, bool visible) {
     case mjOBJ_ACTUATOR:
       DetermineVisibilities(ops, vopts_.actuatorgroup,
                             &vopts_.flags[mjVIS_ACTUATOR], idx, visible);
-      for (int i = 0; i < model->nu; ++i) {
+      for (int i = 0; i < model->nactuator; ++i) {
         auto it = slider_cranks_.find(i);
         if (it == slider_cranks_.end()) {
           continue;

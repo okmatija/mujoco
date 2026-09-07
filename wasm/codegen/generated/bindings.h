@@ -6791,6 +6791,24 @@ struct MjData {
   void set_nefmK(int value) {
     ptr_->nefmK = value;
   }
+  int nefmcon() const {
+    return ptr_->nefmcon;
+  }
+  void set_nefmcon(int value) {
+    ptr_->nefmcon = value;
+  }
+  int nefmT() const {
+    return ptr_->nefmT;
+  }
+  void set_nefmT(int value) {
+    ptr_->nefmT = value;
+  }
+  int nefmA() const {
+    return ptr_->nefmA;
+  }
+  void set_nefmA(int value) {
+    ptr_->nefmA = value;
+  }
   int nefmdof() const {
     return ptr_->nefmdof;
   }
@@ -7323,6 +7341,39 @@ struct MjData {
   emscripten::val efm_c() const {
     return emscripten::val(emscripten::typed_memory_view(model->nv, ptr_->efm_c));
   }
+  emscripten::val efm_diag() const {
+    return emscripten::val(emscripten::typed_memory_view(model->nv, ptr_->efm_diag));
+  }
+  emscripten::val efm_ck() const {
+    return emscripten::val(emscripten::typed_memory_view(model->nv, ptr_->efm_ck));
+  }
+  emscripten::val efm_sdiag() const {
+    return emscripten::val(emscripten::typed_memory_view(model->nv, ptr_->efm_sdiag));
+  }
+  emscripten::val efm_fluid() const {
+    return emscripten::val(emscripten::typed_memory_view(model->nC, ptr_->efm_fluid));
+  }
+  emscripten::val efm_tid() const {
+    return emscripten::val(emscripten::typed_memory_view(model->ntendon, ptr_->efm_tid));
+  }
+  emscripten::val efm_ts() const {
+    return emscripten::val(emscripten::typed_memory_view(model->ntendon, ptr_->efm_ts));
+  }
+  emscripten::val efm_tk() const {
+    return emscripten::val(emscripten::typed_memory_view(model->ntendon, ptr_->efm_tk));
+  }
+  emscripten::val efm_aid() const {
+    return emscripten::val(emscripten::typed_memory_view(model->nactuator, ptr_->efm_aid));
+  }
+  emscripten::val efm_as() const {
+    return emscripten::val(emscripten::typed_memory_view(model->nactuator, ptr_->efm_as));
+  }
+  emscripten::val efm_ak() const {
+    return emscripten::val(emscripten::typed_memory_view(model->nactuator, ptr_->efm_ak));
+  }
+  emscripten::val efm_ca() const {
+    return emscripten::val(emscripten::typed_memory_view(model->nv, ptr_->efm_ca));
+  }
   emscripten::val efm_K_rownnz() const {
     return emscripten::val(emscripten::typed_memory_view(model->nv, ptr_->efm_K_rownnz));
   }
@@ -7337,6 +7388,12 @@ struct MjData {
   }
   emscripten::val efm_dofid() const {
     return emscripten::val(emscripten::typed_memory_view(ptr_->nefmdof, ptr_->efm_dofid));
+  }
+  emscripten::val efm_con_ind() const {
+    return emscripten::val(emscripten::typed_memory_view(ptr_->nefmcon, ptr_->efm_con_ind));
+  }
+  emscripten::val efm_con_val() const {
+    return emscripten::val(emscripten::typed_memory_view(ptr_->nefmcon, ptr_->efm_con_val));
   }
   emscripten::val efm_L() const {
     return emscripten::val(emscripten::typed_memory_view(ptr_->nefmL, ptr_->efm_L));

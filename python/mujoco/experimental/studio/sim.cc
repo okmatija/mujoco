@@ -17,14 +17,14 @@
 #include <tuple>
 
 #include <mujoco/mujoco.h>
-#include <mujoco/experimental/platform/sim/sim_history.h>
-#include <mujoco/experimental/platform/sim/step_control.h>
+#include <mujoco/experimental/studio/sim/sim_history.h>
+#include <mujoco/experimental/studio/sim/step_control.h>
 #include "structs.h"
 #include <pybind11/pybind11.h>
 
 namespace py = pybind11;
 
-using StepControl = mujoco::platform::StepControl;
+using StepControl = mujoco::studio::StepControl;
 
 PYBIND11_MODULE(sim, m, pybind11::mod_gil_not_used()) {
   py::module_::import("mujoco._structs");
@@ -84,7 +84,7 @@ PYBIND11_MODULE(sim, m, pybind11::mod_gil_not_used()) {
            py::arg("noise_scale"), py::arg("noise_rate"),
            "Sets the noise parameters.");
 
-  using SimHistory = mujoco::platform::SimHistory;
+  using SimHistory = mujoco::studio::SimHistory;
   constexpr int max_history = 2048;
   constexpr int max_bytes = 128 * 1024 * 1024;  // 128 MiB
   py::class_<SimHistory>(m, "SimHistory")

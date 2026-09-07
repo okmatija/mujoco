@@ -112,10 +112,17 @@ typedef struct mjData_ {
   int     nl;                // number of limit constraints
   int     nefc;              // number of constraints
   int     nJ;                // number of non-zeros in constraint Jacobian
+
+  // effective metric: per-step activity flag and sizes, set by mjd_effBuild
   int     efm_active;        // implicit effective metric M+K is active (see mjd_effBuild)
   int     nefmK;             // number of non-zeros in effective-stiffness CSR
+  int     nefmcon;           // packed length of the contact rank-1 rows
+  int     nefmT;             // number of tendons with terms in the metric
+  int     nefmA;             // number of actuators with terms in the metric
   int     nefmdof;           // number of 3x3 blocks in the effective-metric preconditioner
   int     nefmL;             // size of the effective-metric block storage (9*nefmdof)
+
+  // variable sizes, continued
   int     nY;                // number of non-zeros in constraint inverse inertia square root
   int     nA;                // number of non-zeros in constraint inverse inertia matrix
   int     nisland;           // number of detected constraint islands
@@ -376,13 +383,26 @@ typedef struct mjData_ {
   mjtNum* efc_vel;           // velocity in constraint space: J*qvel             (nefc x 1)
   mjtNum* efc_aref;          // reference pseudo-acceleration                    (nefc x 1)
 
-  // computed by mj_fwdPosition/mj_invPosition when the implicit effective metric M+K is active
+  // computed when the implicit effective metric M+K is active
   mjtNum* efm_c;             // smooth-force shift h*K*qvel                      (nv x 1)
+  mjtNum* efm_diag;          // effective-metric diagonal h*D + h^2*K            (nv x 1)
+  mjtNum* efm_ck;            // diagonal stiffness h*k, for the smooth shift     (nv x 1)
+  mjtNum* efm_sdiag;         // diagonal additions to M in the backbone          (nv x 1)
+  mjtNum* efm_fluid;         // fluid drag blocks in M's sparsity pattern        (nC x 1)
+  int*    efm_tid;           // ids of tendons with terms in the metric          (ntendon x 1)
+  mjtNum* efm_ts;            // tendon metric scale h^2*k + h*b, tid indexed     (ntendon x 1)
+  mjtNum* efm_tk;            // tendon stiffness h*k for shift, tid indexed      (ntendon x 1)
+  int*    efm_aid;           // ids of actuators with terms in the metric        (nactuator x 1)
+  mjtNum* efm_as;            // actuator metric scale h^2*gp + h*gv, aid indexed (nactuator x 1)
+  mjtNum* efm_ak;            // actuator stiffness h*gp, aid indexed             (nactuator x 1)
+  mjtNum* efm_ca;            // actuation-stage smooth-force shift               (nv x 1)
   int*    efm_K_rownnz;      // effective-stiffness CSR row nonzeros             (nv x 1)
   int*    efm_K_rowadr;      // effective-stiffness CSR row addresses            (nv x 1)
   int*    efm_K_colind;      // effective-stiffness CSR column indices           (nefmK x 1)
   mjtNum* efm_K_val;         // effective-stiffness CSR values                   (nefmK x 1)
   int*    efm_dofid;         // block k -> dof address of its vertex triple      (nefmdof x 1)
+  int*    efm_con_ind;       // contact rank-1 rows, packed [nnz, colind...]     (nefmcon x 1)
+  mjtNum* efm_con_val;       // contact rank-1 rows, packed [scale, val...]      (nefmcon x 1)
   mjtNum* efm_L;             // factored 3x3 diagonal blocks of M+K              (nefmL x 1)
 
   //-------------------- arena-allocated: POSITION, VELOCITY, CONTROL/ACCELERATION dependent
@@ -1641,6 +1661,8 @@ typedef struct mjrfMaterial_ {
   const mjrfTexture* orm_texture;         // occlusion/roughness/metallic texture (RGB8)
   const mjrfTexture* emissive_texture;    // emissive texture (RGB8)
   const mjrfTexture* reflection_texture;  // reflection texture, for internal use only
+  float reflection_normal[3];      // mirror normal, gates reflection to front face (internal)
+  float reflection_view_proj[16];  // main camera view-proj for reflection UV mapping (internal)
 } mjrfMaterial;
 typedef struct mjrfRenderableParams_ {
   mjtBool cast_shadows;                 // if true, casts shadows
@@ -2470,7 +2492,8 @@ typedef enum mjtIntegrator {      // integrator mode
   mjINT_EULER         = 0,        // semi-implicit Euler
   mjINT_RK4,                      // 4th-order Runge Kutta
   mjINT_IMPLICIT,                 // implicit in velocity
-  mjINT_IMPLICITFAST              // implicit in velocity, no rne derivative
+  mjINT_IMPLICITFAST,             // implicit in velocity, no rne derivative
+  mjINT_DISCRETE                  // discrete step map: constraint solve in the effective metric
 } mjtIntegrator;
 typedef enum mjtCone {            // type of friction cone
   mjCONE_PYRAMIDAL     = 0,       // pyramidal

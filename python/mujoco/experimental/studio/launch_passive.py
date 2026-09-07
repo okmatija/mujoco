@@ -49,15 +49,16 @@ def launch_passive(
   """
   if config.gfx in ('web', 'webgl'):
     from mujoco.experimental.studio import launch_web  # pylint: disable=g-import-not-at-top
+
     return launch_web.launch_web(
         config,
         viewer_plugins=viewer_plugins,
         sim_plugins=sim_plugins,
     )
   from mujoco.experimental.studio import launch_native  # pylint: disable=g-import-not-at-top
+
   return launch_native.launch_native(
       config,
       viewer_plugins=viewer_plugins,
       sim_plugins=sim_plugins,
   )
-

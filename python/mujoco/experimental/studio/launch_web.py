@@ -19,10 +19,9 @@ Launches the web viewer without depending on desktop windowing or Filament.
 from typing import Any
 
 from mujoco.experimental.studio import endpoints
-from mujoco.experimental.studio import launch_base
+from mujoco.experimental.studio import launch_thread
 from mujoco.experimental.studio import viewer_handle
 from mujoco.experimental.studio import viewer_protocol
-from mujoco.experimental.studio import web_viewer
 
 
 def run_web_viewer(
@@ -37,6 +36,7 @@ def run_web_viewer(
     endpoint: Endpoint for communicating with the simulation side.
     plugins: Optional list of viewer-side plugin instances.
   """
+  from mujoco.experimental.studio import web_viewer  # pylint: disable=g-import-not-at-top
   viewer = web_viewer.WebViewer(
       config,
       endpoint,
@@ -54,7 +54,7 @@ def launch_web(
   """Launches the WebViewer in a daemon thread without blocking.
 
   This target does not depend on Filament or desktop windowing, making it
-  safe for headless environments, containers, and Borg jobs.
+  safe for headless environments, containers, and remote clusters.
 
   Args:
     config: Optional ViewerConfig (defaults to ViewerConfig(gfx='web')).
@@ -74,5 +74,4 @@ def launch_web(
         plugins=viewer_plugins,
     )
 
-  return launch_base.launch_in_thread(target, sim_plugins=sim_plugins)
-
+  return launch_thread.launch_thread(target, sim_plugins=sim_plugins)

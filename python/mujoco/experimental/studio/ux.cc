@@ -23,11 +23,11 @@
 #include <imgui.h>
 #include <implot.h>
 #include <mujoco/mujoco.h>
-#include <mujoco/experimental/platform/helpers.h>
-#include <mujoco/experimental/platform/sim/sim_history.h>
-#include <mujoco/experimental/platform/sim/step_control.h>
-#include <mujoco/experimental/platform/ux/gui.h>
-#include <mujoco/experimental/platform/ux/interaction.h>
+#include <mujoco/experimental/studio/sim/sim_history.h>
+#include <mujoco/experimental/studio/sim/step_control.h>
+#include <mujoco/experimental/studio/ux/gui.h>
+#include <mujoco/experimental/studio/ux/gui_helpers.h>
+#include <mujoco/experimental/studio/ux/interaction.h>
 #include "specs_wrapper.h"
 #include "structs.h"
 #include <pybind11/pybind11.h>
@@ -48,13 +48,13 @@ struct UxState {
   int watch_field_index = 0;
 
   // Read/edited by camera_selection_gui
-  int camera_index = mujoco::platform::kTumbleCameraIdx;
+  int camera_index = mujoco::studio::kTumbleCameraIdx;
 
   // Read/edited by simulation_gui.
   int key_idx = 0;
   int nthread = 0;
   bool update_threadpool = false;
-  mujoco::platform::SimulationTimelineState timeline;
+  mujoco::studio::SimulationTimelineState timeline;
 };
 
 struct RenderFlags {
@@ -69,10 +69,10 @@ PYBIND11_MODULE(ux, m, pybind11::mod_gil_not_used()) {
 
   m.doc() = "MuJoCo platform UX components.";
 
-  py::enum_<mujoco::platform::GuiTheme>(m, "GuiTheme")
-      .value("LIGHT", mujoco::platform::GuiTheme::kLight)
-      .value("DARK", mujoco::platform::GuiTheme::kDark)
-      .value("CLASSIC", mujoco::platform::GuiTheme::kClassic);
+  py::enum_<mujoco::studio::GuiTheme>(m, "GuiTheme")
+      .value("LIGHT", mujoco::studio::GuiTheme::kLight)
+      .value("DARK", mujoco::studio::GuiTheme::kDark)
+      .value("CLASSIC", mujoco::studio::GuiTheme::kClassic);
 
   py::class_<UxState>(m, "UxState")
       .def(py::init<>())
@@ -96,9 +96,9 @@ PYBIND11_MODULE(ux, m, pybind11::mod_gil_not_used()) {
 
   m.def(
       "setup_theme",
-      [](mujoco::platform::GuiTheme theme) {
+      [](mujoco::studio::GuiTheme theme) {
         py::gil_scoped_release no_gil;
-        mujoco::platform::SetupTheme(theme);
+        mujoco::studio::SetupTheme(theme);
       },
       py::arg("theme"), "Set up Dear ImGui visual theme.");
 
@@ -122,19 +122,21 @@ PYBIND11_MODULE(ux, m, pybind11::mod_gil_not_used()) {
 
   m.def(
       "configure_docking_layout",
-      []() {
+      [](bool show_toolbar, bool show_status_bar) {
         py::gil_scoped_release no_gil;
-        ImVec4 r = mujoco::platform::ConfigureDockingLayout(true, true);
+        ImVec4 r = mujoco::studio::ConfigureDockingLayout(show_toolbar,
+                                                            show_status_bar);
         return std::make_tuple(r.x, r.y, r.z, r.w);
       },
+      py::arg("show_toolbar") = true, py::arg("show_status_bar") = true,
       "Configure the docking layout with Options (left) and Inspector (right) "
       "panes. Returns (x, y, w, h) of the central workspace area.");
 
   m.def(
       "step_control_gui",
-      [](mujoco::platform::StepControl* step_control, UxState& ux_state) {
+      [](mujoco::studio::StepControl* step_control, UxState& ux_state) {
         py::gil_scoped_release no_gil;
-        mujoco::platform::StepControlGui(step_control, ux_state.speed_index);
+        mujoco::studio::StepControlGui(step_control, ux_state.speed_index);
       },
       py::arg("step_control"), py::arg("ux_state"),
       "Render the simulation stepping control GUI. Modifies "
@@ -142,13 +144,13 @@ PYBIND11_MODULE(ux, m, pybind11::mod_gil_not_used()) {
 
   m.def(
       "setup_history",
-      [](mujoco::platform::StepControl* step_control,
-         mujoco::platform::SimHistory* history, UxState& ux_state,
+      [](mujoco::studio::StepControl* step_control,
+         mujoco::studio::SimHistory* history, UxState& ux_state,
          py::object model_obj, py::object data_obj) {
         mjModel* model =
             py::cast<mujoco::python::MjModelWrapper&>(model_obj).get();
         mjData* data = py::cast<mujoco::python::MjDataWrapper&>(data_obj).get();
-        mujoco::platform::SimulationTimelineState* timeline =
+        mujoco::studio::SimulationTimelineState* timeline =
             &ux_state.timeline;
         py::gil_scoped_release no_gil;
         // Record every simulation step into the history buffer (in C++, so no
@@ -179,14 +181,14 @@ PYBIND11_MODULE(ux, m, pybind11::mod_gil_not_used()) {
   m.def(
       "simulation_gui",
       [](py::object model_obj, py::object data_obj,
-         mujoco::platform::StepControl* step_control,
-         mujoco::platform::SimHistory* history, UxState& ux_state,
+         mujoco::studio::StepControl* step_control,
+         mujoco::studio::SimHistory* history, UxState& ux_state,
          py::function reset, py::function reload, py::function align) {
         mjModel* model =
             py::cast<mujoco::python::MjModelWrapper&>(model_obj).get();
         mjData* data = py::cast<mujoco::python::MjDataWrapper&>(data_obj).get();
         // The GIL is held throughout: the callbacks call back into Python.
-        mujoco::platform::SimulationGuiContext ctx;
+        mujoco::studio::SimulationGuiContext ctx;
         ctx.model = model;
         ctx.data = data;
         ctx.step_control = step_control;
@@ -199,7 +201,7 @@ PYBIND11_MODULE(ux, m, pybind11::mod_gil_not_used()) {
         ctx.reset = [&reset]() { reset(); };
         ctx.reload = [&reload]() { reload(); };
         ctx.align = [&align]() { align(); };
-        mujoco::platform::SimulationGui(ctx);
+        mujoco::studio::SimulationGui(ctx);
       },
       py::arg("model"), py::arg("data"), py::arg("step_control"),
       py::arg("history"), py::arg("ux_state"), py::arg("reset"),
@@ -210,19 +212,68 @@ PYBIND11_MODULE(ux, m, pybind11::mod_gil_not_used()) {
 
   m.def(
       "theme_select_gui",
-      [](mujoco::platform::GuiTheme theme) {
+      [](mujoco::studio::GuiTheme theme) {
         py::gil_scoped_release no_gil;
-        bool changed = mujoco::platform::ThemeSelectGui(&theme);
+        bool changed = mujoco::studio::ThemeSelectGui(&theme);
         return std::make_tuple(changed, theme);
       },
       py::arg("theme"),
       "Render the GUI theme selector. Returns (changed, theme).");
 
   m.def(
+      "theme_menu_gui",
+      [](mujoco::studio::GuiTheme theme) {
+        py::gil_scoped_release no_gil;
+        bool changed = mujoco::studio::ThemeMenuGui(&theme);
+        return std::make_tuple(changed, theme);
+      },
+      py::arg("theme"), "Render the Theme menu. Returns (changed, theme).");
+
+  m.def("get_default_ini_path", &mujoco::studio::GetDefaultIniPath,
+        "Returns the default INI configuration file path (~/.mujoco.ini).");
+
+  m.def(
+      "load_theme",
+      [](const std::string& ini_path, mujoco::studio::GuiTheme def_theme) {
+        py::gil_scoped_release no_gil;
+        return mujoco::studio::LoadTheme(ini_path, def_theme);
+      },
+      py::arg("ini_path") = "",
+      py::arg("def_theme") = mujoco::studio::GuiTheme::kLight,
+      "Loads the GUI theme from an INI file.");
+
+  m.def(
+      "load_settings",
+      [](const std::string& ini_path, mujoco::studio::GuiTheme def_theme) {
+        py::gil_scoped_release no_gil;
+        return mujoco::studio::LoadSettings(ini_path, def_theme);
+      },
+      py::arg("ini_path") = "",
+      py::arg("def_theme") = mujoco::studio::GuiTheme::kLight,
+      "Loads settings and theme from an INI file into ImGui.");
+
+  m.def(
+      "save_settings",
+      [](mujoco::studio::GuiTheme theme, const std::string& ini_path) {
+        py::gil_scoped_release no_gil;
+        mujoco::studio::SaveSettings(theme, ini_path);
+      },
+      py::arg("theme"), py::arg("ini_path") = "",
+      "Saves settings and theme to an INI file.");
+
+  m.def(
+      "reset_config",
+      [](const std::string& ini_path) {
+        py::gil_scoped_release no_gil;
+        mujoco::studio::ResetConfig(ini_path);
+      },
+      py::arg("ini_path") = "", "Resets the configuration INI file.");
+
+  m.def(
       "label_selection_gui",
       [](mujoco::python::MjvOptionWrapper& vis_options) {
         py::gil_scoped_release no_gil;
-        return mujoco::platform::LabelSelectionGui(vis_options.get());
+        return mujoco::studio::LabelSelectionGui(vis_options.get());
       },
       py::arg("vis_options"), "Render the visualization label selection GUI.");
 
@@ -230,7 +281,7 @@ PYBIND11_MODULE(ux, m, pybind11::mod_gil_not_used()) {
       "frame_selection_gui",
       [](mujoco::python::MjvOptionWrapper& vis_options) {
         py::gil_scoped_release no_gil;
-        return mujoco::platform::FrameSelectionGui(vis_options.get());
+        return mujoco::studio::FrameSelectionGui(vis_options.get());
       },
       py::arg("vis_options"), "Render the visualization frame selection GUI.");
 
@@ -240,7 +291,7 @@ PYBIND11_MODULE(ux, m, pybind11::mod_gil_not_used()) {
          mujoco::python::MjDataWrapper& data,
          mujoco::python::MjvCameraWrapper& camera, UxState& ux_state) {
         py::gil_scoped_release no_gil;
-        bool changed = mujoco::platform::CameraSelectionGui(
+        bool changed = mujoco::studio::CameraSelectionGui(
             model.get(), data.get(), *camera.get(), ux_state.camera_index);
         return changed;
       },
@@ -253,7 +304,7 @@ PYBIND11_MODULE(ux, m, pybind11::mod_gil_not_used()) {
       [](const mujoco::python::MjModelWrapper& model,
          mujoco::python::MjvCameraWrapper& camera, int request_idx) {
         py::gil_scoped_release no_gil;
-        return mujoco::platform::SetCamera(model.get(), camera.get(),
+        return mujoco::studio::SetCamera(model.get(), camera.get(),
                                            request_idx);
       },
       py::arg("model"), py::arg("camera"), py::arg("request_idx"),
@@ -261,11 +312,11 @@ PYBIND11_MODULE(ux, m, pybind11::mod_gil_not_used()) {
 
   m.def(
       "set_speed_index",
-      [](mujoco::platform::StepControl* step_control, int speed_index,
+      [](mujoco::studio::StepControl* step_control, int speed_index,
          int request_idx) {
         {
           py::gil_scoped_release no_gil;
-          mujoco::platform::SetSpeedIndex(step_control, speed_index,
+          mujoco::studio::SetSpeedIndex(step_control, speed_index,
                                           request_idx);
         }
         return speed_index;
@@ -275,16 +326,14 @@ PYBIND11_MODULE(ux, m, pybind11::mod_gil_not_used()) {
 
   m.def(
       "physics_gui",
-      [](mujoco::python::MjModelWrapper& model,
-         mujoco::python::MjSpec* spec,
+      [](mujoco::python::MjModelWrapper& model, mujoco::python::MjSpec* spec,
          float min_width) {
         py::gil_scoped_release no_gil;
-        mujoco::platform::PhysicsGui(model.get(), spec ? spec->ptr : nullptr,
+        mujoco::studio::PhysicsGui(model.get(), spec ? spec->ptr : nullptr,
                                      min_width);
       },
       py::arg("model"), py::arg("spec") = nullptr,
-      py::arg("min_width") = 150.0f,
-      "Render the physics settings UI.");
+      py::arg("min_width") = 150.0f, "Render the physics settings UI.");
 
   m.def(
       "rendering_gui",
@@ -296,7 +345,7 @@ PYBIND11_MODULE(ux, m, pybind11::mod_gil_not_used()) {
         for (int i = 0; i < mjNRNDFLAG; ++i) {
           flags[i] = render_flags.flags[i];
         }
-        mujoco::platform::RenderingGui(model.get(), vis_options.get(), flags,
+        mujoco::studio::RenderingGui(model.get(), vis_options.get(), flags,
                                        150.0f);
         for (int i = 0; i < mjNRNDFLAG; ++i) {
           render_flags.flags[i] = flags[i];
@@ -310,7 +359,7 @@ PYBIND11_MODULE(ux, m, pybind11::mod_gil_not_used()) {
       [](const mujoco::python::MjModelWrapper& model,
          mujoco::python::MjvOptionWrapper& vis_options, float min_width) {
         py::gil_scoped_release no_gil;
-        mujoco::platform::GroupsGui(model.get(), vis_options.get(), min_width);
+        mujoco::studio::GroupsGui(model.get(), vis_options.get(), min_width);
       },
       py::arg("model"), py::arg("vis_options"), py::arg("min_width") = 150.0f,
       "Render the visibility groups UI.");
@@ -321,7 +370,7 @@ PYBIND11_MODULE(ux, m, pybind11::mod_gil_not_used()) {
          mujoco::python::MjvOptionWrapper& vis_options,
          mujoco::python::MjvCameraWrapper& camera, float min_width) {
         py::gil_scoped_release no_gil;
-        mujoco::platform::VisualizationGui(model.get(), vis_options.get(),
+        mujoco::studio::VisualizationGui(model.get(), vis_options.get(),
                                            camera.get(), min_width);
       },
       py::arg("model"), py::arg("vis_options"), py::arg("camera"),
@@ -333,7 +382,7 @@ PYBIND11_MODULE(ux, m, pybind11::mod_gil_not_used()) {
          mujoco::python::MjDataWrapper& data,
          mujoco::python::MjvOptionWrapper& vis_options) {
         py::gil_scoped_release no_gil;
-        mujoco::platform::ControlsGui(model.get(), data.get(),
+        mujoco::studio::ControlsGui(model.get(), data.get(),
                                       vis_options.get());
       },
       py::arg("model"), py::arg("data"), py::arg("vis_options"),
@@ -345,7 +394,7 @@ PYBIND11_MODULE(ux, m, pybind11::mod_gil_not_used()) {
          mujoco::python::MjDataWrapper& data,
          mujoco::python::MjvOptionWrapper& vis_options) {
         py::gil_scoped_release no_gil;
-        mujoco::platform::JointsGui(model.get(), data.get(), vis_options.get());
+        mujoco::studio::JointsGui(model.get(), data.get(), vis_options.get());
       },
       py::arg("model"), py::arg("data"), py::arg("vis_options"),
       "Render the joints UI.");
@@ -355,7 +404,7 @@ PYBIND11_MODULE(ux, m, pybind11::mod_gil_not_used()) {
       [](const mujoco::python::MjModelWrapper& model,
          mujoco::python::MjDataWrapper& data) {
         py::gil_scoped_release no_gil;
-        mujoco::platform::SensorGui(model.get(), data.get());
+        mujoco::studio::SensorGui(model.get(), data.get());
       },
       py::arg("model"), py::arg("data"), "Render the sensor data plot.");
 
@@ -365,7 +414,7 @@ PYBIND11_MODULE(ux, m, pybind11::mod_gil_not_used()) {
          mujoco::python::MjDataWrapper& data, UxState& ux_state,
          float min_width) {
         py::gil_scoped_release no_gil;
-        mujoco::platform::StateGui(model.get(), data.get(), ux_state.state,
+        mujoco::studio::StateGui(model.get(), data.get(), ux_state.state,
                                    ux_state.state_sig, min_width);
       },
       py::arg("model"), py::arg("data"), py::arg("ux_state"),
@@ -377,7 +426,7 @@ PYBIND11_MODULE(ux, m, pybind11::mod_gil_not_used()) {
       [](const mujoco::python::MjModelWrapper& model,
          mujoco::python::MjDataWrapper& data, UxState& ux_state) {
         py::gil_scoped_release no_gil;
-        mujoco::platform::WatchGui(
+        mujoco::studio::WatchGui(
             model.get(), data.get(), ux_state.watch_field_name,
             sizeof(ux_state.watch_field_name), ux_state.watch_field_index);
       },
@@ -387,9 +436,9 @@ PYBIND11_MODULE(ux, m, pybind11::mod_gil_not_used()) {
 
   m.def(
       "noise_gui",
-      [](mujoco::platform::StepControl* step_control) {
+      [](mujoco::studio::StepControl* step_control) {
         py::gil_scoped_release no_gil;
-        mujoco::platform::NoiseGui(step_control);
+        mujoco::studio::NoiseGui(step_control);
       },
       py::arg("step_control"), "Render the noise UI.");
 
@@ -398,7 +447,7 @@ PYBIND11_MODULE(ux, m, pybind11::mod_gil_not_used()) {
       [](const mujoco::python::MjModelWrapper& model,
          mujoco::python::MjDataWrapper& data) {
         py::gil_scoped_release no_gil;
-        mujoco::platform::ConvergenceGui(model.get(), data.get());
+        mujoco::studio::ConvergenceGui(model.get(), data.get());
       },
       py::arg("model"), py::arg("data"),
       "Render the solver convergence chart.");
@@ -408,7 +457,7 @@ PYBIND11_MODULE(ux, m, pybind11::mod_gil_not_used()) {
       [](const mujoco::python::MjModelWrapper& model,
          mujoco::python::MjDataWrapper& data) {
         py::gil_scoped_release no_gil;
-        mujoco::platform::CountsGui(model.get(), data.get());
+        mujoco::studio::CountsGui(model.get(), data.get());
       },
       py::arg("model"), py::arg("data"), "Render the solver counts chart.");
 
@@ -417,23 +466,23 @@ PYBIND11_MODULE(ux, m, pybind11::mod_gil_not_used()) {
       [](const mujoco::python::MjModelWrapper& model,
          mujoco::python::MjDataWrapper& data, bool paused, float fps) {
         py::gil_scoped_release no_gil;
-        mujoco::platform::InfoGui(model.get(), data.get(), paused, fps);
+        mujoco::studio::InfoGui(model.get(), data.get(), paused, fps);
       },
       py::arg("model"), py::arg("data"), py::arg("paused"), py::arg("fps"),
       "Render the simulation info UI.");
 
-  m.attr("FREE_CAMERA_IDX") = mujoco::platform::kFreeCameraIdx;
-  m.attr("TUMBLE_CAMERA_IDX") = mujoco::platform::kTumbleCameraIdx;
-  m.attr("TRACKING_CAMERA_IDX") = mujoco::platform::kTrackingCameraIdx;
+  m.attr("FREE_CAMERA_IDX") = mujoco::studio::kFreeCameraIdx;
+  m.attr("TUMBLE_CAMERA_IDX") = mujoco::studio::kTumbleCameraIdx;
+  m.attr("TRACKING_CAMERA_IDX") = mujoco::studio::kTrackingCameraIdx;
 
-  py::enum_<mujoco::platform::CameraMotion>(m, "CameraMotion")
-      .value("ZOOM", mujoco::platform::CameraMotion::ZOOM)
-      .value("ORBIT", mujoco::platform::CameraMotion::ORBIT)
-      .value("TRUCK_PEDESTAL", mujoco::platform::CameraMotion::TRUCK_PEDESTAL)
-      .value("TRUCK_DOLLY", mujoco::platform::CameraMotion::TRUCK_DOLLY)
-      .value("PAN_TILT", mujoco::platform::CameraMotion::PAN_TILT)
-      .value("PLANAR_MOVE_H", mujoco::platform::CameraMotion::PLANAR_MOVE_H)
-      .value("PLANAR_MOVE_V", mujoco::platform::CameraMotion::PLANAR_MOVE_V)
+  py::enum_<mujoco::studio::CameraMotion>(m, "CameraMotion")
+      .value("ZOOM", mujoco::studio::CameraMotion::ZOOM)
+      .value("ORBIT", mujoco::studio::CameraMotion::ORBIT)
+      .value("TRUCK_PEDESTAL", mujoco::studio::CameraMotion::TRUCK_PEDESTAL)
+      .value("TRUCK_DOLLY", mujoco::studio::CameraMotion::TRUCK_DOLLY)
+      .value("PAN_TILT", mujoco::studio::CameraMotion::PAN_TILT)
+      .value("PLANAR_MOVE_H", mujoco::studio::CameraMotion::PLANAR_MOVE_H)
+      .value("PLANAR_MOVE_V", mujoco::studio::CameraMotion::PLANAR_MOVE_V)
       .export_values();
 
   m.def(
@@ -441,9 +490,9 @@ PYBIND11_MODULE(ux, m, pybind11::mod_gil_not_used()) {
       [](const mujoco::python::MjModelWrapper& model,
          const mujoco::python::MjDataWrapper& data,
          mujoco::python::MjvCameraWrapper& cam,
-         mujoco::platform::CameraMotion motion, mjtNum dx, mjtNum dy) {
+         mujoco::studio::CameraMotion motion, mjtNum dx, mjtNum dy) {
         py::gil_scoped_release no_gil;
-        mujoco::platform::MoveCamera(model.get(), data.get(), cam.get(), motion,
+        mujoco::studio::MoveCamera(model.get(), data.get(), cam.get(), motion,
                                      dx, dy);
       },
       py::arg("model"), py::arg("data"), py::arg("cam"), py::arg("motion"),
@@ -456,7 +505,7 @@ PYBIND11_MODULE(ux, m, pybind11::mod_gil_not_used()) {
          const mujoco::python::MjvCameraWrapper& cam,
          mujoco::python::MjvPerturbWrapper& pert, int active) {
         py::gil_scoped_release no_gil;
-        mujoco::platform::InitPerturb(model.get(), data.get(), cam.get(),
+        mujoco::studio::InitPerturb(model.get(), data.get(), cam.get(),
                                       pert.get(),
                                       static_cast<mjtPertBit>(active));
       },
@@ -471,7 +520,7 @@ PYBIND11_MODULE(ux, m, pybind11::mod_gil_not_used()) {
          mujoco::python::MjvPerturbWrapper& pert, int action, mjtNum reldx,
          mjtNum reldy) {
         py::gil_scoped_release no_gil;
-        mujoco::platform::MovePerturb(model.get(), data.get(), cam.get(),
+        mujoco::studio::MovePerturb(model.get(), data.get(), cam.get(),
                                       pert.get(), static_cast<mjtMouse>(action),
                                       reldx, reldy);
       },
@@ -479,18 +528,18 @@ PYBIND11_MODULE(ux, m, pybind11::mod_gil_not_used()) {
       py::arg("action"), py::arg("reldx"), py::arg("reldy"),
       "Moves mouse perturbation.");
 
-  py::class_<mujoco::platform::PickResult>(m, "PickResult")
-      .def_readwrite("dist", &mujoco::platform::PickResult::dist)
-      .def_readwrite("body", &mujoco::platform::PickResult::body)
-      .def_readwrite("geom", &mujoco::platform::PickResult::geom)
-      .def_readwrite("flex", &mujoco::platform::PickResult::flex)
-      .def_readwrite("skin", &mujoco::platform::PickResult::skin)
+  py::class_<mujoco::studio::PickResult>(m, "PickResult")
+      .def_readwrite("dist", &mujoco::studio::PickResult::dist)
+      .def_readwrite("body", &mujoco::studio::PickResult::body)
+      .def_readwrite("geom", &mujoco::studio::PickResult::geom)
+      .def_readwrite("flex", &mujoco::studio::PickResult::flex)
+      .def_readwrite("skin", &mujoco::studio::PickResult::skin)
       .def_property(
           "point",
-          [](const mujoco::platform::PickResult& res) {
+          [](const mujoco::studio::PickResult& res) {
             return py::make_tuple(res.point[0], res.point[1], res.point[2]);
           },
-          [](mujoco::platform::PickResult& res, const py::tuple& t) {
+          [](mujoco::studio::PickResult& res, const py::tuple& t) {
             res.point[0] = t[0].cast<mjtNum>();
             res.point[1] = t[1].cast<mjtNum>();
             res.point[2] = t[2].cast<mjtNum>();
@@ -503,7 +552,7 @@ PYBIND11_MODULE(ux, m, pybind11::mod_gil_not_used()) {
          const mujoco::python::MjvCameraWrapper& cam, float x, float y,
          float aspect_ratio, const mujoco::python::MjvOptionWrapper& opt) {
         py::gil_scoped_release no_gil;
-        return mujoco::platform::Pick(model.get(), data.get(), cam.get(), x, y,
+        return mujoco::studio::Pick(model.get(), data.get(), cam.get(), x, y,
                                       aspect_ratio, opt.get());
       },
       py::arg("model"), py::arg("data"), py::arg("cam"), py::arg("x"),
@@ -515,7 +564,7 @@ PYBIND11_MODULE(ux, m, pybind11::mod_gil_not_used()) {
       [](const mujoco::python::MjDataWrapper& data,
          const mujoco::python::MjvCameraWrapper& camera) {
         py::gil_scoped_release no_gil;
-        return mujoco::platform::CameraToString(data.get(), camera.get());
+        return mujoco::studio::CameraToString(data.get(), camera.get());
       },
       py::arg("data"), py::arg("camera"),
       "Returns an XML string representation of the camera.");

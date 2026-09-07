@@ -16,8 +16,7 @@
 from typing import Any
 
 from mujoco.experimental.studio import endpoints
-from mujoco.experimental.studio import launch_base
-from mujoco.experimental.studio import native_viewer
+from mujoco.experimental.studio import launch_thread
 from mujoco.experimental.studio import viewer_handle
 from mujoco.experimental.studio import viewer_protocol
 
@@ -34,6 +33,7 @@ def run_native_viewer(
     endpoint: Endpoint for communicating with the simulation side.
     plugins: Optional list of viewer-side plugin instances.
   """
+  from mujoco.experimental.studio import native_viewer  # pylint: disable=g-import-not-at-top
   viewer = native_viewer.NativeViewer(config, endpoint, plugins=plugins)
   viewer_protocol.run_viewer_loop(viewer)
 
@@ -60,4 +60,4 @@ def launch_native(
   def target(endpoint: endpoints.ViewerEndpoint) -> None:
     run_native_viewer(config, endpoint, plugins=viewer_plugins)
 
-  return launch_base.launch_in_thread(target, sim_plugins=sim_plugins)
+  return launch_thread.launch_thread(target, sim_plugins=sim_plugins)

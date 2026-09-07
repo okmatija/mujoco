@@ -170,6 +170,7 @@ enum integrator : mjtIntegrator {
   RK4            = mjINT_RK4
   implicit       = mjINT_IMPLICIT
   implicitfast   = mjINT_IMPLICITFAST
+  discrete       = mjINT_DISCRETE
 }
 
 enum cone : mjtCone {
@@ -460,7 +461,7 @@ group actuator_dynamics {
 
 group transmission {
   joint              : ref<joint> (nodefault)
-  jointinparent      : string (nodefault)
+  jointinparent      : ref<joint> (nodefault)
   tendon             : ref<tendon> (nodefault)
   slidersite         : ref<site> (nodefault)
   cranksite          : ref<site> (nodefault)
@@ -1641,7 +1642,7 @@ element muscle : mjsActuator {
   forcerange         : double[2]
   use actuator_dynamics
   joint              : ref<joint> (nodefault)
-  jointinparent      : string (nodefault)
+  jointinparent      : ref<joint> (nodefault)
   tendon             : ref<tendon> (nodefault)
   slidersite         : ref<site> (nodefault)
   cranksite          : ref<site> (nodefault)
@@ -1693,7 +1694,7 @@ element actuator_plugin : mjsActuator (xml=plugin) {
   actrange           : double[2]
   use actuator_dynamics
   joint              : ref<joint>
-  jointinparent      : string
+  jointinparent      : ref<joint>
   site               : ref<site>
   actdim             : int = -1
   dyntype            : enum<dyn> = none
@@ -2115,6 +2116,7 @@ element tactile : mjsSensor {
   interp             : enum<interp>
   delay              : double
   interval           : double[1..2]
+  cutoff             : double
   user               : double[]
 }
 
@@ -2156,12 +2158,12 @@ element custom {
 element numeric : mjsNumeric {
   name               : id<numeric> (required)
   size               : int
-  data               : string
+  data               : double[]
 }
 
 element text : mjsText {
   name               : id<text> (required)
-  data               : string (required)
+  data               : string
 }
 
 element tuple : mjsTuple {

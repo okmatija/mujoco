@@ -30,7 +30,7 @@
 #include <vector>
 
 #include <mujoco/mujoco.h>
-#include "experimental/platform/hal/graphics_mode.h"
+#include "experimental/studio/hal/graphics_mode.h"
 #include "experimental/studio/app.h"
 
 // Global app instance. Lifetime is controlled by Init/Deinit calls which are
@@ -393,9 +393,9 @@ void Init(const std::string& title, bool dark_theme) {
   config.width = width;
   config.height = height;
   config.ini_path = ini_path;
-  config.gfx_mode = mujoco::platform::GraphicsMode::FilamentWebGl;
-  config.initial_theme = dark_theme ? mujoco::platform::GuiTheme::kDark
-                                    : mujoco::platform::GuiTheme::kLight;
+  config.gfx_mode = mujoco::studio::GraphicsMode::FilamentWebGl;
+  config.initial_theme = dark_theme ? mujoco::studio::GuiTheme::kDark
+                                    : mujoco::studio::GuiTheme::kLight;
   if (!title.empty()) {
     config.title = title;
   }

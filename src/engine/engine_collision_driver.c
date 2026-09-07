@@ -106,9 +106,8 @@ int mj_maxContact(const mjModel* m, int g1, int g2, int has_margin) {
         return 2;
       case mjGEOM_CYLINDER:
       case mjGEOM_BOX:
-        return 4;
       case mjGEOM_MESH:
-        return 3;
+        return 4;
       default:
         return 0;
     }
@@ -119,8 +118,7 @@ int mj_maxContact(const mjModel* m, int g1, int g2, int has_margin) {
     return 1;
   }
 
-  if (type1 == mjGEOM_CAPSULE || type2 == mjGEOM_CAPSULE ||
-      type1 == mjGEOM_CYLINDER || type2 == mjGEOM_CYLINDER) {
+  if (type1 == mjGEOM_CAPSULE || type2 == mjGEOM_CAPSULE) {
     return 5;
   }
 
@@ -152,7 +150,7 @@ int mj_maxContact(const mjModel* m, int g1, int g2, int has_margin) {
     }
   }
 
-  // 4 contacts for mesh-mesh or mesh-box without margins, 5 with margins
+  // 4 contacts for box, cylinder, and mesh collisions without margins, 5 with margins
   return has_margin ? 5 : 4;
 }
 
@@ -519,7 +517,7 @@ static void filterFlexContacts(mjData* d, int ncon_before) {
 static void pushPairArena(mjData* d, mjcPair* pair) {
   // allocate geom pair on the arena
   mjcPair* new_pair = (mjcPair*) mj_arenaAllocByte(d, sizeof(mjcPair), _Alignof(mjcPair));
-  if (!pair) {
+  if (!new_pair) {
     mjERROR("arena too small to allocate geom pair");
   }
   *new_pair = *pair;

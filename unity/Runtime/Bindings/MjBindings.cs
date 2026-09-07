@@ -36,8 +36,6 @@ public const bool MJAPI = true;
 public const bool MJLOCAL = true;
 public const bool THIRD_PARTY_MUJOCO_MJMACRO_H_ = true;
 public const bool THIRD_PARTY_MUJOCO_MJMODEL_H_ = true;
-public const double mjPI = 3.141592653589793;
-public const double mjMAXVAL = 10000000000.0;
 public const double mjMINMU = 1e-05;
 public const double mjMINIMP = 0.0001;
 public const double mjMAXIMP = 0.9999;
@@ -71,6 +69,8 @@ public const bool THIRD_PARTY_MUJOCO_INCLUDE_MJSPEC_H_ = true;
 public const bool THIRD_PARTY_MUJOCO_MJSPECMACRO_H_ = true;
 public const bool THIRD_PARTY_MUJOCO_INCLUDE_MJTYPE_H_ = true;
 public const double mjMINVAL = 1e-15;
+public const double mjMAXVAL = 10000000000.0;
+public const double mjPI = 3.141592653589793;
 public const bool THIRD_PARTY_MUJOCO_MJUI_H_ = true;
 public const int mjMAXUISECT = 10;
 public const int mjMAXUIITEM = 200;
@@ -227,6 +227,7 @@ public enum mjtIntegrator : int{
   mjINT_RK4 = 1,
   mjINT_IMPLICIT = 2,
   mjINT_IMPLICITFAST = 3,
+  mjINT_DISCRETE = 4,
 }
 public enum mjtCone : int{
   mjCONE_PYRAMIDAL = 0,
@@ -5732,6 +5733,9 @@ public unsafe struct mjData_ {
   public int nJ;
   public int efm_active;
   public int nefmK;
+  public int nefmcon;
+  public int nefmT;
+  public int nefmA;
   public int nefmdof;
   public int nefmL;
   public int nY;
@@ -5895,11 +5899,24 @@ public unsafe struct mjData_ {
   public double* efc_vel;
   public double* efc_aref;
   public double* efm_c;
+  public double* efm_diag;
+  public double* efm_ck;
+  public double* efm_sdiag;
+  public double* efm_fluid;
+  public int* efm_tid;
+  public double* efm_ts;
+  public double* efm_tk;
+  public int* efm_aid;
+  public double* efm_as;
+  public double* efm_ak;
+  public double* efm_ca;
   public int* efm_K_rownnz;
   public int* efm_K_rowadr;
   public int* efm_K_colind;
   public double* efm_K_val;
   public int* efm_dofid;
+  public int* efm_con_ind;
+  public double* efm_con_val;
   public double* efm_L;
   public double* efc_b;
   public double* iefc_aref;

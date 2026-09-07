@@ -37,22 +37,22 @@
 #include "user/user_api.h"
 
 #ifdef MUJOCO_TINYOBJLOADER_IMPL
-#define TINYOBJLOADER_IMPLEMENTATION
+  #define TINYOBJLOADER_IMPLEMENTATION
 #endif
 
 #if defined(__clang__)
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wgnu-anonymous-struct"
-#pragma clang diagnostic ignored "-Wnested-anon-types"
+  #pragma clang diagnostic push
+  #pragma clang diagnostic ignored "-Wgnu-anonymous-struct"
+  #pragma clang diagnostic ignored "-Wnested-anon-types"
 #elif defined(__GNUC__)
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wpedantic"
+  #pragma GCC diagnostic push
+  #pragma GCC diagnostic ignored "-Wpedantic"
 #endif
 #include <MC.h>
 #if defined(__clang__)
-#pragma clang diagnostic pop
+  #pragma clang diagnostic pop
 #elif defined(__GNUC__)
-#pragma GCC diagnostic pop
+  #pragma GCC diagnostic pop
 #endif
 
 #include <mujoco/mjmacro.h>
@@ -3118,11 +3118,11 @@ void mjCSkin::LoadSKN(mjResource* resource) {
   }
 
   // make sure we have data for vert, texcoord, face, and bone headers
-  if ((int64_t)buffer_sz <
-      16LL + 3LL * nvert * sizeof(decltype(vert_)::value_type) +
-             2LL * ntexcoord * sizeof(decltype(texcoord_)::value_type) +
-             3LL * nface * sizeof(decltype(face_)::value_type) +
-             18LL * nbone * sizeof(decltype(face_)::value_type)) {
+  if ((int64_t)buffer_sz < 16LL +
+                               3LL * nvert * sizeof(decltype(vert_)::value_type) +
+                               2LL * ntexcoord * sizeof(decltype(texcoord_)::value_type) +
+                               3LL * nface * sizeof(decltype(face_)::value_type) +
+                               18LL * nbone * sizeof(decltype(face_)::value_type)) {
     throw mjCError(this, "insufficient data in SKN file '%s'", resource->name);
   }
 
@@ -3184,7 +3184,7 @@ void mjCSkin::LoadSKN(mjResource* resource) {
     // read vertex count
     int vcount = 0;
     ReadFromBuffer(&vcount, reinterpret_cast<const char*>(pdata + cnt));
-    cnt        += 1;
+    cnt += 1;
 
     // check for negative
     if (vcount < 1) {
@@ -3202,12 +3202,16 @@ void mjCSkin::LoadSKN(mjResource* resource) {
 
     // read vertid
     vertid_[i].resize(vcount);
-    memcpy(vertid_[i].data(), (int*)(pdata + cnt), vcount * sizeof(decltype(vertid_)::value_type::value_type));
+    memcpy(vertid_[i].data(),
+           (int*)(pdata + cnt),
+           vcount * sizeof(decltype(vertid_)::value_type::value_type));
     cnt += vcount;
 
     // read vertweight
     vertweight_[i].resize(vcount);
-    memcpy(vertweight_[i].data(), (float*)(pdata + cnt), vcount * sizeof(decltype(vertweight_)::value_type::value_type));
+    memcpy(vertweight_[i].data(),
+           (float*)(pdata + cnt),
+           vcount * sizeof(decltype(vertweight_)::value_type::value_type));
     cnt += vcount;
   }
 
@@ -4835,8 +4839,8 @@ void mjCFlex::Compile(const mjVFS* vfs) {
 
     // determine element type: 2D boundary quads (shell) or 3D cells (volume)
     bool shell_mode = elastic2d != 0;
-    int  npe;                             // nodes per element
-    int  nelem_fe;                        // total finite elements
+    int  npe;       // nodes per element
+    int  nelem_fe;  // total finite elements
 
     if (shell_mode) {
       npe      = pow(spec.order + 1, 2);  // (order+1)^2 for 2D quads
@@ -5321,7 +5325,7 @@ void mjCFlex::CreateShellPair(void) {
       nelem * (dim + 1));  // [sorted frag vertices, elem, original frag vertices]
   std::vector<std::vector<int>> connectspec;  // [elem1, elem2, common sorted frag vertices]
 
-  std::vector<bool> border(nelem, false);     // is element on the border
+  std::vector<bool> border(nelem, false);                  // is element on the border
   std::vector<bool> borderfrag(nelem * (dim + 1), false);  // is fragment on the border
 
   // make fragspec
@@ -5465,7 +5469,7 @@ void mjCFlex::CreateShellPair(void) {
     elemlayer = std::vector<int>(nelem, nelem + 1);  // init with greater than max value
     for (int e = 0; e < nelem; e++) {
       if (border[e]) {
-        elemlayer[e] = 0;                            // set border elements to 0
+        elemlayer[e] = 0;  // set border elements to 0
       }
     }
 
@@ -5475,7 +5479,7 @@ void mjCFlex::CreateShellPair(void) {
 
       // process edges of element connectivity graph
       for (const auto& connect : connectspec) {
-        int e1 = connect[0];                  // get element pair for this edge
+        int e1 = connect[0];  // get element pair for this edge
         int e2 = connect[1];
         if (elemlayer[e1] > elemlayer[e2] + 1) {
           elemlayer[e1] = elemlayer[e2] + 1;  // better value found for e1: update

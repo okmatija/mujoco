@@ -1995,24 +1995,43 @@ void mj_factorM(const mjModel* m, mjData* d) {
   }
 
   // factorize
-  mj_factorI(d->qLD, d->qLDiagInv, nv, m->M_rownnz, m->M_rowadr, m->M_colind, index);
+  int clamped = mj_factorI(d->qLD, d->qLDiagInv, nv, m->M_rownnz, m->M_rowadr, m->M_colind,
+                           index);
+
+  // near-singular inertia: a pivot was clamped
+  if (clamped >= 0) {
+    mj_warning(d, mjWARN_INERTIA, clamped);
+  }
 
   TM_ADD(mjTIMER_POS_INERTIA);
 }
 
 
-// sparse L'*D*L factorizaton of inertia-like matrix M, assumed spd (with dof skipping)
-void mj_factorI(mjtNum* mat, mjtNum* diaginv, int nv,
-                const int* rownnz, const int* rowadr, const int* colind,
-                const int* index) {
+// sparse L'*D*L factorizaton of inertia-like matrix M, assumed spd (with dof skipping);
+// clamp non-positive pivots up to mjMINVAL, return first clamped dof index or -1 if none
+int mj_factorI(mjtNum* mat, mjtNum* diaginv, int nv,
+               const int* rownnz, const int* rowadr, const int* colind,
+               const int* index) {
+  int clamped = -1;
+
   // backward loop over rows
   for (int j=nv-1; j >= 0; j--) {
     int k = index ? index[j] : j;
 
-    // get row k's address, diagonal index, inverse diagonal value
+    // get row k's address, diagonal index
     int start = rowadr[k];
     int diag = rownnz[k] - 1;
     int end = start + diag;
+
+    // clamp small or non-positive pivot from below, save first clamped dof
+    if (mat[end] < mjMINVAL) {
+      mat[end] = mjMINVAL;
+      if (clamped < 0) {
+        clamped = k;
+      }
+    }
+
+    // inverse diagonal value
     mjtNum invD = 1 / mat[end];
     if (diaginv) diaginv[k] = invD;
 
@@ -2026,6 +2045,8 @@ void mj_factorI(mjtNum* mat, mjtNum* diaginv, int nv,
     // update row k:  L(k, :) /= L(k, k)
     mju_scl(mat + start, mat + start, invD, diag);
   }
+
+  return clamped;
 }
 
 
@@ -2129,14 +2150,16 @@ void mj_solveM(const mjModel* m, mjData* d, mjtNum* x, const mjtNum* y, int n) {
 // half of sparse backsubstitution:  x = sqrt(inv(D))*inv(L')*y
 void mj_solveM2(const mjModel* m, mjData* d, mjtNum* x, const mjtNum* y,
                 const mjtNum* sqrtInvD, int n) {
-  int nv = m->nv;
+  mj_solveM2_impl(x, y, sqrtInvD, d->qLD, m->nv, n,
+                  m->M_rownnz, m->M_rowadr, m->M_colind, m->dof_simplenum);
+}
 
-  // local copies of key variables
-  const int* rownnz = m->M_rownnz;
-  const int* rowadr = m->M_rowadr;
-  const int* colind = m->M_colind;
-  const int* diagnum = m->dof_simplenum;
-  const mjtNum* qLD = d->qLD;
+
+// implementation of mj_solveM2: backsubstitute against a caller-selected factor (qLD or qH)
+void mj_solveM2_impl(mjtNum* x, const mjtNum* y, const mjtNum* sqrtInvD, const mjtNum* factor,
+                     int nv, int n, const int* rownnz, const int* rowadr, const int* colind,
+                     const int* diagnum) {
+  const mjtNum* qLD = factor;
 
   // x = y
   mju_copy(x, y, n * nv);

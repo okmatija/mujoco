@@ -966,7 +966,6 @@ TEST_F(ElasticityTest, InterpBendingRigidRotationInvariance) {
   }
 }
 
-
 // verify that a pinned vertex (on a static body) gets zero bending force
 // while its free neighbors get nonzero bending force
 TEST_F(ElasticityTest, PinnedVertexBendingForce) {
@@ -1015,7 +1014,7 @@ TEST_F(ElasticityTest, PinnedVertexBendingForce) {
 TEST_F(ElasticityTest, TrilinearParentBodyRotation) {
   static constexpr char rotated_xml[] = R"(
   <mujoco>
-    <option gravity="0 0 0" integrator="implicitfast"
+    <option gravity="0 0 0" integrator="discrete"
             timestep="0.0005" solver="CG"/>
     <worldbody>
       <body name="base" pos="0 0 0" quat="0.7071 0 0.7071 0">
@@ -1030,7 +1029,7 @@ TEST_F(ElasticityTest, TrilinearParentBodyRotation) {
   )";
   static constexpr char nonrotated_xml[] = R"(
   <mujoco>
-    <option gravity="0 0 0" integrator="implicitfast"
+    <option gravity="0 0 0" integrator="discrete"
             timestep="0.0005" solver="CG"/>
     <worldbody>
       <body name="base" pos="0 0 0">
@@ -1062,7 +1061,8 @@ TEST_F(ElasticityTest, TrilinearParentBodyRotation) {
   mj_forward(m_rot.get(), d_rot.get());
   mj_forward(m_non.get(), d_non.get());
 
-  // check force sign on the displaced DOF: positive qpos -> negative qfrc (restoring)
+  // check force sign on the displaced DOF: positive qpos -> negative qfrc
+  // (restoring)
   EXPECT_LT(d_rot->qfrc_passive[0], 0)
       << "rotated model: expected restoring force on displaced DOF 0";
   EXPECT_LT(d_non->qfrc_passive[0], 0)
@@ -1093,7 +1093,6 @@ TEST_F(ElasticityTest, TrilinearParentBodyRotation) {
   EXPECT_LT(max_qacc, 1e4);
 }
 
-
 // A dim=2 flexcomp with bending elasticity inside a parent body with a
 // non-identity quaternion. The implicit metric assembles the bending
 // stiffness from world-space vertex positions, but the vertex bodies' slide
@@ -1104,7 +1103,7 @@ TEST_F(ElasticityTest, TrilinearParentBodyRotation) {
 TEST_F(ElasticityTest, BendParentBodyRotation) {
   static constexpr char rotated_xml[] = R"(
   <mujoco>
-    <option gravity="0 0 0" integrator="implicitfast"
+    <option gravity="0 0 0" integrator="discrete"
             timestep="0.001" solver="CG"/>
     <worldbody>
       <body name="base" pos="0 0 0" quat="0.7071 0.7071 0 0">
@@ -1120,7 +1119,7 @@ TEST_F(ElasticityTest, BendParentBodyRotation) {
   )";
   static constexpr char nonrotated_xml[] = R"(
   <mujoco>
-    <option gravity="0 0 0" integrator="implicitfast"
+    <option gravity="0 0 0" integrator="discrete"
             timestep="0.001" solver="CG"/>
     <worldbody>
       <body name="base" pos="0 0 0">
@@ -1191,7 +1190,7 @@ TEST_F(ElasticityTest, BendParentBodyRotation) {
 TEST_F(ElasticityTest, StretchParentBodyRotation) {
   static constexpr char rotated_xml[] = R"(
   <mujoco>
-    <option gravity="0 0 0" integrator="implicitfast"
+    <option gravity="0 0 0" integrator="discrete"
             timestep="0.001" solver="CG"/>
     <worldbody>
       <body name="base" pos="0 0 0" quat="0.7071 0.7071 0 0">
@@ -1207,7 +1206,7 @@ TEST_F(ElasticityTest, StretchParentBodyRotation) {
   )";
   static constexpr char nonrotated_xml[] = R"(
   <mujoco>
-    <option gravity="0 0 0" integrator="implicitfast"
+    <option gravity="0 0 0" integrator="discrete"
             timestep="0.001" solver="CG"/>
     <worldbody>
       <body name="base" pos="0 0 0">
