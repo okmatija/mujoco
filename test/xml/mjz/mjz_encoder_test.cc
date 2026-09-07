@@ -19,13 +19,23 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <filesystem>
+#include <filesystem>  // NOLINT
 #include <string>
 #include <vector>
 
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 #include <absl/strings/match.h>
+
+// Disable unused function warnings for miniz.
+#if defined(__GNUC__) || defined(__clang__)
+  #pragma GCC diagnostic push
+  #pragma GCC diagnostic ignored "-Wunused-function"
+#endif
+#include <miniz.h>
+#if defined(__GNUC__) || defined(__clang__)
+  #pragma GCC diagnostic pop
+#endif
 #include <mujoco/mjmodel.h>
 #include <mujoco/mjplugin.h>
 #include <mujoco/mjspec.h>
@@ -87,6 +97,7 @@ std::vector<std::string> GetWriteReadTestModels() {
             absl::StrContains(xml, "rfcamera") ||
             absl::StrContains(xml, "tactile") ||
             absl::StrContains(xml, "makemesh") ||
+            absl::StrContains(xml, "carousel") ||
             absl::StrContains(xml, "many_dependencies") ||
             absl::StrContains(xml, "usd") ||
             absl::StrContains(xml, "torus_maxhull") ||
@@ -96,12 +107,14 @@ std::vector<std::string> GetWriteReadTestModels() {
             absl::StrContains(xml, "fromto_convex") ||
             absl::StrContains(xml, "cube_skin") ||
             absl::StrContains(xml, "cube_3x3x3") ||
+            // flex_stiffness: stretch amplifies geometry XML rounds on save
+            absl::StrContains(xml, "flex/bag") ||
             // exclude files that fail since we do not save pinned flex nodes
             absl::StrContains(xml, "gripper_trilinear") ||
             absl::StrContains(xml, "strain") ||
             // exclude conflict test assets (designed to fail compile)
             absl::StrContains(xml, "xml/testdata/parent_") ||
-            // exclude mjz testdata with VFS files
+            // exclude mjz test data with VFS files
             absl::StrContains(xml, "mixed_test")) {
           continue;
         }
@@ -135,6 +148,47 @@ TEST_F(MjzEncoderTest, EncodeReturnsPositiveByteCount) {
   EXPECT_GT(nbytes, 0);
   EXPECT_THAT(resource.data, testing::NotNull());
 
+  std::free(resource.data);
+  mj_deleteModel(model);
+  mj_deleteSpec(spec);
+}
+
+TEST_F(MjzEncoderTest, RootFileInArchiveIsNamedModelXml) {
+  mjSpec* spec = MakeSimpleSpec();
+  mjModel* model = mj_compile(spec, nullptr);
+  ASSERT_THAT(model, testing::NotNull());
+
+  const mjpEncoder* enc = mjp_findEncoder("custom_model.mjz", nullptr);
+  ASSERT_THAT(enc, testing::NotNull());
+
+  mjResource resource = {};
+  resource.name = const_cast<char*>("custom_model.mjz");
+
+  int nbytes = enc->encode(spec, model, nullptr, &resource);
+  ASSERT_GT(nbytes, 0);
+  ASSERT_THAT(resource.data, testing::NotNull());
+
+  mz_zip_archive zip;
+  std::memset(&zip, 0, sizeof(zip));
+  ASSERT_TRUE(mz_zip_reader_init_mem(&zip, resource.data, nbytes, 0));
+
+  int file_index = mz_zip_reader_locate_file(&zip, "model.xml", nullptr, 0);
+  EXPECT_GE(file_index, 0) << "Expected 'model.xml' to exist in the archive";
+
+  mz_zip_archive_file_stat stat;
+  ASSERT_TRUE(mz_zip_reader_file_stat(&zip, file_index, &stat));
+  EXPECT_STREQ(stat.m_filename, "model.xml");
+  EXPECT_GT(stat.m_uncomp_size, 0);
+
+  size_t xml_size = 0;
+  char* xml_data = static_cast<char*>(
+      mz_zip_reader_extract_to_heap(&zip, file_index, &xml_size, 0));
+  ASSERT_THAT(xml_data, testing::NotNull());
+  std::string xml_str(xml_data, xml_size);
+  EXPECT_THAT(xml_str, testing::HasSubstr("<mujoco"));
+
+  std::free(xml_data);
+  mz_zip_reader_end(&zip);
   std::free(resource.data);
   mj_deleteModel(model);
   mj_deleteSpec(spec);

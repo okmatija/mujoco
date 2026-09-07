@@ -15,9 +15,9 @@
 #include <mujoco/mjrfilament.h>
 
 #include <array>
-#include <cstdint>
 #include <cstring>
 
+#include <filament/Engine.h>
 #include <math/mat3.h>
 #include <math/vec3.h>
 #include <mujoco/mjmodel.h>
@@ -37,6 +37,17 @@ static void setf(float (&arr)[N], const std::array<float, N>& values) {
   }
 }
 
+static const char* BackendName(filament::Engine::Backend backend) {
+  switch (backend) {
+    case filament::Engine::Backend::OPENGL:
+      return "opengl";
+    case filament::Engine::Backend::VULKAN:
+      return "vulkan";
+    default:
+      return "unknown";
+  }
+}
+
 extern "C" {
 
 void mjrf_defaultContextConfig(mjrfContextConfig* config) {
@@ -49,6 +60,10 @@ void mjrf_defaultTextureData(mjrfTextureData* data) {
 
 void mjrf_defaultTextureConfig(mjrfTextureConfig* config) {
   memset(config, 0, sizeof(mjrfTextureConfig));
+}
+
+void mjrf_defaultMeshConfig(mjrfMeshConfig* config) {
+  memset(config, 0, sizeof(mjrfMeshConfig));
 }
 
 void mjrf_defaultMeshData(mjrfMeshData* data) {
@@ -70,6 +85,7 @@ void mjrf_defaultLightParams(mjrfLightParams* params) {
   params->cast_shadows = true;
   params->range = 10.0f;
   params->spot_cone_angle = 180.f;
+  params->spot_softness = 0.0f;
   params->bulb_radius = 0.0f;
   params->shadow_map_size = 2048;
   params->vsm_blur_width = 0.0f;
@@ -124,6 +140,12 @@ void mjrf_destroyContext(mjrfContext* ctx) {
   delete mujoco::FilamentContext::downcast(ctx);
 }
 
+void mjrf_getRendererInfo(mjrfContext* ctx, mjrRendererInfo* info) {
+  memset(info, 0, sizeof(mjrRendererInfo));
+  info->renderer = "filament";
+  info->backend = ctx ? BackendName(mujoco::FilamentContext::downcast(ctx)->GetBackend()) : "";
+}
+
 mjrfTexture* mjrf_createTexture(mjrfContext* ctx,
                                 const mjrfTextureConfig* config) {
   return new mujoco::Texture(
@@ -134,9 +156,9 @@ void mjrf_destroyTexture(mjrfTexture* texture) {
   delete mujoco::Texture::downcast(texture);
 }
 
-mjrfMesh* mjrf_createMesh(mjrfContext* ctx, const mjrfMeshData* data) {
+mjrfMesh* mjrf_createMesh(mjrfContext* ctx, const mjrfMeshConfig* config) {
   return new mujoco::Mesh(mujoco::FilamentContext::downcast(ctx)->GetEngine(),
-                          *data);
+                          *config);
 }
 
 void mjrf_destroyMesh(mjrfMesh* mesh) { delete mujoco::Mesh::downcast(mesh); }
@@ -185,6 +207,10 @@ void mjrf_setTextureData(mjrfTexture* texture, const mjrfTextureData* data) {
   mujoco::Texture::downcast(texture)->Upload(*data);
 }
 
+void mjrf_setMeshData(mjrfMesh* mesh, const mjrfMeshData* data) {
+  mujoco::Mesh::downcast(mesh)->Upload(*data);
+}
+
 int mjrf_getTextureWidth(const mjrfTexture* texture) {
   return mujoco::Texture::downcast(texture)->GetWidth();
 }
@@ -207,6 +233,10 @@ void mjrf_setLightEnabled(mjrfLight* light, mjtBool enabled) {
 
 void mjrf_setLightIntensity(mjrfLight* light, float intensity) {
   mujoco::Light::downcast(light)->SetIntensity(intensity);
+}
+
+void mjrf_setLightShadowMapSize(mjrfLight* light, int map_size) {
+  mujoco::Light::downcast(light)->SetShadowMapSize(map_size);
 }
 
 void mjrf_setLightColor(mjrfLight* light, const float color[3]) {

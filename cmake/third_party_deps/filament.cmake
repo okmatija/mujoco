@@ -13,7 +13,7 @@
 # limitations under the License.
 
 set(MUJOCO_DEP_VERSION_filament
-    da22932b543b59810caf490d7f9e8859ec3fe204
+    3bcc2a252bfefc31353f6097bb9bc238032571e0
     CACHE STRING "Tag/version of `filament` to be fetched."
 )
 mark_as_advanced(MUJOCO_DEP_VERSION_filament)
@@ -40,6 +40,7 @@ endif()
 
 set(FILAMENT_ENABLE_EXPERIMENTAL_GCC_SUPPORT ON)
 set(FILAMENT_SKIP_SDL2 ON)
+set(FILAMENT_SKIP_SAMPLES ON)
 set(FILAMENT_USE_EXTERNAL_ABSL ON)
 set(FILAMENT_USE_EXTERNAL_BENCHMARK ON)
 set(FILAMENT_USE_EXTERNAL_GTEST ON)
@@ -49,8 +50,20 @@ if(WIN32)
 endif()
 
 set(FILAMENT_PATCH_COMMAND
-  git apply --reject --whitespace=fix ${mujoco_SOURCE_DIR}/cmake/filament-allow-clang-windows.patch
+  git --git-dir=. -c core.autocrlf=false -c core.whitespace=cr-at-eol apply --verbose --whitespace=fix --ignore-space-change ${mujoco_SOURCE_DIR}/cmake/filament-allow-clang-windows.patch
 )
+
+# MuJoCo fetches Abseil before Filament is configured. Filament's
+# FILAMENT_USE_EXTERNAL_ABSL path calls find_package(absl), which can otherwise
+# discover an unrelated package-manager Abseil config and collide with the
+# targets already created by MuJoCo's fetched Abseil.
+if(DEFINED CMAKE_DISABLE_FIND_PACKAGE_absl)
+    set(MUJOCO_CMAKE_DISABLE_FIND_PACKAGE_ABSL_WAS_DEFINED TRUE)
+    set(MUJOCO_CMAKE_DISABLE_FIND_PACKAGE_ABSL_OLD "${CMAKE_DISABLE_FIND_PACKAGE_absl}")
+else()
+    set(MUJOCO_CMAKE_DISABLE_FIND_PACKAGE_ABSL_WAS_DEFINED FALSE)
+endif()
+set(CMAKE_DISABLE_FIND_PACKAGE_absl TRUE)
 
 fetchpackage(
     PACKAGE_NAME  filament
@@ -58,6 +71,14 @@ fetchpackage(
     GIT_TAG       ${MUJOCO_DEP_VERSION_filament}
     PATCH_COMMAND ${FILAMENT_PATCH_COMMAND}
 )
+
+if(MUJOCO_CMAKE_DISABLE_FIND_PACKAGE_ABSL_WAS_DEFINED)
+    set(CMAKE_DISABLE_FIND_PACKAGE_absl "${MUJOCO_CMAKE_DISABLE_FIND_PACKAGE_ABSL_OLD}")
+else()
+    unset(CMAKE_DISABLE_FIND_PACKAGE_absl)
+endif()
+unset(MUJOCO_CMAKE_DISABLE_FIND_PACKAGE_ABSL_WAS_DEFINED)
+unset(MUJOCO_CMAKE_DISABLE_FIND_PACKAGE_ABSL_OLD)
 
 set(BUILD_SHARED_LIBS ${BUILD_SHARED_LIBS_OLD})
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS_OLD}")

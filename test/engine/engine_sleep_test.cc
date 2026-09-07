@@ -242,7 +242,7 @@ TEST_F(SleepTest, WakingUnaffectedBySleeping) {
   for (mjtJacobian jacobian : {mjJAC_DENSE, mjJAC_SPARSE}) {
     m->opt.jacobian = jacobian;
     for (mjtIntegrator integrator :  // TODO: b/457674312 - Add support for RK4.
-         {mjINT_EULER, mjINT_IMPLICITFAST, mjINT_IMPLICIT}) {
+         {mjINT_EULER, mjINT_IMPLICITFAST, mjINT_IMPLICIT, mjINT_DISCRETE}) {
       m->opt.integrator = integrator;
 
       // make data with sleeping enabled
@@ -352,7 +352,7 @@ TEST_F(SleepTest, SleepingUnaffectedByWaking) {
 
     // TODO: b/457674312 - Add support for RK4.
     for (mjtIntegrator integrator :
-         {mjINT_EULER, mjINT_IMPLICITFAST, mjINT_IMPLICIT}) {
+         {mjINT_EULER, mjINT_IMPLICITFAST, mjINT_IMPLICIT, mjINT_DISCRETE}) {
       m->opt.integrator = integrator;
 
       // make data with sleeping enabled
@@ -501,10 +501,10 @@ TEST_F(SleepTest, Equality) {
   mj_deleteModel(m);
 }
 
-// Test that the midpoint integrator doesn't break the sleep qvel=0 invariant.
-// A standalone free body (eligible for midpoint) with high viscosity should
+// Test that the free-body implicit (gyroscopic) solve doesn't break the sleep
+// qvel=0 invariant. A standalone free body with high viscosity should
 // eventually go to sleep, and after sleeping, qvel/qacc must be exactly zero.
-TEST_F(SleepTest, MidpointSleepZeroVelocity) {
+TEST_F(SleepTest, FreeBodySleepZeroVelocity) {
   static constexpr char xml[] = R"(
   <mujoco>
     <option integrator="implicitfast" viscosity="10"
@@ -788,6 +788,147 @@ TEST_F(SleepTest, FlexMocapContact) {
 
   mj_deleteData(d);
   mj_deleteModel(m);
+}
+
+// mocap bodies are their own weld root: dragging into a sleeping tree wakes it
+TEST_F(SleepTest, MocapWakes) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <option>
+      <flag sleep="enable"/>
+    </option>
+    <worldbody>
+      <geom type="plane" size="5 5 .1"/>
+      <body name="hand" mocap="true" pos="2 0 .1">
+        <geom type="sphere" size=".1"/>
+        <body name="finger">
+          <geom type="sphere" size=".05" pos=".1 0 0"/>
+        </body>
+      </body>
+      <body name="box" pos="0 0 .1">
+        <freejoint/>
+        <geom type="box" size=".1 .1 .1"/>
+      </body>
+    </worldbody>
+  </mujoco>
+  )";
+  char error[1024];
+  MjModelPtr m = LoadModelFromString(xml, error, sizeof(error));
+  ASSERT_THAT(m.get(), NotNull()) << error;
+
+  // mocap body is its own weld root, static child inherits it,
+  // box is its own (jointed)
+  int hand = mj_name2id(m.get(), mjOBJ_BODY, "hand");
+  int finger = mj_name2id(m.get(), mjOBJ_BODY, "finger");
+  EXPECT_EQ(m->body_weldid[hand], hand);
+  EXPECT_EQ(m->body_weldid[finger], hand);
+
+  // let the box fall asleep
+  MjDataPtr d = MakeData(m);
+  int steps = 0;
+  while (d->ntree_awake > 0 && steps++ < 10000) {
+    mj_step(m.get(), d.get());
+  }
+  ASSERT_EQ(d->ntree_awake, 0);
+
+  // drag the mocap hand into the sleeping box: box wakes
+  d->mocap_pos[0] = 0;
+  mj_step(m.get(), d.get());
+  EXPECT_EQ(d->ntree_awake, 1);
+}
+
+// mocap bodies do not generate contacts with static bodies or each other
+TEST_F(SleepTest, MocapNoStaticContacts) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <worldbody>
+      <geom type="plane" size="5 5 .1"/>
+      <body mocap="true" pos="0 0 .05">
+        <geom type="sphere" size=".1"/>
+      </body>
+      <body mocap="true" pos=".05 0 .05">
+        <geom type="sphere" size=".1"/>
+      </body>
+      <geom type="box" size=".1 .1 .1" pos="-.05 0 .05"/>
+    </worldbody>
+  </mujoco>
+  )";
+  char error[1024];
+  MjModelPtr m = LoadModelFromString(xml, error, sizeof(error));
+  ASSERT_THAT(m.get(), NotNull()) << error;
+  MjDataPtr d = MakeData(m);
+
+  // everything interpenetrates, nothing can move: no contacts
+  mj_forward(m.get(), d.get());
+  EXPECT_EQ(d->ncon, 0);
+}
+
+// a plane on a mocap body collides like a plane on a static body
+TEST_F(SleepTest, MocapPlane) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <worldbody>
+      <body mocap="true">
+        <geom type="plane" size="5 5 .1"/>
+      </body>
+      <body pos="0 0 .5">
+        <freejoint/>
+        <geom type="box" size=".1 .1 .1"/>
+      </body>
+    </worldbody>
+  </mujoco>
+  )";
+  char error[1024];
+  MjModelPtr m = LoadModelFromString(xml, error, sizeof(error));
+  ASSERT_THAT(m.get(), NotNull()) << error;
+  MjDataPtr d = MakeData(m);
+
+  // box falls onto the mocap plane and rests on it
+  while (d->time < 2) {
+    mj_step(m.get(), d.get());
+  }
+  EXPECT_GT(d->ncon, 0);
+  EXPECT_NEAR(d->qpos[2], 0.1, 1e-3);
+}
+
+// a tree welded by equality to a mocap body is woken when asleep
+TEST_F(SleepTest, MocapWeldEqualityWakes) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <option>
+      <flag sleep="enable"/>
+    </option>
+    <worldbody>
+      <geom type="plane" size="5 5 .1"/>
+      <body name="target" mocap="true" pos="2 0 .5">
+        <geom type="sphere" size=".05" contype="0" conaffinity="0"/>
+      </body>
+      <body name="box" pos="0 0 .1">
+        <freejoint/>
+        <geom type="box" size=".1 .1 .1"/>
+      </body>
+    </worldbody>
+    <equality>
+      <weld name="grab" body1="target" body2="box" active="false"/>
+    </equality>
+  </mujoco>
+  )";
+  char error[1024];
+  MjModelPtr m = LoadModelFromString(xml, error, sizeof(error));
+  ASSERT_THAT(m.get(), NotNull()) << error;
+  MjDataPtr d = MakeData(m);
+
+  // equality inactive: box falls asleep on the floor
+  int steps = 0;
+  while (d->ntree_awake > 0 && steps++ < 10000) {
+    mj_step(m.get(), d.get());
+  }
+  ASSERT_EQ(d->ntree_awake, 0);
+
+  // activate the weld to the mocap body: box wakes
+  d->eq_active[mj_name2id(m.get(), mjOBJ_EQUALITY, "grab")] = 1;
+  mj_step(m.get(), d.get());
+  EXPECT_EQ(d->ntree_awake, 1);
 }
 
 }  // namespace

@@ -715,14 +715,20 @@ Exceptions to the general rule that **real-valued** types **are safe to change**
      - Unsafe for static bodies, invalidates the midphase collision structures (BVH).
    * - ``body_gravcomp``
      - Safe.
-     - If the number of bodies with gravity compensation is changed from zero to non-zero,
-       :ref:`mj_setConst` must be called.
+     - If passing from a state where all bodies have zero gravity compensation to a state where some bodies have
+       non-zero gravity compensation (or vice-versa), the ``flg_gravcomp`` flag in :ref:`mjModel` must be updated.
+       This can be done directly or by calling :ref:`mj_setConst`.
    * - ``dof_armature``
      - Safe with :ref:`mj_setConst`.
      -
    * - ``geom_pos`` |br| ``geom_quat`` |br| ``geom_size`` |br| ``geom_rbound`` |br| ``geom_aabb``
      - Unsafe.
      -
+   * - ``geom_surfacevel``
+     - Safe.
+     - If passing from a state where all geoms have zero surface velocity to a state where some geoms have
+       non-zero surface velocity (or vice-versa), the ``flg_surfacevel`` flag in :ref:`mjModel` must be updated.
+       This can be done directly or by calling :ref:`mj_setConst`.
    * - ``{site,cam,light}_`` |br| ``{pos,quat}``
      - Mostly safe.
      - For cameras and lights with tracking or targeting, :ref:`mj_setConst` is required.
@@ -1105,9 +1111,10 @@ does not need timing, and in that case there is no reason to call timing functio
 One part of the simulation pipeline that needs to be monitored closely is the iterative constraint solver. The
 simplest diagnostic here is ``mjData.solver_niter`` which shows how many iterations the solver took on the last call to
 mj_step or ``mj_forward``. Note that the solver has tolerance parameters for early termination, so this number is
-usually smaller than the maximum number of iterations allowed. The array ``mjData.solver`` contains one
-:ref:`mjSolverStat` data structure per iteration of the constraint solver, with information about the constraint state
-and line search.
+usually smaller than the maximum number of iterations allowed; it can be 0 when a warmstarted solution is already
+certified as converged, in which case no iterations are performed and no statistics are written. The array
+``mjData.solver`` contains one :ref:`mjSolverStat` data structure per iteration of the constraint solver, with
+information about the constraint state and line search.
 
 When the option :at:`fwdinv` is enabled in ``mjModel.opt.enableflags``, the field ``mjData.fwdinv`` is also populated.
 It contains the difference between the forward and inverse dynamics, in terms of generalized forces and constraint
@@ -1293,6 +1300,8 @@ criteria:
 - It comes into contact with an awake tree. Waking due to contact leads to collision detection being run *twice*, but
   only on the timestep when it occurs. This is required in order to detect contacts inside the island and between the
   island and the world, which were skipped in the first run when it was deemed asleep.
+- It comes into contact with a :ref:`mocap body<CMocap>`, or is connected to one by an active equality constraint.
+  Mocap bodies count as awake, since the user can move them at any time.
 - It is connected to an awake tree by an active equality constraint or limited tendon.
 - It is connected by an equality constraint to a sleeping tree in a different island. For this to occur, the equality
   must have been disabled when both trees were put to sleep.

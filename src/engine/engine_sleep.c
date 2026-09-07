@@ -333,8 +333,13 @@ int mj_wakeCollision(const mjModel* m, mjData* d) {
     int tree1 = m->body_treeid[b1];
     int tree2 = m->body_treeid[b2];
 
-    // contact with static body, nothing to do
+    // contact with a dof-less body: wake if it is marked awake (mocap), otherwise nothing to do
     if (tree1 < 0 || tree2 < 0) {
+      int tree = tree1 < 0 ? tree2 : tree1;
+      int b = tree1 < 0 ? b1 : b2;
+      if (tree >= 0 && !d->tree_awake[tree] && d->body_awake[b] == mjS_AWAKE) {
+        nwoke += mj_wakeIsland(d->tree_asleep, ntree, tree, kAwake, "mocap contact with", d->time);
+      }
       continue;
     }
 
@@ -361,7 +366,8 @@ int mj_wakeCollision(const mjModel* m, mjData* d) {
 }
 
 
-// wake sleeping trees with a constrained tendon to a waking tree, return number of woke trees
+// wake sleeping trees with a constrained or metric tendon to a waking tree
+// return number of woke trees
 int mj_wakeTendon(const mjModel* m, mjData* d) {
   int ntendon = m->ntendon, nwoke = 0;
 
@@ -371,19 +377,54 @@ int mj_wakeTendon(const mjModel* m, mjData* d) {
 
   // sweep over tendons, wake trees if required
   for (int i=0; i < ntendon; i++) {
-    if (m->tendon_treenum[i] != 2 || !tendonLimit(m, d->ten_length, i)) {
+    // skip tendons with less than two trees
+    int treenum = m->tendon_treenum[i];
+    if (treenum < 2) {
       continue;
     }
 
-    int tree1 = m->tendon_treeid[2*i];
-    int tree2 = m->tendon_treeid[2*i + 1];
-    int awake1 = d->tree_awake[tree1];
-    int awake2 = d->tree_awake[tree2];
-    if (awake1 != awake2) {
-      int sleeping_tree = awake1 ? tree2 : tree1;
-      int wakeval = awake1 ? d->tree_asleep[tree1] : d->tree_asleep[tree2];
-      nwoke += mj_wakeIsland(d->tree_asleep, m->ntree, sleeping_tree, wakeval,
-                             "tendon constraint", d->time);
+    // skip tendons that are not limited or do not affect the discrete metric
+    int is_limit = (treenum == 2) && tendonLimit(m, d->ten_length, i);
+    int is_metric = mj_isMetric(m) && mj_effTendonPossible(m, i);
+    if (!is_limit && !is_metric) {
+      continue;
+    }
+
+    // two-tree tendon
+    if (treenum == 2) {
+      int tree1 = m->tendon_treeid[2*i];
+      int tree2 = m->tendon_treeid[2*i+1];
+      int awake1 = d->tree_awake[tree1];
+      int awake2 = d->tree_awake[tree2];
+      if (awake1 != awake2) {
+        int sleeping_tree = awake1 ? tree2 : tree1;
+        int wakeval = awake1 ? d->tree_asleep[tree1] : d->tree_asleep[tree2];
+        const char* reason = is_limit ? "tendon constraint" : "tendon metric";
+        nwoke += mj_wakeIsland(d->tree_asleep, m->ntree, sleeping_tree, wakeval, reason, d->time);
+      }
+    }
+
+    // multi-tree tendon (> 2 trees): wake all sleeping trees if any tree is awake
+    else {
+      int any_awake = 0, wakeval = 0;
+      int start = m->ten_J_rowadr[i];
+      int end = start + m->ten_J_rownnz[i];
+      for (int j=start; j < end; j++) {
+        int tree = m->dof_treeid[m->ten_J_colind[j]];
+        if (d->tree_awake[tree]) {
+          any_awake = 1;
+          wakeval = mjMIN(wakeval, d->tree_asleep[tree]);
+        }
+      }
+      if (any_awake) {
+        for (int j=start; j < end; j++) {
+          int tree = m->dof_treeid[m->ten_J_colind[j]];
+          if (d->tree_asleep[tree] >= 0) {
+            nwoke += mj_wakeIsland(d->tree_asleep, m->ntree, tree, wakeval, "tendon metric",
+                                   d->time);
+          }
+        }
+      }
     }
   }
 
@@ -408,22 +449,27 @@ int mj_wakeEquality(const mjModel* m, mjData* d) {
     int id1 = m->eq_obj1id[i];
     int id2 = m->eq_obj2id[i];
     int tree1, tree2;
+    int body1 = -1, body2 = -1;
 
     switch (eqtype) {
     case mjEQ_CONNECT:
     case mjEQ_WELD:
       if (m->eq_objtype[i] == mjOBJ_BODY) {
-        tree1 = m->body_treeid[id1];
-        tree2 = m->body_treeid[id2];
+        body1 = id1;
+        body2 = id2;
       } else {
-        tree1 = m->body_treeid[m->site_bodyid[id1]];
-        tree2 = m->body_treeid[m->site_bodyid[id2]];
+        body1 = m->site_bodyid[id1];
+        body2 = m->site_bodyid[id2];
       }
+      tree1 = m->body_treeid[body1];
+      tree2 = m->body_treeid[body2];
       break;
 
     case mjEQ_JOINT:
-      tree1 = id1 >= 0 ? m->body_treeid[m->jnt_bodyid[id1]] : -1;
-      tree2 = id2 >= 0 ? m->body_treeid[m->jnt_bodyid[id2]] : -1;
+      body1 = id1 >= 0 ? m->jnt_bodyid[id1] : -1;
+      body2 = id2 >= 0 ? m->jnt_bodyid[id2] : -1;
+      tree1 = body1 >= 0 ? m->body_treeid[body1] : -1;
+      tree2 = body2 >= 0 ? m->body_treeid[body2] : -1;
       break;
 
     case mjEQ_TENDON:
@@ -475,9 +521,11 @@ int mj_wakeEquality(const mjModel* m, mjData* d) {
       continue;
     }
 
-    // get sleep state
-    mjtSleepState s1 = tree1 >= 0 ? d->tree_awake[tree1] : mjS_STATIC;
-    mjtSleepState s2 = tree2 >= 0 ? d->tree_awake[tree2] : mjS_STATIC;
+    // get sleep state; dof-less bodies marked awake (mocap) count as awake
+    mjtSleepState s1 = tree1 >= 0 ? (mjtSleepState)d->tree_awake[tree1]
+                                  : (body1 >= 0 ? (mjtSleepState)d->body_awake[body1] : mjS_STATIC);
+    mjtSleepState s2 = tree2 >= 0 ? (mjtSleepState)d->tree_awake[tree2]
+                                  : (body2 >= 0 ? (mjtSleepState)d->body_awake[body2] : mjS_STATIC);
 
     // neither is asleep, nothing to do
     if (s1 != mjS_ASLEEP && s2 != mjS_ASLEEP) {
@@ -675,6 +723,15 @@ static mjtSleepState mj_actuatorSleepState(const mjModel* m, const mjData* d, in
 
   case mjTRN_SITE:
     return mj_sleepState(m, d, mjOBJ_SITE, trnid);
+
+  case mjTRN_SO3:
+    // ball joint target or site + refsite target
+    if (m->actuator_trnid[i*2+1] == -1) {
+      return mj_sleepState(m, d, mjOBJ_JOINT, trnid);
+    }
+    s1 = mj_sleepState(m, d, mjOBJ_SITE, trnid);
+    s2 = mj_sleepState(m, d, mjOBJ_SITE, m->actuator_trnid[i*2+1]);
+    return (s1 == mjS_AWAKE || s2 == mjS_AWAKE) ? mjS_AWAKE : mjS_ASLEEP;
 
   case mjTRN_BODY:
     return mj_sleepState(m, d, mjOBJ_BODY, trnid);

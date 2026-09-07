@@ -30,7 +30,7 @@
 #include "experimental/filament/compat/scene_objects.h"
 #include "render/filament/mjrfilament_cpp.h"
 #include "render/filament/support/filament_util.h"
-#include "render/filament/support/light_manager.h"
+#include "render/filament/support/model_lights.h"
 #include "render/filament/support/model_objects.h"
 
 namespace mujoco {
@@ -51,11 +51,11 @@ SceneBridge::SceneBridge(mjrfContext* ctx, mjrfScene* scene, const mjModel* mode
                                  filament::math::float4(0, 0, 0, 1));
   mjrf_setClearColor(ctx_, &clear_color[0]);
 
-  light_manager_ = std::make_unique<LightManager>(scene_, model_objects_.get());
+  model_lights_ = std::make_unique<ModelLights>(scene_, model_objects_.get());
 }
 
 SceneBridge::~SceneBridge() {
-  light_manager_.reset();
+  model_lights_.reset();
   for (auto& iter : renderables_) {
     mjrf_removeRenderableFromScene(scene_, iter.get());
   }
@@ -99,6 +99,8 @@ mat4 CalculateClipFromWorld(const mjrRect& viewport, const mjrCamera& cam) {
 
 void SceneBridge::Update(const mjrRect& viewport, const mjvScene* scene) {
   const mjModel* model = model_objects_->GetModel();
+
+  model_lights_->Update();
 
   mjtNum hpos[3], hfwd[3];
   float headpos[3], gazedir[3];
@@ -221,7 +223,7 @@ void SceneBridge::Update(const mjrRect& viewport, const mjvScene* scene) {
     const mjvLight& scene_light = scene->lights[i];
     if (scene_light.id < 0 && scene_light.headlight) {
       // The headlight, if it exists, is assigned the id `scene->nlight`.
-      headlight = light_manager_->GetLight(scene->nlight);
+      headlight = model_lights_->GetLight(scene->nlight);
       if (!headlight) {
         continue;
       }
@@ -235,7 +237,7 @@ void SceneBridge::Update(const mjrRect& viewport, const mjvScene* scene) {
       mjrf_setLightColor(headlight, scene_light.diffuse);
       mjrf_setLightTransform(headlight, headpos, gazedir);
       continue;
-    } else if (mjrfLight* light = light_manager_->GetLight(scene_light.id)) {
+    } else if (mjrfLight* light = model_lights_->GetLight(scene_light.id)) {
       mjrf_setLightColor(light, scene_light.diffuse);
       mjrf_setLightTransform(light, scene_light.pos, scene_light.dir);
     } else {

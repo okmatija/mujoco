@@ -193,6 +193,7 @@ _SKIPPED_UTILITY_FUNCTIONS: tuple[str, ...] = (
     "mju_isModifiedResource",
     "mju_openResource",
     "mju_readResource",
+    "mju_writeResource",
     # go/keep-sorted end
 )
 
@@ -217,6 +218,7 @@ SKIPPED_STRUCTS: tuple[str, ...] = (
     "mjUI",
     "mjVFS",
     "mjrContext",
+    "mjrRendererInfo",
     "mjrRect",
     "mjrVertexAttribute",
     "mjuiDef",
@@ -337,6 +339,12 @@ MJDATA_SIZES: tuple[str, ...] = (
     "efc_state",
     "efc_type",
     "efc_vel",
+    "efm_K_colind",
+    "efm_K_val",
+    "efm_con_ind",
+    "efm_con_val",
+    "efm_dofid",
+    "efm_L",
     "iLDiagInv",
     "iM_rowadr",
     "iM_rownnz",

@@ -13,7 +13,7 @@
 # limitations under the License.
 """Simulation-agnostic native viewer for MuJoCo models.
 
-See the documentation for studio_app.py for more details on the architecture
+See the documentation for viewer_app.py for more details on the architecture
 separating the viewer and simulation. See the how_to/ folder for examples of how
 to use these classes.
 """
@@ -27,6 +27,7 @@ from mujoco.experimental.studio import ux
 from mujoco.experimental.studio import viewer_protocol
 
 from mujoco.experimental.dear_imgui import dear_imgui as imgui
+from mujoco.experimental.implot import implot
 
 
 class NativeViewer(viewer_protocol.Viewer):
@@ -39,7 +40,7 @@ class NativeViewer(viewer_protocol.Viewer):
       *,
       model: mujoco.MjModel | None = None,
       model_path: str = '',
-      handlers: list[Any] | None = None,
+      plugins: list[Any] | None = None,
       camera: mujoco.MjvCamera | None = None,
       vis_options: mujoco.MjvOption | None = None,
       perturb: mujoco.MjvPerturb | None = None,
@@ -53,7 +54,7 @@ class NativeViewer(viewer_protocol.Viewer):
       endpoint: The viewer endpoint for communication with the sim side.
       model: Optional initial MjModel. Forwarded to the base Viewer.
       model_path: Optional path to the model file.
-      handlers: Optional list of handler instances.
+      plugins: Optional list of plugin instances.
       camera: Camera parameters. Internal object is created if None.
       vis_options: Visualization options. Internal object is created if None.
       perturb: Perturbation parameters. Internal object is created if None.
@@ -65,7 +66,7 @@ class NativeViewer(viewer_protocol.Viewer):
         endpoint,
         model=model,
         model_path=model_path,
-        handlers=handlers,
+        plugins=plugins,
         camera=camera,
         vis_options=vis_options,
         perturb=perturb,
@@ -85,6 +86,9 @@ class NativeViewer(viewer_protocol.Viewer):
     ctx = self._viewer.GetImGuiContext()
     imgui.SetCurrentContext(ctx)
     ux.set_imgui_context(ctx)
+    ux.set_implot_context(self._viewer.GetImPlotContext())
+    implot.set_imgui_context(ctx)
+    implot.set_implot_context(self._viewer.GetImPlotContext())
 
     # Dispatch lifecycle event so handlers can cache the viewer reference.
     self.dispatch(viewer_protocol.ViewerInitEvent(viewer=self))
@@ -95,11 +99,12 @@ class NativeViewer(viewer_protocol.Viewer):
       self._viewer.InitRenderer(model)
       self._renderer_model_id = id(model)
 
-  def is_running(self) -> bool:
-    """Poll for a new frame; returns ``False`` when the window is closed."""
-    if super().is_running() and not self._viewer.NewFrame():
-      self.close()
-    return super().is_running()
+  def prepare_next_frame(self) -> bool:
+    """Advances to the next frame; returns False when the window is closed."""
+    if not self._viewer.NewFrame():
+      self._is_running = False
+      return False
+    return True
 
   def sync(self) -> None:
     """Render the scene and present it to the window."""
@@ -118,6 +123,19 @@ class NativeViewer(viewer_protocol.Viewer):
   def stop(self) -> None:
     """Stop the viewer."""
     self.close()
+
+  def close(self) -> None:
+    """Close the viewer and explicitly destroy the renderer.
+
+    The C++ Viewer (and its FilamentRenderer) must be destroyed on the same
+    thread that created it, because Filament's FEngine::destroy() asserts
+    thread affinity.  Without this override the pybind11 prevent object would
+    be garbage-collected on the main thread, triggering a SIGABRT.
+    """
+    # Destroy the C++ viewer *before* closing the endpoint so that the
+    # FilamentRenderer destructor runs on the daemon/viewer thread.
+    self._viewer = None  # Release the C++ Viewer pybind11 prevent object.
+    super().close()
 
   def get_drop_file(self) -> str:
     """Returns the path of the file dropped into the window, or empty string."""

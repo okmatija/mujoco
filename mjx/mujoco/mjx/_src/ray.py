@@ -239,7 +239,7 @@ def ray(
     flg_static: bool = True,
     bodyexclude: Sequence[int] | int = -1,
 ) -> Tuple[jax.Array, jax.Array]:
-  """Returns the geom id and distance at which a ray intersects with a geom.
+  """Returns the distance and geom id at which a ray intersects with a geom.
 
   Args:
     m: MJX model
@@ -263,8 +263,8 @@ def ray(
   for bodyid in bodyexclude:
     geom_filter &= (m.geom_bodyid != bodyid)
   if geomgroup:
-    geomgroup = np.array(geomgroup, dtype=bool)
-    geom_filter &= geomgroup[np.clip(m.geom_group, 0, mujoco.mjNGROUP)]
+    geomgroup = np.array(geomgroup, dtype=bool)  # pyrefly: ignore[bad-assignment]
+    geom_filter &= geomgroup[np.clip(m.geom_group, 0, mujoco.mjNGROUP)]  # pyrefly: ignore[bad-index]
 
   # map ray to local geom frames
   geom_pnts = jax.vmap(lambda x, y: x.T @ (pnt - y))(d.geom_xmat, d.geom_xpos)
@@ -281,7 +281,7 @@ def ray(
     args = m.geom_size[id_], geom_pnts[id_], geom_vecs[id_]
 
     if geom_type == GeomType.MESH:
-      dist, id_ = fn(m, id_, *args)
+      dist, id_ = fn(m, id_, *args)  # pyrefly: ignore[bad-argument-count, bad-argument-type]
     else:
       dist = jax.vmap(fn)(*args)
 
@@ -289,7 +289,7 @@ def ray(
     dists, ids = dists + [dist], ids + [id_]
 
   if not ids:
-    return jp.array(-1), jp.array(-1.0)
+    return jp.array(-1.0), jp.array(-1)
 
   dists = jp.concatenate(dists)
   ids = jp.concatenate(ids)
@@ -314,4 +314,4 @@ def ray_geom(
   Returns:
     dist: distance from ray origin to geom surface
   """
-  return _RAY_FUNC[geomtype](size, pnt, vec)
+  return _RAY_FUNC[geomtype](size, pnt, vec)  # pyrefly: ignore[bad-argument-type, bad-return, missing-argument]

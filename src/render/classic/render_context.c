@@ -55,6 +55,29 @@ void mjr_defaultContext(mjrContext* con) {
   memset(con, 0, sizeof(mjrContext));
 }
 
+static int context_count = 0;
+
+static int contextHasResources(const mjrContext* con) {
+  return con->ntexture || con->offColor || con->offDepthStencil || con->offFBO ||
+         con->shadowTex || con->shadowFBO || con->rangePlane || con->rangeMesh ||
+         con->rangeHField || con->rangeBuiltin || con->rangeFont || con->nskin;
+}
+
+// set default mjrRendererInfo
+void mjr_defaultRendererInfo(mjrRendererInfo* info) {
+  memset(info, 0, sizeof(mjrRendererInfo));
+  info->renderer = "classic";
+  info->backend = "";
+}
+
+// get active renderer information
+void mjr_getRendererInfo(mjrRendererInfo* info) {
+  mjr_defaultRendererInfo(info);
+  if (context_count > 0) {
+    info->backend = "opengl";
+  }
+}
+
 
 
 // allocate lists
@@ -94,11 +117,19 @@ static void makePlane(const mjModel* m, mjrContext* con) {
   glBegin(GL_QUADS);
   glNormal3d(0, 0, 1);
   double d = 2.0/m->vis.quality.numquads;
+  double nq = (double)m->vis.quality.numquads;
   for (int x=0; x < m->vis.quality.numquads; x++) {
     for (int y=0; y < m->vis.quality.numquads; y++) {
+      glTexCoord2d((double)x/nq, 1.0 - (double)y/nq);
       glVertex3d(d*(x+0)-1, d*(y+0)-1, 0);
+
+      glTexCoord2d((double)(x+1)/nq, 1.0 - (double)y/nq);
       glVertex3d(d*(x+1)-1, d*(y+0)-1, 0);
+
+      glTexCoord2d((double)(x+1)/nq, 1.0 - (double)(y+1)/nq);
       glVertex3d(d*(x+1)-1, d*(y+1)-1, 0);
+
+      glTexCoord2d((double)x/nq, 1.0 - (double)(y+1)/nq);
       glVertex3d(d*(x+0)-1, d*(y+1)-1, 0);
     }
   }
@@ -175,10 +206,27 @@ static void makePlane(const mjModel* m, mjrContext* con) {
       // make grid
       for (int x=0; x < nn[0]; x++) {
         for (int y=0; y < nn[1]; y++) {
-          glVertex3d(grid[0][x+0], grid[1][y+0], 0);
-          glVertex3d(grid[0][x+1], grid[1][y+0], 0);
-          glVertex3d(grid[0][x+1], grid[1][y+1], 0);
-          glVertex3d(grid[0][x+0], grid[1][y+1], 0);
+          double u0, u1, v0, v1;
+          if (sz[0] > 0) {
+            u0 = (grid[0][x+0] + sz[0]) / (2.0 * sz[0]);
+            u1 = (grid[0][x+1] + sz[0]) / (2.0 * sz[0]);
+          } else {
+            u0 = 0.5 * grid[0][x+0];
+            u1 = 0.5 * grid[0][x+1];
+          }
+
+          if (sz[1] > 0) {
+            v0 = 1.0 - (grid[1][y+0] + sz[1]) / (2.0 * sz[1]);
+            v1 = 1.0 - (grid[1][y+1] + sz[1]) / (2.0 * sz[1]);
+          } else {
+            v0 = -0.5 * grid[1][y+0];
+            v1 = -0.5 * grid[1][y+1];
+          }
+
+          glTexCoord2d(u0, v0); glVertex3d(grid[0][x+0], grid[1][y+0], 0);
+          glTexCoord2d(u1, v0); glVertex3d(grid[0][x+1], grid[1][y+0], 0);
+          glTexCoord2d(u1, v1); glVertex3d(grid[0][x+1], grid[1][y+1], 0);
+          glTexCoord2d(u0, v1); glVertex3d(grid[0][x+0], grid[1][y+1], 0);
         }
       }
 
@@ -529,21 +577,26 @@ static void halfSphere(int sign, int nSlice, int nStack) {
     n3[0] = n3[1] = 0;
     n3[2] = sign;
 
+    float u1 = az1 / (2.0f*mjPI);
+    float v_el1 = (float)(nStack-1) / (float)nStack;
+    float u2 = az2 / (2.0f*mjPI);
+    float u3 = (az1 + az2) / 2.0f / (2.0f*mjPI);
+    float v3_uv = 1.0f;
+
+    if (sign > 0) {
+      v_el1 = 1.0f - v_el1;
+      v3_uv = 1.0f - v3_uv;
+    }
+
     // make triangle
     if (sign > 0) {
-      glNormal3fv(n1);
-      glVertex3fv(v1);
-      glNormal3fv(n2);
-      glVertex3fv(v2);
-      glNormal3fv(n3);
-      glVertex3fv(v3);
+      glTexCoord2f(u1, v_el1); glNormal3fv(n1); glVertex3fv(v1);
+      glTexCoord2f(u2, v_el1); glNormal3fv(n2); glVertex3fv(v2);
+      glTexCoord2f(u3, v3_uv); glNormal3fv(n3); glVertex3fv(v3);
     } else {
-      glNormal3fv(n3);
-      glVertex3fv(v3);
-      glNormal3fv(n2);
-      glVertex3fv(v2);
-      glNormal3fv(n1);
-      glVertex3fv(v1);
+      glTexCoord2f(u3, v3_uv); glNormal3fv(n3); glVertex3fv(v3);
+      glTexCoord2f(u2, v_el1); glNormal3fv(n2); glVertex3fv(v2);
+      glTexCoord2f(u1, v_el1); glNormal3fv(n1); glVertex3fv(v1);
     }
   }
   glEnd();
@@ -553,6 +606,14 @@ static void halfSphere(int sign, int nSlice, int nStack) {
   for (int i=0; i < nStack-1; i++) {
     el1 = (mjPI/2.0f * sign * (i+0)) / (float)nStack;
     el2 = (mjPI/2.0f * sign * (i+1)) / (float)nStack;
+
+    float v_el1 = (float)(i+0) / (float)nStack;
+    float v_el2 = (float)(i+1) / (float)nStack;
+
+    if (sign > 0) {
+      v_el1 = 1.0f - v_el1;
+      v_el2 = 1.0f - v_el2;
+    }
 
     for (int j=0; j < nSlice; j++) {
       az1 = (2.0f*mjPI * (j+0)) / (float)nSlice;
@@ -564,25 +625,20 @@ static void halfSphere(int sign, int nSlice, int nStack) {
       setVertexSphere(v3, n3, az2, el2, sign);
       setVertexSphere(v4, n4, az1, el2, sign);
 
+      float u1 = az1 / (2.0f*mjPI);
+      float u2 = az2 / (2.0f*mjPI);
+
       // make quad
       if (sign > 0) {
-        glNormal3fv(n1);
-        glVertex3fv(v1);
-        glNormal3fv(n2);
-        glVertex3fv(v2);
-        glNormal3fv(n3);
-        glVertex3fv(v3);
-        glNormal3fv(n4);
-        glVertex3fv(v4);
+        glTexCoord2f(u1, v_el1); glNormal3fv(n1); glVertex3fv(v1);
+        glTexCoord2f(u2, v_el1); glNormal3fv(n2); glVertex3fv(v2);
+        glTexCoord2f(u2, v_el2); glNormal3fv(n3); glVertex3fv(v3);
+        glTexCoord2f(u1, v_el2); glNormal3fv(n4); glVertex3fv(v4);
       } else {
-        glNormal3fv(n4);
-        glVertex3fv(v4);
-        glNormal3fv(n3);
-        glVertex3fv(v3);
-        glNormal3fv(n2);
-        glVertex3fv(v2);
-        glNormal3fv(n1);
-        glVertex3fv(v1);
+        glTexCoord2f(u1, v_el2); glNormal3fv(n4); glVertex3fv(v4);
+        glTexCoord2f(u2, v_el2); glNormal3fv(n3); glVertex3fv(v3);
+        glTexCoord2f(u2, v_el1); glNormal3fv(n2); glVertex3fv(v2);
+        glTexCoord2f(u1, v_el1); glNormal3fv(n1); glVertex3fv(v1);
       }
     }
   }
@@ -601,6 +657,9 @@ static void sphere(int nSlice, int nStack) {
   glBegin(GL_TRIANGLES);
   for (int sign=-1; sign <= 1; sign+=2) {
     el1 = (0.5*mjPI * sign * (nStack/2-1)) / (float)(nStack/2);
+    float v_el1 = 0.5f - sign * (float)(nStack/2-1) / (float)nStack;
+    float v3_uv = sign > 0 ? 0.0f : 1.0f;
+
     for (int j=0; j < nSlice; j++) {
       az1 = (2.0f*mjPI * (j+0.0f)) / (float)nSlice;
       az2 = (2.0f*mjPI * (j+1.0f)) / (float)nSlice;
@@ -613,21 +672,19 @@ static void sphere(int nSlice, int nStack) {
       n3[0] = n3[1] = 0;
       n3[2] = sign;
 
+      float u1 = az1 / (2.0f*mjPI);
+      float u2 = az2 / (2.0f*mjPI);
+      float u3 = (az1 + az2) / 2.0f / (2.0f*mjPI);
+
       // make triangle
       if (sign > 0) {
-        glNormal3fv(n1);
-        glVertex3fv(v1);
-        glNormal3fv(n2);
-        glVertex3fv(v2);
-        glNormal3fv(n3);
-        glVertex3fv(v3);
+        glTexCoord2f(u1, v_el1); glNormal3fv(n1); glVertex3fv(v1);
+        glTexCoord2f(u2, v_el1); glNormal3fv(n2); glVertex3fv(v2);
+        glTexCoord2f(u3, v3_uv); glNormal3fv(n3); glVertex3fv(v3);
       } else {
-        glNormal3fv(n3);
-        glVertex3fv(v3);
-        glNormal3fv(n2);
-        glVertex3fv(v2);
-        glNormal3fv(n1);
-        glVertex3fv(v1);
+        glTexCoord2f(u3, v3_uv); glNormal3fv(n3); glVertex3fv(v3);
+        glTexCoord2f(u2, v_el1); glNormal3fv(n2); glVertex3fv(v2);
+        glTexCoord2f(u1, v_el1); glNormal3fv(n1); glVertex3fv(v1);
       }
     }
   }
@@ -640,6 +697,9 @@ static void sphere(int nSlice, int nStack) {
       el1 = (0.5*mjPI * sign * (i+0)) / (float)(nStack/2);
       el2 = (0.5*mjPI * sign * (i+1)) / (float)(nStack/2);
 
+      float v_el1 = 0.5f - sign * (float)(i+0) / (float)nStack;
+      float v_el2 = 0.5f - sign * (float)(i+1) / (float)nStack;
+
       for (int j=0; j < nSlice; j++) {
         az1 = (2.0f*mjPI * (j+0)) / (float)nSlice;
         az2 = (2.0f*mjPI * (j+1)) / (float)nSlice;
@@ -650,25 +710,20 @@ static void sphere(int nSlice, int nStack) {
         setVertexSphere(v3, n3, az2, el2, 0);
         setVertexSphere(v4, n4, az1, el2, 0);
 
+        float u1 = az1 / (2.0f*mjPI);
+        float u2 = az2 / (2.0f*mjPI);
+
         // make quad
         if (sign > 0) {
-          glNormal3fv(n1);
-          glVertex3fv(v1);
-          glNormal3fv(n2);
-          glVertex3fv(v2);
-          glNormal3fv(n3);
-          glVertex3fv(v3);
-          glNormal3fv(n4);
-          glVertex3fv(v4);
+          glTexCoord2f(u1, v_el1); glNormal3fv(n1); glVertex3fv(v1);
+          glTexCoord2f(u2, v_el1); glNormal3fv(n2); glVertex3fv(v2);
+          glTexCoord2f(u2, v_el2); glNormal3fv(n3); glVertex3fv(v3);
+          glTexCoord2f(u1, v_el2); glNormal3fv(n4); glVertex3fv(v4);
         } else {
-          glNormal3fv(n4);
-          glVertex3fv(v4);
-          glNormal3fv(n3);
-          glVertex3fv(v3);
-          glNormal3fv(n2);
-          glVertex3fv(v2);
-          glNormal3fv(n1);
-          glVertex3fv(v1);
+          glTexCoord2f(u1, v_el2); glNormal3fv(n4); glVertex3fv(v4);
+          glTexCoord2f(u2, v_el2); glNormal3fv(n3); glVertex3fv(v3);
+          glTexCoord2f(u2, v_el1); glNormal3fv(n2); glVertex3fv(v2);
+          glTexCoord2f(u1, v_el1); glNormal3fv(n1); glVertex3fv(v1);
         }
       }
     }
@@ -706,15 +761,22 @@ static void disk(int sign, int nSlice, int nStack) {
     v3[0] = v3[1] = 0;
     v3[2] = sign;
 
+    float u1 = 0.5f + 0.5f * v1[0];
+    float v1_uv = 0.5f + 0.5f * v1[1];
+    float u2 = 0.5f + 0.5f * v2[0];
+    float v2_uv = 0.5f + 0.5f * v2[1];
+    float u3 = 0.5f;
+    float v3_uv = 0.5f;
+
     // make triangle
     if (sign > 0) {
-      glVertex3fv(v1);
-      glVertex3fv(v2);
-      glVertex3fv(v3);
+      glTexCoord2f(u1, v1_uv); glVertex3fv(v1);
+      glTexCoord2f(u2, v2_uv); glVertex3fv(v2);
+      glTexCoord2f(u3, v3_uv); glVertex3fv(v3);
     } else {
-      glVertex3fv(v3);
-      glVertex3fv(v2);
-      glVertex3fv(v1);
+      glTexCoord2f(u3, v3_uv); glVertex3fv(v3);
+      glTexCoord2f(u2, v2_uv); glVertex3fv(v2);
+      glTexCoord2f(u1, v1_uv); glVertex3fv(v1);
     }
   }
   glEnd();
@@ -736,17 +798,26 @@ static void disk(int sign, int nSlice, int nStack) {
       setVertexDisk(v3, az2, r1, sign);
       setVertexDisk(v4, az1, r1, sign);
 
+      float u1 = 0.5f + 0.5f * v1[0];
+      float v1_uv = 0.5f + 0.5f * v1[1];
+      float u2 = 0.5f + 0.5f * v2[0];
+      float v2_uv = 0.5f + 0.5f * v2[1];
+      float u3 = 0.5f + 0.5f * v3[0];
+      float v3_uv = 0.5f + 0.5f * v3[1];
+      float u4 = 0.5f + 0.5f * v4[0];
+      float v4_uv = 0.5f + 0.5f * v4[1];
+
       // make quad
       if (sign > 0) {
-        glVertex3fv(v1);
-        glVertex3fv(v2);
-        glVertex3fv(v3);
-        glVertex3fv(v4);
+        glTexCoord2f(u1, v1_uv); glVertex3fv(v1);
+        glTexCoord2f(u2, v2_uv); glVertex3fv(v2);
+        glTexCoord2f(u3, v3_uv); glVertex3fv(v3);
+        glTexCoord2f(u4, v4_uv); glVertex3fv(v4);
       } else {
-        glVertex3fv(v4);
-        glVertex3fv(v3);
-        glVertex3fv(v2);
-        glVertex3fv(v1);
+        glTexCoord2f(u4, v4_uv); glVertex3fv(v4);
+        glTexCoord2f(u3, v3_uv); glVertex3fv(v3);
+        glTexCoord2f(u2, v2_uv); glVertex3fv(v2);
+        glTexCoord2f(u1, v1_uv); glVertex3fv(v1);
       }
     }
   }
@@ -794,13 +865,14 @@ static void cone(int nSlice, int nStack) {
     n3[2] = n1[2]+n2[2];
     mjr_normalizeVec(n3);
 
+    float u1 = (float)j / (float)nSlice;
+    float u2 = (float)(j+1) / (float)nSlice;
+    float u3 = (u1 + u2) / 2.0f;
+
     // make triangle
-    glNormal3fv(n1);
-    glVertex3fv(v1);
-    glNormal3fv(n2);
-    glVertex3fv(v2);
-    glNormal3fv(n3);
-    glVertex3fv(v3);
+    glTexCoord2f(u1, r1); glNormal3fv(n1); glVertex3fv(v1);
+    glTexCoord2f(u2, r1); glNormal3fv(n2); glVertex3fv(v2);
+    glTexCoord2f(u3, 0.0f); glNormal3fv(n3); glVertex3fv(v3);
   }
   glEnd();
 
@@ -820,15 +892,14 @@ static void cone(int nSlice, int nStack) {
       setVertexCone(v3, n3, az2, r1);
       setVertexCone(v4, n4, az1, r1);
 
+      float u1 = (float)j / (float)nSlice;
+      float u2 = (float)(j+1) / (float)nSlice;
+
       // make quad
-      glNormal3fv(n1);
-      glVertex3fv(v1);
-      glNormal3fv(n2);
-      glVertex3fv(v2);
-      glNormal3fv(n3);
-      glVertex3fv(v3);
-      glNormal3fv(n4);
-      glVertex3fv(v4);
+      glTexCoord2f(u1, r2); glNormal3fv(n1); glVertex3fv(v1);
+      glTexCoord2f(u2, r2); glNormal3fv(n2); glVertex3fv(v2);
+      glTexCoord2f(u2, r1); glNormal3fv(n3); glVertex3fv(v3);
+      glTexCoord2f(u1, r1); glNormal3fv(n4); glVertex3fv(v4);
     }
   }
   glEnd();
@@ -860,6 +931,9 @@ static void cylinder(int nSlice, int nStack) {
     h1 = 2*(i+0)/(float)nStack - 1;
     h2 = 2*(i+1)/(float)nStack - 1;
 
+    float v_el1 = (1.0f - h1) / 2.0f;
+    float v_el2 = (1.0f - h2) / 2.0f;
+
     for (int j=0; j < nSlice; j++) {
       az1 = (2.0f*mjPI * (j+0)) / (float)nSlice;
       az2 = (2.0f*mjPI * (j+1)) / (float)nSlice;
@@ -870,15 +944,14 @@ static void cylinder(int nSlice, int nStack) {
       setVertexCylinder(v3, n3, az2, h2);
       setVertexCylinder(v4, n4, az1, h2);
 
+      float u1 = (float)j / (float)nSlice;
+      float u2 = (float)(j+1) / (float)nSlice;
+
       // make quad
-      glNormal3fv(n1);
-      glVertex3fv(v1);
-      glNormal3fv(n2);
-      glVertex3fv(v2);
-      glNormal3fv(n3);
-      glVertex3fv(v3);
-      glNormal3fv(n4);
-      glVertex3fv(v4);
+      glTexCoord2f(u1, v_el1); glNormal3fv(n1); glVertex3fv(v1);
+      glTexCoord2f(u2, v_el1); glNormal3fv(n2); glVertex3fv(v2);
+      glTexCoord2f(u2, v_el2); glNormal3fv(n3); glVertex3fv(v3);
+      glTexCoord2f(u1, v_el2); glNormal3fv(n4); glVertex3fv(v4);
     }
   }
   glEnd();
@@ -986,43 +1059,54 @@ static void makeBuiltin(const mjModel* m, mjrContext* con) {
   // box
   glNewList(con->baseBuiltin + mjrBOX, GL_COMPILE);
   glBegin(GL_QUADS);
+  double nq = (double)numquads;
   for (int x=0; x < numquads; x++) {
     for (int y=0; y < numquads; y++) {
+      double u0_t = (double)x / nq;
+      double u1_t = (double)(x+1) / nq;
+      double v0_t = 1.0 - (double)y / nq;
+      double v1_t = 1.0 - (double)(y+1) / nq;
+
+      double u0_b = (double)x / nq;
+      double u1_b = (double)(x+1) / nq;
+      double v0_b = 1.0 - (double)(y+1) / nq;
+      double v1_b = 1.0 - (double)y / nq;
+
       glNormal3f(0, 0, 1);                        // top
-      glVertex3f(d*(x+0)-1, d*(y+0)-1, 1);
-      glVertex3f(d*(x+1)-1, d*(y+0)-1, 1);
-      glVertex3f(d*(x+1)-1, d*(y+1)-1, 1);
-      glVertex3f(d*(x+0)-1, d*(y+1)-1, 1);
+      glTexCoord2d(u0_t, v0_t); glVertex3f(d*(x+0)-1, d*(y+0)-1, 1);
+      glTexCoord2d(u1_t, v0_t); glVertex3f(d*(x+1)-1, d*(y+0)-1, 1);
+      glTexCoord2d(u1_t, v1_t); glVertex3f(d*(x+1)-1, d*(y+1)-1, 1);
+      glTexCoord2d(u0_t, v1_t); glVertex3f(d*(x+0)-1, d*(y+1)-1, 1);
 
       glNormal3f(0, 0, -1);                       // bottom
-      glVertex3f(d*(x+0)-1, d*(y+1)-1, -1);
-      glVertex3f(d*(x+1)-1, d*(y+1)-1, -1);
-      glVertex3f(d*(x+1)-1, d*(y+0)-1, -1);
-      glVertex3f(d*(x+0)-1, d*(y+0)-1, -1);
+      glTexCoord2d(u0_b, v0_b); glVertex3f(d*(x+0)-1, d*(y+1)-1, -1);
+      glTexCoord2d(u1_b, v0_b); glVertex3f(d*(x+1)-1, d*(y+1)-1, -1);
+      glTexCoord2d(u1_b, v1_b); glVertex3f(d*(x+1)-1, d*(y+0)-1, -1);
+      glTexCoord2d(u0_b, v1_b); glVertex3f(d*(x+0)-1, d*(y+0)-1, -1);
 
       glNormal3f(1, 0, 0);                        // right
-      glVertex3f(1, d*(x+0)-1, d*(y+0)-1);
-      glVertex3f(1, d*(x+1)-1, d*(y+0)-1);
-      glVertex3f(1, d*(x+1)-1, d*(y+1)-1);
-      glVertex3f(1, d*(x+0)-1, d*(y+1)-1);
+      glTexCoord2d(u0_t, v0_t); glVertex3f(1, d*(x+0)-1, d*(y+0)-1);
+      glTexCoord2d(u1_t, v0_t); glVertex3f(1, d*(x+1)-1, d*(y+0)-1);
+      glTexCoord2d(u1_t, v1_t); glVertex3f(1, d*(x+1)-1, d*(y+1)-1);
+      glTexCoord2d(u0_t, v1_t); glVertex3f(1, d*(x+0)-1, d*(y+1)-1);
 
       glNormal3f(-1, 0, 0);                       // left
-      glVertex3f(-1, d*(x+0)-1, d*(y+1)-1);
-      glVertex3f(-1, d*(x+1)-1, d*(y+1)-1);
-      glVertex3f(-1, d*(x+1)-1, d*(y+0)-1);
-      glVertex3f(-1, d*(x+0)-1, d*(y+0)-1);
+      glTexCoord2d(u0_b, v0_b); glVertex3f(-1, d*(x+0)-1, d*(y+1)-1);
+      glTexCoord2d(u1_b, v0_b); glVertex3f(-1, d*(x+1)-1, d*(y+1)-1);
+      glTexCoord2d(u1_b, v1_b); glVertex3f(-1, d*(x+1)-1, d*(y+0)-1);
+      glTexCoord2d(u0_b, v1_b); glVertex3f(-1, d*(x+0)-1, d*(y+0)-1);
 
       glNormal3f(0, -1, 0);                       // front
-      glVertex3f(d*(x+0)-1, -1, d*(y+0)-1);
-      glVertex3f(d*(x+1)-1, -1, d*(y+0)-1);
-      glVertex3f(d*(x+1)-1, -1, d*(y+1)-1);
-      glVertex3f(d*(x+0)-1, -1, d*(y+1)-1);
+      glTexCoord2d(u0_t, v0_t); glVertex3f(d*(x+0)-1, -1, d*(y+0)-1);
+      glTexCoord2d(u1_t, v0_t); glVertex3f(d*(x+1)-1, -1, d*(y+0)-1);
+      glTexCoord2d(u1_t, v1_t); glVertex3f(d*(x+1)-1, -1, d*(y+1)-1);
+      glTexCoord2d(u0_t, v1_t); glVertex3f(d*(x+0)-1, -1, d*(y+1)-1);
 
       glNormal3f(0, 1, 0);                        // back
-      glVertex3f(d*(x+0)-1, 1, d*(y+1)-1);
-      glVertex3f(d*(x+1)-1, 1, d*(y+1)-1);
-      glVertex3f(d*(x+1)-1, 1, d*(y+0)-1);
-      glVertex3f(d*(x+0)-1, 1, d*(y+0)-1);
+      glTexCoord2d(u0_b, v0_b); glVertex3f(d*(x+0)-1, 1, d*(y+1)-1);
+      glTexCoord2d(u1_b, v0_b); glVertex3f(d*(x+1)-1, 1, d*(y+1)-1);
+      glTexCoord2d(u1_b, v1_b); glVertex3f(d*(x+1)-1, 1, d*(y+0)-1);
+      glTexCoord2d(u0_b, v1_b); glVertex3f(d*(x+0)-1, 1, d*(y+0)-1);
     }
   }
   glEnd();
@@ -1365,6 +1449,16 @@ void mjr_uploadTexture(const mjModel* m, const mjrContext* con, int texid) {
   int w = m->tex_width[texid];
   float plane[4];
 
+  // the classic renderer only uploads 3- (RGB) or 4-channel (RGBA) textures. KTX
+  // and other encoded textures are single-channel blobs for the Filament renderer
+  // (see LoadKTX); skip them with a warning instead of aborting (issue #3343).
+  if (m->tex_nchannel[texid] != 3 && m->tex_nchannel[texid] != 4) {
+    mju_warning("texture %d: classic renderer can't upload %d-channel data, "
+                "skipping (KTX/encoded textures need the Filament renderer)",
+                texid, m->tex_nchannel[texid]);
+    return;
+  }
+
   // 2D texture
   if (m->tex_type[texid] == mjTEXTURE_2D) {
     // OpenGL settings
@@ -1390,11 +1484,9 @@ void mjr_uploadTexture(const mjModel* m, const mjrContext* con, int texid) {
     if (m->tex_nchannel[texid] == 3) {
       type = GL_RGB;
       internaltype = (m->tex_colorspace[texid] == mjCOLORSPACE_SRGB) ? GL_SRGB8_EXT : GL_RGB;
-    } else if (m->tex_nchannel[texid] == 4) {
+    } else {  // 4 channels, guaranteed by the channel check at the top of the function
       type = GL_RGBA;
       internaltype = (m->tex_colorspace[texid] == mjCOLORSPACE_SRGB) ? GL_SRGB8_ALPHA8_EXT : GL_RGBA;
-    } else {
-      mju_error("Number of channels not supported: %d", m->tex_nchannel[texid]);
     }
 
     glTexImage2D(GL_TEXTURE_2D, 0, internaltype, m->tex_width[texid],
@@ -1608,6 +1700,7 @@ void mjr_makeContext_offSize(const mjModel* m, mjrContext* con, int fontscale,
     // try to bind window (bind offscreen if no window)
     mjr_setBuffer(mjFB_WINDOW, con);
 
+    context_count++;
     return;
   }
 
@@ -1667,6 +1760,7 @@ void mjr_makeContext_offSize(const mjModel* m, mjrContext* con, int fontscale,
 
   // set default depth mapping for mjr_readPixels
   con->readDepthMap = mjDEPTH_ZERONEAR;
+  context_count++;
 }
 
 
@@ -1811,6 +1905,8 @@ void mjr_addAux(int index, int width, int height, int samples, mjrContext* con) 
 
 // free resources in custom OpenGL context
 void mjr_freeContext(mjrContext* con) {
+  int had_resources = contextHasResources(con);
+
   // save flags
   int glInitialized = con->glInitialized;
   int windowAvailable = con->windowAvailable;
@@ -1867,6 +1963,10 @@ void mjr_freeContext(mjrContext* con) {
   con->windowSamples = windowSamples;
   con->windowStereo = windowStereo;
   con->windowDoublebuffer = windowDoublebuffer;
+
+  if (had_resources && context_count > 0) {
+    context_count--;
+  }
 }
 
 

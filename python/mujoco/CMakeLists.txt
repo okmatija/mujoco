@@ -99,7 +99,7 @@ if(NOT TARGET mujoco)
     if(MUJOCO_FRAMEWORK)
       message("MuJoCo framework is at ${MUJOCO_FRAMEWORK}/mujoco.framework")
       set(MUJOCO_LIBRARY
-          ${MUJOCO_FRAMEWORK}/mujoco.framework/Versions/A/libmujoco.3.10.1.dylib
+          ${MUJOCO_FRAMEWORK}/mujoco.framework/Versions/A/libmujoco.3.12.1.dylib
       )
       target_compile_options(mujoco INTERFACE -F${MUJOCO_FRAMEWORK})
       set(MUJOCO_INCLUDE "${MUJOCO_FRAMEWORK}/mujoco.framework/Versions/A/Headers")
@@ -108,7 +108,7 @@ if(NOT TARGET mujoco)
 
   if(NOT MUJOCO_FRAMEWORK)
     find_library(
-      MUJOCO_LIBRARY mujoco mujoco.3.10.1 HINTS ${MUJOCO_LIBRARY_DIR} REQUIRED
+      MUJOCO_LIBRARY mujoco mujoco.3.12.1 HINTS ${MUJOCO_LIBRARY_DIR} REQUIRED
     )
     find_path(MUJOCO_INCLUDE mujoco/mujoco.h HINTS ${MUJOCO_INCLUDE_DIR} REQUIRED)
     message("MuJoCo is at ${MUJOCO_LIBRARY}")
@@ -151,24 +151,26 @@ if(NOT TARGET mujoco::platform)
     list(APPEND MUJOCO_PLATFORM_HINTS "${MUJOCO_FRAMEWORK}/mujoco.framework/Versions/A")
   endif()
   find_library(
-    MUJOCO_PLATFORM_LIBRARY mujoco_platform HINTS ${MUJOCO_PLATFORM_HINTS}
+    MUJOCO_PLATFORM_LIBRARY mujoco_studio_platform HINTS ${MUJOCO_PLATFORM_HINTS}
   )
   if(MUJOCO_PLATFORM_LIBRARY)
-    message(STATUS "Found mujoco_platform library at ${MUJOCO_PLATFORM_LIBRARY}")
-    add_library(mujoco_platform STATIC IMPORTED GLOBAL)
-    set_target_properties(mujoco_platform PROPERTIES IMPORTED_LOCATION "${MUJOCO_PLATFORM_LIBRARY}")
-    add_library(mujoco::platform ALIAS mujoco_platform)
+    message(STATUS "Found mujoco_studio_platform library at ${MUJOCO_PLATFORM_LIBRARY}")
+    add_library(mujoco_studio_platform STATIC IMPORTED GLOBAL)
+    set_target_properties(mujoco_studio_platform PROPERTIES IMPORTED_LOCATION "${MUJOCO_PLATFORM_LIBRARY}")
+    add_library(mujoco::platform ALIAS mujoco_studio_platform)
 
     set(PLATFORM_INCLUDES "${MUJOCO_INCLUDE}" "${MUJOCO_INCLUDE}/mujoco" "${MUJOCO_INCLUDE}/SDL2")
-    set_target_properties(mujoco_platform PROPERTIES
+    set_target_properties(mujoco_studio_platform PROPERTIES
       INTERFACE_INCLUDE_DIRECTORIES "${PLATFORM_INCLUDES}"
     )
-    target_compile_features(mujoco_platform INTERFACE cxx_std_20)
+    target_compile_features(mujoco_studio_platform INTERFACE cxx_std_20)
 
     set(PLATFORM_DEPS)
     set(dep_libs
       mujoco_filament
       dear_imgui
+      dear_imgui_SDL2
+      dear_imgui_OpenGL3
       dear_imgui_stdlib
       implot
       filament
@@ -238,7 +240,7 @@ if(NOT TARGET mujoco::platform)
 
     list(APPEND PLATFORM_DEPS ${platform_system_libs})
 
-    set_target_properties(mujoco_platform PROPERTIES INTERFACE_LINK_LIBRARIES "${PLATFORM_DEPS}")
+    set_target_properties(mujoco_studio_platform PROPERTIES INTERFACE_LINK_LIBRARIES "${PLATFORM_DEPS}")
   endif()
 endif()
 
@@ -305,7 +307,7 @@ findorfetch(
   GIT_REPO
   https://github.com/pybind/pybind11
   GIT_TAG
-  c7fb32eea8c92bebeea9f0735041a72aa20c75f5 # v3.0.4
+  97bf890db679505a14dfe547a5e77bb2bd05dc90 # v3.1.0
   TARGETS
   pybind11::pybind11_headers
   EXCLUDE_FROM_ALL

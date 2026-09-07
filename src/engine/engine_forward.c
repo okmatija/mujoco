@@ -29,6 +29,7 @@
 #include "engine/engine_core_util.h"
 #include "engine/engine_derivative.h"
 #include "engine/engine_inverse.h"
+#include "engine/engine_io.h"
 #include "engine/engine_island.h"
 #include "engine/engine_macro.h"
 #include "engine/engine_memory.h"
@@ -168,6 +169,11 @@ void mj_fwdPosition(const mjModel* m, mjData* d) {
   mj_transmission(m, d);
   TM_ADD(mjTIMER_POS_KINEMATICS);
 
+  // implicit effective metric Mtilde = M + K: build (or deactivate) for this step. Arena
+  // lifetime and skip semantics mirror the constraint data: built once per position stage,
+  // value-refreshed in the velocity stage, consumed downstream.
+  mjd_effBuild(m, d, mj_isMetric(m), /*flg_factor=*/1);
+
   TM_END1(mjTIMER_POSITION);
 }
 
@@ -197,16 +203,24 @@ void mj_fwdVelocity(const mjModel* m, mjData* d) {
 
   // actuator velocity: always sparse
   if (!mjDISABLED(mjDSBL_ACTUATION)) {
-    mju_mulMatVecSparse(d->actuator_velocity, d->actuator_moment, d->qvel, m->nu,
+    mju_mulMatVecSparse(d->actuator_velocity, d->actuator_moment, d->qvel, m->nout,
                         d->moment_rownnz, d->moment_rowadr, d->moment_colind, NULL);
   } else {
-    mju_zero(d->actuator_velocity, m->nu);
+    mju_zero(d->actuator_velocity, m->nout);
   }
 
   // com-based velocities, passive forces, constraint references
   mj_comVel(m, d);
   mj_passive(m, d);
-  mj_referenceConstraint(m, d);
+
+  // under discrete, constraint references are computed at the actuation stage where the
+  // metric is final (regularization, then references, which consume R via adhesion);
+  // constraint velocities are needed now for velocity sensors
+  if (mj_isMetric(m)) {
+    mj_velocityConstraint(m, d);
+  } else {
+    mj_referenceConstraint(m, d);
+  }
 
   // compute qfrc_bias with abbreviated RNE (without acceleration)
   mj_rne(m, d, 0, d->qfrc_bias);
@@ -214,38 +228,53 @@ void mj_fwdVelocity(const mjModel* m, mjData* d) {
   // add bias force due to tendon armature
   mj_tendonBias(m, d, d->qfrc_bias);
 
+  // refresh the metric's velocity-stage values
+  mjd_effShift(m, d);
+
   TM_END(mjTIMER_VELOCITY);
 }
 
 
-// helper for DC motor: computes control voltage from PID state
-static mjtNum dcmotorVoltage(mjtNum ctrl, mjtNum length, mjtNum velocity,
-                             mjtNum x_I, const mjtNum* gainprm) {
-  int input_mode = (int)gainprm[8];
-  mjtNum Vmax = gainprm[7];
-  mjtNum voltage;
+// unpack servo-family inputs from control block in canonical order [pos, vel, ff]
+// absent input: setpoint 0
+static void unpackServoInputs(const mjtNum* u, int spec, mjtNum out[4]) {
+  int adr = 0;
+  out[0] = (spec & mjINPUT_POS)     ? u[adr++] : 0;
+  out[1] = (spec & mjINPUT_VEL)     ? u[adr++] : 0;
+  out[2] = (spec & mjINPUT_FF)      ? u[adr++] : 0;
+  out[3] = (spec & mjINPUT_VOLTAGE) ? u[adr]   : 0;
+}
 
-  // get voltage
-  if (input_mode > 0) {
+
+// helper for DC motor: computes control voltage from PID state
+static mjtNum dcmotorVoltage(const mjtNum* u, int spec, mjtNum length, mjtNum velocity,
+                             mjtNum x_I, const mjtNum* gainprm) {
+  mjtNum voltage = 0;
+
+  // unpack present inputs in canonical order [pos, vel, ff, voltage]; absent input: 0
+  mjtNum u4[4];
+  unpackServoInputs(u, spec, u4);
+
+  // on-board controller: torque-space PID + torque feedforward
+  if (spec & (mjINPUT_POS | mjINPUT_VEL | mjINPUT_FF)) {
     mjtNum kp = gainprm[4];  // proportional gain
     mjtNum ki = gainprm[5];  // integral gain
     mjtNum kd = gainprm[6];  // derivative gain
+    mjtNum torque = kp*(u4[0] - length) + kd*(u4[1] - velocity) + ki*x_I + u4[2];
 
-    if (input_mode == 1) {
-      // position mode
-      voltage = kp * (ctrl - length) + ki * x_I - kd * velocity;
-    } else {
-      // velocity mode
-      voltage = kp * (ctrl - velocity) + ki * (x_I - length);
-    }
-  } else {
-    voltage = ctrl;
+    // torque mode is current control: V = R/K * torque + K * velocity, the second
+    // term compensating back-EMF; the compiler requires K > 0 on this path
+    mjtNum R = gainprm[0];
+    mjtNum K = gainprm[1];
+    voltage = R/K * torque + K*velocity;
+
+    // driver supply limit
+    mjtNum Vmax = gainprm[7];
+    if (Vmax > 0) voltage = mju_clip(voltage, -Vmax, Vmax);
   }
 
-  // clip voltage
-  if (Vmax > 0) voltage = mju_clip(voltage, -Vmax, Vmax);
-
-  return voltage;
+  // raw terminal voltage input: downstream of the controller, unclamped
+  return voltage + u4[3];
 }
 
 
@@ -261,21 +290,91 @@ static void clampVec(mjtNum* vec, const mjtNum* range, const mjtBool* limited, i
 }
 
 
+// expmap (axis-angle) vector to quaternion
+static void expmap2Quat(mjtNum quat[4], const mjtNum v[3]) {
+  mjtNum angle = mju_norm3(v);
+  if (angle < mjMINVAL) {
+    quat[0] = 1;
+    quat[1] = quat[2] = quat[3] = 0;
+  } else {
+    mjtNum axis[3] = {v[0]/angle, v[1]/angle, v[2]/angle};
+    mji_axisAngle2Quat(quat, axis, angle);
+  }
+}
+
+
+// period of the rotational transmission for wrap-eligible servo actuators, 0 otherwise
+static mjtNum wrapPeriod(const mjModel* m, int i) {
+  // servo shape: fixed gain, affine bias, matching kp, setpoint input
+  mjtDyn dyntype = m->actuator_dyntype[i];
+  int servo = m->actuator_gaintype[i] == mjGAIN_FIXED  &&
+              m->actuator_biastype[i] == mjBIAS_AFFINE &&
+              m->actuator_gainprm[mjNGAIN*i] == -m->actuator_biasprm[mjNBIAS*i+1] &&
+              (dyntype == mjDYN_NONE || dyntype == mjDYN_INTEGRATOR);
+
+  // PID shape: kp and kv are single-sourced in the affine bias
+  int pid = m->actuator_gaintype[i] == mjGAIN_PID;
+
+  if (!servo && !pid) {
+    return 0;
+  }
+
+  const mjtNum* gear = m->actuator_gear+6*m->actuator_outadr[i];
+  mjtTrn trntype = m->actuator_trntype[i];
+
+  // site transmission with refsite and purely rotational gear
+  if (trntype == mjTRN_SITE && m->actuator_trnid[2*i+1] >= 0 &&
+      !gear[0] && !gear[1] && !gear[2]) {
+    return 2*mjPI * mju_norm3(gear+3);
+  }
+
+  // joint transmission on a ball joint
+  if ((trntype == mjTRN_JOINT || trntype == mjTRN_JOINTINPARENT) &&
+      m->jnt_type[m->actuator_trnid[2*i]] == mjJNT_BALL) {
+    return 2*mjPI * mju_norm3(gear);
+  }
+
+  return 0;
+}
+
+
+// representative of setpoint u nearest to length, given period
+static mjtNum wrapSetpoint(mjtNum u, mjtNum length, mjtNum period) {
+  mjtNum err = u - length;
+  return u - period * mju_round(err / period);
+}
+
+
+// slew-rate-limit setpoint u given previous effective setpoint u_prev, write act_dot
+// period > 0: wrap u to the representative nearest u_prev before limiting
+static mjtNum slewLimit(mjtNum u, mjtNum u_prev, mjtNum slew_s, mjtNum dt,
+                        mjtNum period, mjtNum* act_dot) {
+  if (period > 0) {
+    u = wrapSetpoint(u, u_prev, period);
+  }
+  mjtNum slew = slew_s * dt;
+  mjtNum u_eff = mju_clip(u, u_prev - slew, u_prev + slew);
+  *act_dot = (u_eff - u_prev) / dt;
+  return u_eff;
+}
+
+
 // (qpos, qvel, ctrl, act) => (qfrc_actuator, actuator_force, act_dot)
 void mj_fwdActuation(const mjModel* m, mjData* d) {
   TM_START;
-  int nv = m->nv, nu = m->nu, ntendon = m->ntendon;
+  int nv = m->nv, nu = m->nu, nactuator = m->nactuator, nout = m->nout, ntendon = m->ntendon;
   mjtNum gain, bias, tau;
   mjtNum *force = d->actuator_force;
 
   // clear actuator_force
-  mju_zero(force, nu);
+  mju_zero(force, nout);
 
   int sleep_filter = mjENABLED(mjENBL_SLEEP);
 
   // disabled or no actuation: return
-  if (nu == 0 || mjDISABLED(mjDSBL_ACTUATION)) {
+  if (nactuator == 0 || mjDISABLED(mjDSBL_ACTUATION)) {
     mju_zero(d->qfrc_actuator, nv);
+    TM_END(mjTIMER_ACTUATION);
     return;
   }
 
@@ -287,9 +386,15 @@ void mj_fwdActuation(const mjModel* m, mjData* d) {
   mjtNum *ctrl = mjSTACKALLOC(d, nu, mjtNum);
 
   // read from ctrl or history buffer for delayed actuators
-  for (int i = 0; i < nu; i++) {
-    int interp = m->actuator_history[2*i+1];
-    ctrl[i] = m->actuator_delay[i] ? mj_readCtrl(m, d, i, d->time, interp) : d->ctrl[i];
+  for (int i = 0; i < nactuator; i++) {
+    int adr = m->actuator_ctrladr[i];
+    if (m->actuator_delay[i]) {
+      // delayed: read from history buffer (scalar input)
+      int interp = m->actuator_history[2*i+1];
+      ctrl[adr] = mj_readCtrl(m, d, i, d->time, interp);
+    } else {
+      mju_copy(ctrl + adr, d->ctrl + adr, m->actuator_ctrlnum[i]);
+    }
   }
 
   // clamp local copy
@@ -307,7 +412,7 @@ void mj_fwdActuation(const mjModel* m, mjData* d) {
   }
 
   // act_dot for stateful actuators
-  for (int i=0; i < nu; i++) {
+  for (int i=0; i < nactuator; i++) {
     if (sleep_filter && mj_sleepState(m, d, mjOBJ_ACTUATOR, i) == mjS_ASLEEP) {
       continue;
     }
@@ -316,6 +421,10 @@ void mj_fwdActuation(const mjModel* m, mjData* d) {
     if (act_first < 0) {
       continue;
     }
+
+    // addresses of the actuator's input and output blocks
+    int uadr = m->actuator_ctrladr[i];
+    int oadr = m->actuator_outadr[i];
 
     // zero act_dot for actuator plugins
     int actnum = m->actuator_actnum[i];
@@ -333,19 +442,59 @@ void mj_fwdActuation(const mjModel* m, mjData* d) {
 
     // compute act_dot according to dynamics type
     switch (dyntype) {
-    case mjDYN_INTEGRATOR:          // simple integrator
-      d->act_dot[act_last] = ctrl[i];
+    case mjDYN_INTEGRATOR: {        // simple integrator, one per control
+      int num = m->actuator_ctrlnum[i];
+      for (int j=0; j < num; j++) {
+        d->act_dot[act_last-num+1+j] = ctrl[uadr+j];
+      }
       break;
+    }
 
     case mjDYN_FILTER:              // linear filter: dynprm = tau
     case mjDYN_FILTEREXACT:
       tau = mju_max(mjMINVAL, dynprm[0]);
-      d->act_dot[act_last] = (ctrl[i] - d->act[act_last]) / tau;
+      d->act_dot[act_last] = (ctrl[uadr] - d->act[act_last]) / tau;
       break;
 
     case mjDYN_MUSCLE:              // muscle model: dynprm = (tau_act, tau_deact)
-      d->act_dot[act_last] = mju_muscleDynamics(ctrl[i], d->act[act_last], dynprm);
+      d->act_dot[act_last] = mju_muscleDynamics(ctrl[uadr], d->act[act_last], dynprm);
       break;
+
+    case mjDYN_PID: {               // PID controller states, slot order: slew, integral
+      int adr = act_first;
+      mjtNum period = wrapPeriod(m, i);
+
+      // slew rate limiting of the position setpoint
+      mjtNum slew_s = dynprm[1];
+      if (slew_s > 0) {
+        ctrl[uadr] = slewLimit(ctrl[uadr], d->act[adr], slew_s, m->opt.timestep,
+                               period, d->act_dot + adr);
+        adr++;
+      }
+
+      // integral of the position error
+      if (m->actuator_gainprm[mjNGAIN*i] > 0) {
+        mjtNum err = ctrl[uadr] - d->actuator_length[oadr];
+
+        // rotational transmission: error on the circle
+        if (period > 0) {
+          err -= period*mju_round(err/period);
+        }
+
+        // anti-windup: stop accumulating beyond imax
+        mjtNum imax = dynprm[0];
+        if (imax > 0) {
+          mjtNum z = d->act[adr];
+          if (z >= imax) {
+            err = mju_min(err, 0);
+          } else if (z <= -imax) {
+            err = mju_max(err, 0);
+          }
+        }
+        d->act_dot[adr] = err;
+      }
+      break;
+    }
 
     case mjDYN_DCMOTOR: {           // DC motor: up to 5 optional states
       const mjtNum* gainprm = m->actuator_gainprm + mjNGAIN*i;
@@ -356,7 +505,7 @@ void mj_fwdActuation(const mjModel* m, mjData* d) {
       }
 
       int adr = act_first;
-      mjtNum velocity = d->actuator_velocity[i];
+      mjtNum velocity = d->actuator_velocity[oadr];
       mjtNum R = gainprm[0];   // resistance
       mjtNum K = gainprm[1];   // motor constant
       mjtNum ki = gainprm[5];  // integral gain
@@ -367,26 +516,17 @@ void mj_fwdActuation(const mjModel* m, mjData* d) {
       // controller state: slew rate limiting
       mjtNum slew_s = dynprm[7];  // slew rate limit
       if (slew_s > 0) {
-        mjtNum u_prev = d->act[adr];
-        mjtNum slew = slew_s * m->opt.timestep;
-        mjtNum u_eff = mju_clip(ctrl[i], u_prev - slew, u_prev + slew);
-        d->act_dot[adr] = (u_eff - u_prev) / m->opt.timestep;
-        ctrl[i] = u_eff;
+        ctrl[uadr] = slewLimit(ctrl[uadr], d->act[adr], slew_s, m->opt.timestep,
+                               0, d->act_dot + adr);
         adr++;
       }
 
-      // controller state: integral state
+      // controller state: integral of the position error (setpoint mode only)
       mjtNum x_I = 0;
       if (ki > 0) {
         x_I = d->act[adr];
-        int input_mode = (int)gainprm[8];
         mjtNum Imax = dynprm[8];   // integral clamp
-        mjtNum act_dot = ctrl[i];  // default raw accumulator for voltage and velocity modes
-
-        // position mode
-        if (input_mode == 1) {
-          act_dot = ctrl[i] - d->actuator_length[i];
-        }
+        mjtNum act_dot = ctrl[uadr] - d->actuator_length[oadr];
 
         // clamp act_dot based on integral state
         if (Imax > 0) {
@@ -401,7 +541,8 @@ void mj_fwdActuation(const mjModel* m, mjData* d) {
       }
 
       // compute physical voltage to feed into current and temperature equations
-      mjtNum V = dcmotorVoltage(ctrl[i], d->actuator_length[i], velocity, x_I, gainprm);
+      mjtNum V = dcmotorVoltage(ctrl + uadr, m->actuator_ctrlspec[i],
+                                d->actuator_length[oadr], velocity, x_I, gainprm);
 
       // temperature: dT/dt = (R*i^2 - T/RT) / C, where T = delta above ambient
       mjtNum RT = dynprm[2];  // thermal resistance
@@ -476,7 +617,7 @@ void mj_fwdActuation(const mjModel* m, mjData* d) {
   }
 
   // force = gain .* [ctrl/act] + bias
-  for (int i=0; i < nu; i++) {
+  for (int i=0; i < nactuator; i++) {
     // skip if sleeping
     if (sleep_filter && mj_sleepState(m, d, mjOBJ_ACTUATOR, i) == mjS_ASLEEP) {
       continue;
@@ -492,6 +633,55 @@ void mj_fwdActuation(const mjModel* m, mjData* d) {
       continue;
     }
 
+    // addresses of the actuator's input and output blocks
+    int uadr = m->actuator_ctrladr[i];
+    int oadr = m->actuator_outadr[i];
+
+    // SO(3) geodesic servo: 3 or 4 inputs and 3 outputs on an SO3 transmission
+    if (m->actuator_gaintype[i] == mjGAIN_SO3) {
+      mjtNum q_tgt[4];
+
+      // quat input: normalize ctrl directly (zero maps to the identity)
+      if (m->actuator_ctrlspec[i] == mjCHART_QUAT) {
+        mju_copy4(q_tgt, ctrl + uadr);
+        mju_normalize4(q_tgt);
+      }
+
+      // expmap input: ctrl block (position) or act block (integrator)
+      else {
+        mjtNum u[3];
+        if (m->actuator_dyntype[i] == mjDYN_NONE) {
+          mju_copy3(u, ctrl + uadr);
+        } else {
+          int act_adr = m->actuator_actadr[i];
+          if (m->actuator_actearly[i]) {
+            for (int k=0; k < 3; k++) {
+              u[k] = mj_nextActivation(m, d, i, act_adr+k, d->act_dot[act_adr+k]);
+            }
+          } else {
+            mju_copy3(u, d->act + act_adr);
+          }
+        }
+        expmap2Quat(q_tgt, u);
+      }
+
+      // error rotation from current to target: e = log(q_cur^-1 * q_tgt), in the local frame
+      // of the transmission, matching the frame of the moment rows and of actuator_velocity
+      // note: the force is invariant to the setpoint representative (exp is ray-periodic),
+      // so no wrapping is required; act is re-anchored at integration time in mj_advance
+      mjtNum q_cur[4], e[3];
+      expmap2Quat(q_cur, d->actuator_length + oadr);
+      mji_subQuat(e, q_tgt, q_cur);
+
+      // output force: kp * error + constant - kv * velocity
+      mjtNum kp = m->actuator_gainprm[mjNGAIN*i];
+      const mjtNum* prm = m->actuator_biasprm + mjNBIAS*i;
+      for (int k=0; k < 3; k++) {
+        force[oadr+k] = kp*e[k] + prm[0] + prm[2]*d->actuator_velocity[oadr+k];
+      }
+      continue;
+    }
+
     // check for tendon transmission with force limits
     if (ntendon && !tendon_frclimited && m->actuator_trntype[i] == mjTRN_TENDON) {
       tendon_frclimited = m->tendon_actfrclimited[m->actuator_trnid[2*i]];
@@ -503,21 +693,26 @@ void mj_fwdActuation(const mjModel* m, mjData* d) {
     mjtGain gaintype = m->actuator_gaintype[i];
     int actnum = m->actuator_actnum[i];
 
-    // handle according to gain type
+    // handle SISO actuators according to gain type
     switch (gaintype) {
     case mjGAIN_FIXED:              // fixed gain: prm = gain
       gain = gainprm[0];
       break;
 
+    case mjGAIN_PID:                // PID servo: input side handled below, state side in bias
+      gain = 0;
+      break;
+
     case mjGAIN_AFFINE:             // affine: prm = [const, kp, kv]
-      gain = gainprm[0] + gainprm[1]*d->actuator_length[i] + gainprm[2]*d->actuator_velocity[i];
+      gain = gainprm[0] + gainprm[1]*d->actuator_length[oadr] +
+             gainprm[2]*d->actuator_velocity[oadr];
       break;
 
     case mjGAIN_MUSCLE:             // muscle gain
-      gain = mju_muscleGain(d->actuator_length[i],
-                            d->actuator_velocity[i],
-                            m->actuator_lengthrange+2*i,
-                            m->actuator_acc0[i],
+      gain = mju_muscleGain(d->actuator_length[oadr],
+                            d->actuator_velocity[oadr],
+                            m->actuator_lengthrange+2*oadr,
+                            m->actuator_acc0[oadr],
                             gainprm);
       break;
 
@@ -546,14 +741,20 @@ void mj_fwdActuation(const mjModel* m, mjData* d) {
       // stateless: gain = K/R, force = K/R * ctrl (condition below)
       gain = (dynprm[0] > 0) ? K : K / mju_max(mjMINVAL, R);
 
-      // controller: compute voltage, override ctrl[i] for force computation
-      if ((int)gainprm[8] > 0) {
+      // controller: compute voltage, override ctrl[uadr] for force computation
+      // (pure raw-voltage motor reads ctrl directly; empty block reads as 0 below)
+      if (m->actuator_ctrlspec[i] != mjINPUT_VOLTAGE && m->actuator_ctrlnum[i] > 0) {
         mjtNum x_I = (slots.integral >= 0) ? d->act[adr + slots.integral] : 0;
-        ctrl[i] = dcmotorVoltage(ctrl[i], d->actuator_length[i],
-                                  d->actuator_velocity[i], x_I, gainprm);
+        ctrl[uadr] = dcmotorVoltage(ctrl + uadr, m->actuator_ctrlspec[i],
+                                    d->actuator_length[oadr],
+                                    d->actuator_velocity[oadr], x_I, gainprm);
       }
       break;
     }
+
+    case mjGAIN_SO3:                // handled above via early continue
+      mjERROR("mjGAIN_SO3 reached SISO switch (actuator %d)", i);
+      break;
 
     default:                        // user gain
       if (mjcb_act_gain) {
@@ -567,8 +768,45 @@ void mj_fwdActuation(const mjModel* m, mjData* d) {
 
     // DC motor without current state: use ctrl even if other activations exist
     int dcmotor_no_current = (gaintype == mjGAIN_DCMOTOR && dynprm[0] <= 0);
-    if (actnum == 0 || dcmotor_no_current) {
-      force[i] = gain * ctrl[i];
+
+    // PID servo: force = kp*(qref - l) + kv*(vref - l_dot) [+ ff] [+ ki*z]
+    // input-side terms computed here; state-side terms added by the affine bias below
+    if (gaintype == mjGAIN_PID) {
+      const mjtNum* prm = m->actuator_biasprm + mjNBIAS*i;
+
+      // unpack present inputs in canonical order [pos, vel, ff]; absent input: setpoint 0
+      mjtNum u4[4];
+      unpackServoInputs(ctrl + uadr, m->actuator_ctrlspec[i], u4);
+      mjtNum qref = u4[0], vref = u4[1], ff = u4[2];
+
+      // position setpoint: representative nearest the length on rotational transmissions
+      mjtNum period = wrapPeriod(m, i);
+      if (period > 0) {
+        qref = wrapSetpoint(qref, d->actuator_length[oadr], period);
+      }
+
+      // kp and kv are single-sourced in the affine bias parameters
+      force[oadr] = -prm[1]*qref - prm[2]*vref + ff;
+
+      // integral state (last slot): force += ki * z
+      if (actnum && gainprm[0] > 0) {
+        int act_adr = m->actuator_actadr[i] + actnum - 1;
+        mjtNum z = m->actuator_actearly[i]
+                       ? mj_nextActivation(m, d, i, act_adr, d->act_dot[act_adr])
+                       : d->act[act_adr];
+        force[oadr] += gainprm[0]*z;
+      }
+    }
+    else if (actnum == 0 || dcmotor_no_current) {
+      // empty input block (passive dcmotor): input is 0
+      mjtNum input = m->actuator_ctrlnum[i] ? ctrl[uadr] : 0;
+
+      // rotational setpoint: use representative nearest the length (local, no state change)
+      mjtNum period = wrapPeriod(m, i);
+      if (period > 0) {
+        input = wrapSetpoint(input, d->actuator_length[oadr], period);
+      }
+      force[oadr] = gain * input;
     } else {
       // use last activation variable associated with actuator i
       int act_adr = m->actuator_actadr[i] + actnum - 1;
@@ -579,7 +817,13 @@ void mj_fwdActuation(const mjModel* m, mjData* d) {
       } else {
         act = d->act[act_adr];
       }
-      force[i] = gain * act;
+
+      // rotational setpoint: use representative nearest the length (local, no state change)
+      mjtNum period = wrapPeriod(m, i);
+      if (period > 0) {
+        act = wrapSetpoint(act, d->actuator_length[oadr], period);
+      }
+      force[oadr] = gain * act;
     }
 
     // extract bias info
@@ -593,13 +837,14 @@ void mj_fwdActuation(const mjModel* m, mjData* d) {
       break;
 
     case mjBIAS_AFFINE:             // affine: biasprm = [const, kp, kv]
-      bias = biasprm[0] + biasprm[1]*d->actuator_length[i] + biasprm[2]*d->actuator_velocity[i];
+      bias = biasprm[0] + biasprm[1]*d->actuator_length[oadr] +
+             biasprm[2]*d->actuator_velocity[oadr];
       break;
 
     case mjBIAS_MUSCLE:             // muscle passive force
-      bias =  mju_muscleBias(d->actuator_length[i],
-                             m->actuator_lengthrange+2*i,
-                             m->actuator_acc0[i],
+      bias =  mju_muscleBias(d->actuator_length[oadr],
+                             m->actuator_lengthrange+2*oadr,
+                             m->actuator_acc0[oadr],
                              biasprm);
       break;
 
@@ -610,7 +855,7 @@ void mj_fwdActuation(const mjModel* m, mjData* d) {
       mjtNum te = m->actuator_dynprm[mjNDYN*i];  // electrical time constant
       if (te <= 0) {
         mjtNum K = gainprm[1];   // motor constant
-        bias -= gain * K * d->actuator_velocity[i];
+        bias -= gain * K * d->actuator_velocity[oadr];
       }
       break;
     }
@@ -624,7 +869,7 @@ void mj_fwdActuation(const mjModel* m, mjData* d) {
     }
 
     // add bias
-    force[i] += bias;
+    force[oadr] += bias;
   }
 
   // handle actuator plugins
@@ -650,17 +895,17 @@ void mj_fwdActuation(const mjModel* m, mjData* d) {
     // compute total force for each tendon
     mjtNum* tendon_total_force = mjSTACKALLOC(d, ntendon, mjtNum);
     mju_zero(tendon_total_force, ntendon);
-    for (int i=0; i < nu; i++) {
+    for (int i=0; i < nactuator; i++) {
       if (m->actuator_trntype[i] == mjTRN_TENDON) {
         int tendon_id = m->actuator_trnid[2*i];
         if (m->tendon_actfrclimited[tendon_id]) {
-          tendon_total_force[tendon_id] += force[i];
+          tendon_total_force[tendon_id] += force[m->actuator_outadr[i]];
         }
       }
     }
 
     // scale tendon actuator forces if limited and outside range
-    for (int i=0; i < nu; i++) {
+    for (int i=0; i < nactuator; i++) {
       if (m->actuator_trntype[i] != mjTRN_TENDON) {
         continue;
       }
@@ -669,19 +914,41 @@ void mj_fwdActuation(const mjModel* m, mjData* d) {
       if (m->tendon_actfrclimited[tendon_id] && tendon_force) {
         const mjtNum* range = m->tendon_actfrcrange + 2 * tendon_id;
         if (tendon_force < range[0]) {
-          force[i] *= range[0] / tendon_force;
+          force[m->actuator_outadr[i]] *= range[0] / tendon_force;
         } else if (tendon_force > range[1]) {
-          force[i] *= range[1] / tendon_force;
+          force[m->actuator_outadr[i]] *= range[1] / tendon_force;
         }
       }
     }
   }
 
   // clamp actuator_force
-  clampVec(force, m->actuator_forcerange, m->actuator_forcelimited, nu, NULL);
+  for (int i=0; i < nactuator; i++) {
+    if (!m->actuator_forcelimited[i]) {
+      continue;
+    }
+    const mjtNum* range = m->actuator_forcerange + 2*i;
+    mjtNum* f = force + m->actuator_outadr[i];
+
+    // SO3: clamp the norm of the output torque, preserving its direction
+    if (m->actuator_gaintype[i] == mjGAIN_SO3) {
+      mjtNum norm = mju_norm3(f);
+      if (norm > range[1]) {
+        mju_scl3(f, f, range[1]/norm);
+      }
+    }
+
+    // otherwise: clamp each output
+    else {
+      int outnum = m->actuator_outnum[i];
+      for (int j=0; j < outnum; j++) {
+        f[j] = mju_clip(f[j], range[0], range[1]);
+      }
+    }
+  }
 
   // add DC motor mechanical forces (not subject to current limits)
-  for (int i=0; i < nu; i++) {
+  for (int i=0; i < nactuator; i++) {
     if (m->actuator_biastype[i] != mjBIAS_DCMOTOR) {
       continue;
     }
@@ -694,13 +961,14 @@ void mj_fwdActuation(const mjModel* m, mjData* d) {
 
     const mjtNum* biasprm = m->actuator_biasprm + mjNBIAS*i;
     const mjtNum* dynprm = m->actuator_dynprm + mjNDYN*i;
+    int oadr = m->actuator_outadr[i];
 
     // cogging torque
     mjtNum A = biasprm[0];
     if (A != 0) {
       mjtNum Np = biasprm[1];
       mjtNum phi = biasprm[2];
-      force[i] += A * mju_sin(Np*d->actuator_length[i] + phi);
+      force[oadr] += A * mju_sin(Np*d->actuator_length[oadr] + phi);
     }
 
     // LuGre friction
@@ -711,16 +979,16 @@ void mj_fwdActuation(const mjModel* m, mjData* d) {
       int adr = m->actuator_actadr[i] + slots.bristle;
       mjtNum z = d->act[adr];
       mjtNum z_dot = d->act_dot[adr];
-      force[i] -= sigma0 * z + sigma1 * z_dot;
+      force[oadr] -= sigma0 * z + sigma1 * z_dot;
     }
   }
 
   // qfrc_actuator = moment' * force
-  mju_mulMatTVecSparse(d->qfrc_actuator, d->actuator_moment, force, nu, nv,
+  mju_mulMatTVecSparse(d->qfrc_actuator, d->actuator_moment, force, nout, nv,
                        d->moment_rownnz, d->moment_rowadr, d->moment_colind);
 
   // actuator-level gravity compensation
-  if (m->ngravcomp && !mjDISABLED(mjDSBL_GRAVITY) && mju_norm3(m->opt.gravity)) {
+  if (m->flg_gravcomp && !mjDISABLED(mjDSBL_GRAVITY) && mju_norm3(m->opt.gravity)) {
     // number of dofs for each joint type: {mjJNT_FREE, mjJNT_BALL, mjJNT_SLIDE, mjJNT_HINGE}
     static const int jnt_dofnum[4] = {6, 3, 1, 1};
     int njnt = m->njnt;
@@ -768,6 +1036,35 @@ void mj_fwdAcceleration(const mjModel* m, mjData* d) {
 
   // qfrc_smooth += project(xfrc_applied)
   mj_xfrcAccumulate(m, d, d->qfrc_smooth);
+
+  // implicit effective metric (built in mj_fwdPosition): the smooth acceleration is that of
+  // the linearly-implicit dynamics, (M + K)*qacc_smooth = qfrc_smooth + c, so the constraint
+  // solver, the no-constraint shortcut and the warmstart all see one consistent metric.
+  if (d->efm_active) {
+    mj_markStack(d);
+    mjtNum* qfrc_eff = mjSTACKALLOC(d, m->nv, mjtNum);
+    if (!sleep_filter) {
+      mju_add(qfrc_eff, d->qfrc_smooth, d->efm_c, nv);
+      if (d->efm_ca) {
+        mju_addTo(qfrc_eff, d->efm_ca, nv);
+      }
+      mjd_effSolve(m, d, d->qacc_smooth, qfrc_eff);
+    } else {
+      // awake dofs only: sleep islands follow the metric couplings, so the metric has no
+      // terms across the awake/asleep boundary and zeroed asleep entries remain exactly
+      // zero under the solve; scatter back only the awake results, asleep stay frozen
+      mju_zero(qfrc_eff, m->nv);
+      mju_addInd(qfrc_eff, d->qfrc_smooth, d->efm_c, index, nv);
+      if (d->efm_ca) {
+        mju_addToInd(qfrc_eff, d->efm_ca, index, nv);
+      }
+      mjtNum* qacc_eff = mjSTACKALLOC(d, m->nv, mjtNum);
+      mjd_effSolve(m, d, qacc_eff, qfrc_eff);
+      mju_copyInd(d->qacc_smooth, qacc_eff, index, nv);
+    }
+    mj_freeStack(d);
+    return;
+  }
 
   // copy for in-place solve: qacc_smooth = qfrc_smooth
   if (!sleep_filter) {
@@ -826,11 +1123,14 @@ static void warmstart(const mjModel* m, mjData* d) {
     // non-PGS
     else {
       // add Gauss to cost(qacc_warmstart)
-      mjtNum* Ma = mjSTACKALLOC(d, nv, mjtNum);
-      mj_mulM(m, d, Ma, d->qacc_warmstart);
-      for (int i=0; i < nv; i++) {
-        cost_warmstart += 0.5*(Ma[i]-d->qfrc_smooth[i])*(d->qacc_warmstart[i]-d->qacc_smooth[i]);
+      mjtNum* da = mjSTACKALLOC(d, nv, mjtNum);
+      mjtNum* Mda = mjSTACKALLOC(d, nv, mjtNum);
+      mju_sub(da, d->qacc_warmstart, d->qacc_smooth, nv);
+      mj_mulM(m, d, Mda, da);
+      if (d->efm_active) {
+        mjd_effMulAdd(m, d, Mda, da, /*flg_contact=*/1);
       }
+      cost_warmstart += 0.5 * mju_dot(da, Mda, nv);
 
       // cost(qacc_smooth)
       mjtNum cost_smooth;
@@ -874,6 +1174,51 @@ static void solveIslandTask(const mjModel* m, mjData* d, void* arg, int thread_i
 }
 
 
+// any flex with metric terms (stiffness or passive contact)
+static int effFlexAny(const mjModel* m) {
+  for (int f=0; f < m->nflex; f++) {
+    if (mj_effFlexPossible(m, f)) {
+      return 1;
+    }
+  }
+  return 0;
+}
+
+
+// discrete: reinstate the free-body gyroscopic derivative for decoupled standalone free
+// bodies, re-solving their rows of qacc against the local unsymmetric metric. Guarded by
+// mjd_freeGyroPossible: no constraint Jacobian support and no off-diagonal metric coupling
+// on the 6 dofs, so the overwrite leaves all other rows and the constraint solution intact
+static void mj_discreteGyro(const mjModel* m, mjData* d) {
+  if (m->opt.integrator != mjINT_DISCRETE || !d->efm_active) {
+    return;
+  }
+  for (int j=0; j < m->njnt; j++) {
+    mjtNum A[36], rhs[6], x[6];
+
+    // skip if the joint cannot take the decoupled local treatment
+    if (!mjd_freeGyroPossible(m, d, j) ||
+        !mjd_freeMhat(m, d, j, m->opt.timestep, A, /*flg_discrete=*/1)) {
+      continue;
+    }
+
+    // rhs = qfrc_smooth + smooth-force shifts
+    int adr = m->jnt_dofadr[j];
+    mju_add(rhs, d->qfrc_smooth + adr, d->efm_c + adr, 6);
+    if (d->efm_ca) {
+      mju_addTo(rhs, d->efm_ca + adr, 6);
+    }
+
+    // overwrite the joint's rows of qacc with the local solve
+    int pivot[6];
+    if (mju_factorLU6(A, pivot)) {
+      mju_solveLU6(x, A, rhs, pivot);
+      mji_copy6(d->qacc + adr, x);
+    }
+  }
+}
+
+
 // compute efc_b, efc_force, qfrc_constraint; update qacc
 void mj_fwdConstraint(const mjModel* m, mjData* d) {
   TM_START;
@@ -883,9 +1228,11 @@ void mj_fwdConstraint(const mjModel* m, mjData* d) {
   mju_zero(d->qfrc_constraint, nv);
 
   // no constraints: copy unconstrained acc, clear forces, return
+  // (with the effective metric active, qacc_smooth is already the implicit answer)
   if (!nefc) {
     mju_copy(d->qacc, d->qacc_smooth, nv);
     mju_zeroInt(d->solver_niter, mjNISLAND);
+    mj_discreteGyro(m, d);
     TM_END(mjTIMER_CONSTRAINT);
     return;
   }
@@ -904,7 +1251,14 @@ void mj_fwdConstraint(const mjModel* m, mjData* d) {
   mju_zeroInt(d->solver_niter, mjNISLAND);
 
   // check if islands are supported
-  int islands_supported = !mjDISABLED(mjDSBL_ISLAND) && nisland > 0;
+  // islands are supported under the discrete metric: findEdges unions the trees of
+  // metric-coupled tendons, and the solver contexts see an island-local view (gathered
+  // shift, mapped products, gathered M+diag backbone factor). Only flex with metric terms
+  // still forces a monolithic solve: the flex operators (stencils, 3x3 block factors)
+  // have no island-local form.
+  // TODO: island-local flex operators, then remove the flex condition.
+  int islands_supported = !mjDISABLED(mjDSBL_ISLAND) && nisland > 0 &&
+                          !(mj_isMetric(m) && effFlexAny(m));
 
   // run solver over constraint islands
   if (islands_supported) {
@@ -968,6 +1322,7 @@ void mj_fwdConstraint(const mjModel* m, mjData* d) {
     mj_dualFinish(m, d);
   }
 
+  mj_discreteGyro(m, d);
   TM_END(mjTIMER_CONSTRAINT);
 }
 
@@ -980,18 +1335,18 @@ void mj_fwdConstraint(const mjModel* m, mjData* d) {
 //   qvel:    optional velocity used for position integration; if NULL, use d->qvel
 static void mj_advance(const mjModel* m, mjData* d,
                        const mjtNum* act_dot, const mjtNum* qacc, const mjtNum* qvel) {
-  int nu = m->nu, nsensor = m->nsensor;
+  int nactuator = m->nactuator, nsensor = m->nsensor;
 
   // advance history buffers
   if (m->nhistory > 0) {
     // advance ctrl history buffers
-    for (int i = 0; i < nu; i++) {
+    for (int i = 0; i < nactuator; i++) {
       int nsample = m->actuator_history[2*i];
       if (nsample == 0) continue;
 
       // get history buffer pointer and insert ctrl at current time
       mjtNum* buf = d->history + m->actuator_historyadr[i];
-      *mju_historyInsert(buf, nsample, /*dim=*/1, d->time) = d->ctrl[i];
+      *mju_historyInsert(buf, nsample, /*dim=*/1, d->time) = d->ctrl[m->actuator_ctrladr[i]];
     }
 
     // advance sensor history buffers
@@ -1033,12 +1388,39 @@ static void mj_advance(const mjModel* m, mjData* d,
 
   // advance activations
   if (m->na && !mjDISABLED(mjDSBL_ACTUATION)) {
-    for (int i=0; i < nu; i++) {
+    for (int i=0; i < nactuator; i++) {
       int actadr = m->actuator_actadr[i];
       int actadr_end = actadr + m->actuator_actnum[i];
       for (int j=actadr; j < actadr_end; j++) {
         // if disabled, set act_dot to 0
         d->act[j] = mj_nextActivation(m, d, i, j, mj_actuatorDisabled(m, i) ? 0 : act_dot[j]);
+      }
+    }
+
+    // rotational setpoints stored in act: replace with an equivalent bounded representative,
+    // like the actrange clamp above, this is a projection applied at integration time
+    for (int i=0; i < nactuator; i++) {
+      if (m->actuator_dyntype[i] != mjDYN_INTEGRATOR) {
+        continue;
+      }
+
+      // per-axis servo: wrap act to the representative nearest the length
+      mjtNum period = wrapPeriod(m, i);
+      if (period > 0) {
+        int adr = m->actuator_actadr[i] + m->actuator_actnum[i] - 1;
+        d->act[adr] = wrapSetpoint(d->act[adr], d->actuator_length[m->actuator_outadr[i]], period);
+      }
+
+      // SO3 servo: re-anchor the act setpoint to the canonical representative
+      else if (m->actuator_gaintype[i] == mjGAIN_SO3) {
+        int adr = m->actuator_actadr[i];
+        mjtNum angle = mju_norm3(d->act + adr);
+        if (angle > mjPI) {
+          mjtNum scale = (angle - 2*mjPI*mju_round(angle/(2*mjPI))) / angle;
+          for (int k=0; k < 3; k++) {
+            d->act[adr+k] *= scale;
+          }
+        }
       }
     }
   }
@@ -1175,6 +1557,14 @@ void mj_Euler(const mjModel* m, mjData* d) {
 }
 
 
+// discrete integrator: the solver's qacc is the step map, advance directly
+void mj_discrete(const mjModel* m, mjData* d) {
+  TM_START;
+  mj_advance(m, d, d->act_dot, d->qacc, NULL);
+  TM_END(mjTIMER_ADVANCE);
+}
+
+
 // RK4 tableau
 const mjtNum RK4_A[9] = {
   0.5,    0,      0,
@@ -1280,484 +1670,54 @@ void mj_RungeKutta(const mjModel* m, mjData* d, int N) {
 }
 
 
-// return 1 if any flex needs implicit stiffness treatment (interp or bending)
-static int flex_has_implicit_stiffness(const mjModel* m) {
-  for (int f=0; f < m->nflex; f++) {
-    if (m->flex_rigid[f]) {
-      continue;
+// runtime option validation for the discrete integrator
+void mj_checkDiscrete(const mjModel* m) {
+  // passive flex contact is too stiff for explicit integration: it is carried by the
+  // effective metric, which requires the discrete integrator
+  if (!mj_isMetric(m)) {
+    for (int f=0; f < m->nflex; f++) {
+      if (mj_effFlexContactPossible(m, f)) {
+        mjERROR("passive flex contact requires an integrator with the effective metric: "
+                "set integrator='discrete'");
+      }
     }
 
-    // interpolated flex with stiffness
-    if (m->flex_interp[f] &&
-        m->flex_edgeequality[f] != 3 &&
-        m->flex_stiffness[m->flex_stiffnessadr[f]] != 0) {
-      return 1;
+    // until the discrete integrator, flex elasticity was integrated implicitly under
+    // implicit and implicitfast; those models need the metric. Euler and RK4 always
+    // integrated it explicitly and still do
+    if (m->opt.integrator == mjINT_IMPLICIT || m->opt.integrator == mjINT_IMPLICITFAST) {
+      for (int f=0; f < m->nflex; f++) {
+        if (mj_effFlexStiffPossible(m, f)) {
+          mjERROR("flex elasticity is no longer integrated implicitly under "
+                  "integrator='implicit' and 'implicitfast': set "
+                  "integrator='discrete'");
+        }
+      }
     }
-
-    // standard flex with bending
-    if (!m->flex_interp[f] && m->flex_dim[f] == 2 &&
-        m->flex_bendingadr[f] >= 0) {
-      return 1;
-    }
-  }
-  return 0;
-}
-
-
-// preconditioned CG solve for implicit flex interp
-//   solves (M - h*qDeriv - (h^2+h*d)*K) * qacc = qfrc - h*K*qvel
-//   where K is the flex stiffness, using the already-factored standard system
-//   (M - h*qDeriv) as a preconditioner
-static void flexInterp_cgsolve(const mjModel* m, mjData* d,
-                                mjtNum* qacc, const mjtNum* qfrc, int nv) {
-  mjtNum h = m->opt.timestep;
-  int implicit = (m->opt.integrator == mjINT_IMPLICIT);
-
-  mj_markStack(d);
-
-  // allocate CG work vectors
-  mjtNum* rhs = mjSTACKALLOC(d, nv, mjtNum);
-  mjtNum* r = mjSTACKALLOC(d, nv, mjtNum);
-  mjtNum* z = mjSTACKALLOC(d, nv, mjtNum);
-  mjtNum* p = mjSTACKALLOC(d, nv, mjtNum);
-  mjtNum* Ap = mjSTACKALLOC(d, nv, mjtNum);
-  mjtNum* temp = mjSTACKALLOC(d, nv, mjtNum);
-
-  // precompute K_rot cache: same layout as m->flex_stiffness
-  int krot_size = m->nflexstiffness;
-  mjtNum* K_rot_cache = mjSTACKALLOC(d, krot_size, mjtNum);
-  mju_zero(K_rot_cache, krot_size);
-  mjd_flexInterp_cacheKrot(m, d, K_rot_cache);
-
-  // build RHS: rhs = qfrc
-  mju_copy(rhs, qfrc, nv);
-
-  // flex_interp velocity correction: rhs += h*K_interp*qvel (K_interp is NSD)
-  mjd_flexInterp_mul(m, d, rhs, d->qvel, h, 0, K_rot_cache);
-
-  // standard flex bending velocity correction: rhs -= h*K_bend*qvel
-  mjd_flexBend_mul(m, d, rhs, d->qvel, -h, 0);  // rhs -= h*K_bend*v
-
-  // --- helper: compute Ap = A*x ---
-  // A*x = (M - h*qDeriv)*x - (h^2+h*d)*K_interp*x + (h^2+h*d)*K_bend*x
-  #define FLEX_CG_MATVEC(Ap_out, x_in)                                           \
-    mju_mulMatVecSparse(Ap_out, d->qDeriv, x_in, nv, m->D_rownnz, m->D_rowadr,   \
-                        m->D_colind, NULL);                                      \
-    mju_mulSymVecSparse(temp, d->M, x_in, nv, m->M_rownnz, m->M_rowadr,          \
-                        m->M_colind);                                            \
-    mju_addScl(Ap_out, temp, Ap_out, -h, nv);                                    \
-    mjd_flexInterp_mul(m, d, Ap_out, x_in, -(h*h), -h, K_rot_cache);             \
-    mjd_flexBend_mul(m, d, Ap_out, x_in, h*h, h)
-
-  // --- helper: preconditioner solve z = (M - h*qDeriv)^{-1} * r ---
-  #define FLEX_CG_PRECOND(z_out, r_in)                                           \
-    if (implicit) {                                                              \
-      mju_solveLUSparse(z_out, d->qLU, r_in, nv, m->D_rownnz, m->D_rowadr,       \
-                        m->D_diag, m->D_colind, NULL);                           \
-    } else {                                                                     \
-      mju_copy(z_out, r_in, nv);                                                 \
-      mj_solveLD(z_out, d->qH, d->qHDiagInv, nv, 1, m->M_rownnz, m->M_rowadr,    \
-                 m->M_colind, NULL);                                             \
-    }
-
-  // initial residual: r = rhs - A*qacc
-  FLEX_CG_MATVEC(Ap, qacc);
-  mju_sub(r, rhs, Ap, nv);
-
-  // check if already converged
-  mjtNum rnorm = mju_dot(r, r, nv);
-  mjtNum tol = 1e-10 * mju_dot(rhs, rhs, nv);
-  if (rnorm < tol || rnorm < mjMINVAL) {
-    mj_freeStack(d);
     return;
   }
-
-  // z = precond(r), p = z
-  FLEX_CG_PRECOND(z, r);
-  mju_copy(p, z, nv);
-  mjtNum rz = mju_dot(r, z, nv);
-
-  // CG iterations
-  int maxiter = 50;
-  for (int iter=0; iter < maxiter; iter++) {
-    FLEX_CG_MATVEC(Ap, p);
-
-    // alpha = rz / dot(p, Ap)
-    mjtNum pAp = mju_dot(p, Ap, nv);
-    if (mju_abs(pAp) < mjMINVAL) break;
-    mjtNum alpha = rz / pAp;
-
-    // qacc += alpha * p
-    mju_addToScl(qacc, p, alpha, nv);
-
-    // r -= alpha * Ap
-    mju_addToScl(r, Ap, -alpha, nv);
-
-    // check convergence
-    rnorm = mju_dot(r, r, nv);
-    if (rnorm < tol || rnorm < mjMINVAL) break;
-
-    // z = precond(r)
-    FLEX_CG_PRECOND(z, r);
-
-    // beta = rz_new / rz
-    mjtNum rz_new = mju_dot(r, z, nv);
-    mjtNum beta = rz_new / mju_max(mjMINVAL, rz);
-
-    // p = z + beta * p
-    mju_addScl(p, z, p, beta, nv);
-    rz = rz_new;
+  if (m->opt.solver == mjSOL_NEWTON && !mjd_flexInterpAssemblable(m)) {
+    mjERROR("discrete integrator: interpolated flex with non-simple nodes not yet "
+            "supported with the Newton solver");
   }
-
-  #undef FLEX_CG_MATVEC
-  #undef FLEX_CG_PRECOND
-
-  mj_freeStack(d);
-}
-
-
-// return 1 if free joint is eligible for midpoint quaternion integration:
-//   standalone 6-DOF tree with no children, awake, and unconstrained
-static int midpoint_eligible(const mjModel* m, const mjData* d, int jnt) {
-  if (m->jnt_type[jnt] != mjJNT_FREE) {
-    return 0;
-  }
-
-  int body = m->jnt_bodyid[jnt];
-  int adr = m->jnt_dofadr[jnt];
-  int tree = m->dof_treeid[adr];
-
-  // must be standalone 6-DOF tree with no children
-  if (m->tree_dofnum[tree] != 6 ||
-      m->body_subtreemass[body] != m->body_mass[body]) {
-    return 0;
-  }
-
-  // must be awake
-  if (!d->tree_awake[tree]) {
-    return 0;
-  }
-
-  // must be unconstrained
-  if (d->nefc) {
-    // islands enabled: O(1) lookup
-    if (!mjDISABLED(mjDSBL_ISLAND)) {
-      if (d->dof_island[adr] >= 0) {
-        return 0;
-      }
-    }
-
-    // islands disabled: check if any constraint involves this tree
-    else {
-      for (int c=0; c < d->nefc; c++) {
-        int type = d->efc_type[c];
-        int id = d->efc_id[c];
-
-        // contact: check if either geom belongs to this body
-        if (type == mjCNSTR_CONTACT_FRICTIONLESS ||
-            type == mjCNSTR_CONTACT_PYRAMIDAL ||
-            type == mjCNSTR_CONTACT_ELLIPTIC) {
-          int g1 = d->contact[id].geom[0];
-          int g2 = d->contact[id].geom[1];
-          if (g1 >= 0 && m->geom_bodyid[g1] == body) return 0;
-          if (g2 >= 0 && m->geom_bodyid[g2] == body) return 0;
-        }
-
-        // connect or weld: check if either body is this body
-        else if (type == mjCNSTR_EQUALITY &&
-                 (m->eq_type[id] == mjEQ_CONNECT || m->eq_type[id] == mjEQ_WELD)) {
-          int b1 = m->eq_obj1id[id];
-          int b2 = m->eq_obj2id[id];
-          if (m->eq_objtype[id] == mjOBJ_SITE) {
-            b1 = m->site_bodyid[b1];
-            b2 = m->site_bodyid[b2];
-          }
-          if (b1 == body || b2 == body) return 0;
-        }
-
-        // tendon limit or friction: check first two trees
-        else if (type == mjCNSTR_LIMIT_TENDON || type == mjCNSTR_FRICTION_TENDON) {
-          if (m->tendon_treeid[2*id] == tree ||
-              m->tendon_treeid[2*id+1] == tree) return 0;
-        }
-      }
+  if (m->opt.solver == mjSOL_PGS || m->opt.noslip_iterations > 0) {
+    // the dual solvers assemble the constraint-space AR from an explicit factorization of
+    // the metric, and the only factor is the qH backbone. Under PGS the tendon and
+    // actuator classes are therefore excluded from the metric and integrate explicitly
+    // (mj_effCouplings), and the backbone IS the metric; under a primal solver, the
+    // noslip post-pass consumes the backbone AR as an approximation. Flex cannot be
+    // excluded: explicit flex elasticity is the divergence the metric exists to prevent
+    if (effFlexAny(m)) {
+      mjERROR("discrete integrator: PGS and noslip not yet supported with flex");
     }
   }
-
-  // otherwise eligible
-  return 1;
-}
-
-
-// return 1 if the body's CoM is at the joint origin (no translational-rotational coupling)
-static int midpoint_aligned(const mjModel* m, int jnt) {
-  int body = m->jnt_bodyid[jnt];
-  return m->body_ipos[3*body+0] == 0 &&
-         m->body_ipos[3*body+1] == 0 &&
-         m->body_ipos[3*body+2] == 0;
-}
-
-
-// implicit midpoint integration for 3D rotation of a single body
-//
-// solves the Euler rigid body equation in the inertial frame:
-//   I * (w_new - w) / h = tau - w_mid x (I*w_mid)
-// where w_mid = (w + w_new) / 2 is solved via Newton iteration.
-//
-// inputs:
-//   inertia:   principal moments of inertia (3)
-//   w:         initial angular velocity in principal axes frame (3)
-//   tau:       external torque in principal axes frame (3)
-//   h:         timestep
-// outputs:
-//   w_mid:     midpoint angular velocity in principal axes frame (3)
-// returns:     number of Newton iterations
-static int midpointNewton(const mjtNum inertia[3], const mjtNum w[3],
-                          const mjtNum tau[3], mjtNum h, mjtNum w_mid[3]) {
-  // precompute constants
-  mjtNum i2h = 2.0 / h;
-  mjtNum dI[3] = {inertia[2]-inertia[1], inertia[0]-inertia[2], inertia[1]-inertia[0]};
-  mjtNum i2h_I[3] = {i2h*inertia[0], i2h*inertia[1], i2h*inertia[2]};
-
-  // initialize solution to previous angular velocity
-  mji_copy3(w_mid, w);
-
-  // Newton iteration
-  int niter;
-  for (niter=0; niter < 100; niter++) {
-    // compute Coriolis term
-    mjtNum Iw[3] = {inertia[0]*w_mid[0], inertia[1]*w_mid[1], inertia[2]*w_mid[2]};
-    mjtNum coriolis[3];
-    mji_cross(coriolis, w_mid, Iw);
-
-    // residual: f = i2h*I*(w_mid - w) + w_mid x (I*w_mid) - tau
-    mjtNum f[3];
-    for (int k=0; k < 3; k++) {
-      f[k] = i2h_I[k]*(w_mid[k] - w[k]) + coriolis[k] - tau[k];
+  if (mjENABLED(mjENBL_SLEEP)) {
+    if (mjDISABLED(mjDSBL_ISLAND)) {
+      mjERROR("discrete integrator: sleep without islands not yet supported");
     }
-
-    // check convergence
-    mjtNum fnorm = mju_norm3(f);
-#ifndef mjUSESINGLE
-    mjtNum tol = 1e-13;
-#else
-    mjtNum tol = 1e-6f;
-#endif
-    if (fnorm < tol*(1 + i2h*mju_norm3(Iw))) break;
-
-    // Jacobian: J = i2h*diag(I) + d(w x Iw)/dw
-    mjtNum J[9];
-    J[0] = i2h_I[0];        J[1] = w_mid[2]*dI[0];  J[2] = w_mid[1]*dI[0];
-    J[3] = w_mid[2]*dI[1];  J[4] = i2h_I[1];        J[5] = w_mid[0]*dI[1];
-    J[6] = w_mid[1]*dI[2];  J[7] = w_mid[0]*dI[2];  J[8] = i2h_I[2];
-
-    // solve J*delta = -f for search direction delta
-    mjtNum neg_f[3] = {-f[0], -f[1], -f[2]};
-    mjtNum delta[3];
-    mju_solve3(delta, J, neg_f);
-
-    // backtracking line search
-    mjtNum step = 1.0;
-    for (int ls=0; ls < 20; ls++) {
-      // candidate step
-      mjtNum w_try[3], Iw_try[3];
-      for (int k=0; k < 3; k++) {
-        w_try[k] = w_mid[k] + step*delta[k];
-        Iw_try[k] = inertia[k]*w_try[k];
-      }
-      mjtNum coriolis_try[3];
-      mji_cross(coriolis_try, w_try, Iw_try);
-
-      // residual at candidate step
-      mjtNum f_try[3];
-      for (int k=0; k < 3; k++) {
-        f_try[k] = i2h_I[k]*(w_try[k] - w[k]) + coriolis_try[k] - tau[k];
-      }
-
-      // accept step if residual decreased, otherwise backtrack
-      if (mju_norm3(f_try) < fnorm) {
-        mji_copy3(w_mid, w_try);
-        break;
-      }
-      step *= 0.5;
+    if (effFlexAny(m)) {
+      mjERROR("discrete integrator: sleep with flex not yet supported");
     }
-  }
-
-  return niter;
-}
-
-
-// implicit midpoint integration for one free body
-//
-// solves the Euler rigid body equation in the inertial frame:
-//   I * dw/dt = tau - w x (I*w)
-// using the implicit midpoint rule:
-//   I * (w_new - w_old) / h = tau_mid - w_mid x (I*w_mid)
-// where w_mid = (w_old + w_new) / 2 is solved via Newton iteration.
-//
-// inputs:
-//   mass:      body mass
-//   inertia:   principal moments of inertia
-//   ipos:      CoM offset from joint origin, in body frame
-//   iquat:     inertial quaternion (body_iquat)
-//   xquat:     body orientation in world frame
-//   qvel_old:  current velocity (lin in world : rot in body)
-//   qfrc:      external force (lin in world : rot in body)
-//   gravity:   gravitational acceleration in world frame (NULL: no gravity)
-//   h:         timestep
-// outputs:
-//   qvel_new:  next velocity (lin in world : rot in body)
-int mj_midpoint(mjtNum mass, const mjtNum inertia[3], const mjtNum ipos[3],
-                const mjtNum iquat[4], const mjtNum xquat[4], const mjtNum qvel_old[6],
-                const mjtNum qfrc[6], const mjtNum gravity[3], mjtNum h,
-                mjtNum qvel_new[6]) {
-  // transform angular velocity and torque to inertial frame
-  mjtNum iquat_neg[4], w[3], tau[3];
-  mji_negQuat(iquat_neg, iquat);
-  mji_rotVecQuat(w, qvel_old+3, iquat_neg);  // qvel+3 (angular) is in body frame
-  mji_rotVecQuat(tau, qfrc+3, iquat_neg);    // qfrc+3 (angular) is in body frame
-
-  // check for translational-rotational coupling
-  int aligned = (ipos[0] == 0 && ipos[1] == 0 && ipos[2] == 0);
-
-  mjtNum r_com[3];    // joint-to-CoM vector in inertial frame
-  mjtNum tau_com[3];  // torque at CoM in inertial frame
-  mjtNum rot_x2i[4];  // quaternion rotation from world to inertial frame
-  mjtNum force[3];    // external force in inertial frame
-
-  // compute torque at CoM in inertial frame
-  if (aligned) {
-    mji_copy3(tau_com, tau);
-  } else {
-    // rotation from world to inertial frame
-    mjtNum xquat_neg[4];
-    mji_negQuat(xquat_neg, xquat);
-    mji_mulQuat(rot_x2i, iquat_neg, xquat_neg);
-
-    // force and CoM offset in inertial frame
-    mji_rotVecQuat(force, qfrc, rot_x2i);
-    mji_rotVecQuat(r_com, ipos, iquat_neg);
-
-    // torque at CoM in inertial frame
-    mjtNum rxf[3];
-    mji_cross(rxf, r_com, force);
-    mji_sub3(tau_com, tau, rxf);
-  }
-
-  // solve for midpoint angular velocity
-  mjtNum w_mid[3];
-  int niter = midpointNewton(inertia, w, tau_com, h, w_mid);
-
-  // next and mid angular velocities in inertial frame, rotate both to body frame
-  mjtNum w_new[3], w_new_body[3], w_mid_body[3];
-  for (int k=0; k < 3; k++) {
-    w_new[k] = 2.0*w_mid[k] - w[k];
-  }
-  mji_rotVecQuat(w_new_body, w_new, iquat);
-  mji_rotVecQuat(w_mid_body, w_mid, iquat);
-  mji_copy3(qvel_new+3, w_new_body);
-
-  // === aligned: return
-  if (aligned) {
-    return niter;
-  }
-
-  // === non-aligned: solve for translational velocity
-
-  // rotate linear velocity to inertial frame
-  mjtNum v[3];
-  mji_rotVecQuat(v, qvel_old, rot_x2i);
-
-  // current CoM velocities (rot, lin) in inertial frame
-  mjtNum wxr[3];
-  mji_cross(wxr, w, r_com);
-  mjtNum vcom[3];
-  mji_add3(vcom, v, wxr);
-
-  // right-hand side for midpoint CoM velocity
-  mjtNum i2h = 2.0 / h;
-  mjtNum b[3];
-  for (int k=0; k < 3; k++) {
-    b[k] = force[k]/mass + i2h*vcom[k];
-  }
-
-  // add gravity, if any
-  if (gravity) {
-    mjtNum g_inertial[3];
-    mji_rotVecQuat(g_inertial, gravity, rot_x2i);
-    mji_addTo3(b, g_inertial);
-  }
-
-  // analytic solution for (i2h*Id + [w_mid]x) * vcom_mid = b
-  mjtNum wnorm2 = mju_dot3(w_mid, w_mid);
-  mjtNum denom = i2h*i2h + wnorm2;
-  mjtNum w_dot_b = mju_dot3(w_mid, b);
-  mjtNum w_cross_b[3];
-  mji_cross(w_cross_b, w_mid, b);
-  mjtNum vcom_mid[3];
-  for (int k=0; k < 3; k++) {
-    vcom_mid[k] = (i2h*b[k] + (w_dot_b/i2h)*w_mid[k] - w_cross_b[k]) / denom;
-  }
-
-  // recover midpoint and new joint velocity in inertial frame
-  mjtNum wxr_mid[3];
-  mji_cross(wxr_mid, w_mid, r_com);
-  mjtNum v_mid[3], v_new[3];
-  for (int k=0; k < 3; k++) {
-    v_mid[k] = vcom_mid[k] - wxr_mid[k];
-    v_new[k] = 2.0*v_mid[k] - v[k];
-  }
-
-  // estimate new orientation
-  mjtNum axis[3];
-  mji_copy3(axis, w_mid_body);
-  mjtNum wnorm = mju_normalize3(axis);
-  mjtNum qrot_new[4];
-  mji_axisAngle2Quat(qrot_new, axis, h*wnorm);
-  mjtNum xquat_new[4];
-  mji_mulQuat(xquat_new, xquat, qrot_new);
-
-  // v_new (linear): inertial → body → world using new orientation
-  mjtNum v_body[3];
-  mji_rotVecQuat(v_body, v_new, iquat);
-  mji_rotVecQuat(qvel_new, v_body, xquat_new);
-
-  return niter;
-}
-
-
-// compute next velocities via midpoint integration for eligible free bodies
-//   qfrc:       total force (qfrc_smooth + qfrc_constraint)
-//   free_jntid: list of eligible free joint IDs
-//   nfree:      number of eligible free joints
-//   qvel_old:   output array for old velocities (6 per joint)
-//   qvel_new:   output array for new velocities (6 per joint)
-//   dofadr:     output array for DOF addresses (1 per joint)
-static void midpoint(const mjModel* m, const mjData* d, const mjtNum* qfrc,
-                     const int* free_jntid, int nfree,
-                     mjtNum* qvel_old, mjtNum* qvel_new, int* dofadr) {
-  for (int i=0; i < nfree; i++) {
-    int j = free_jntid[i];
-    int body = m->jnt_bodyid[j];
-
-    // save DOF address
-    int adr = m->jnt_dofadr[j];
-    dofadr[i] = adr;
-
-    // save old (current) velocity, needed after mj_advance (which overwrites qvel)
-    mju_copy(qvel_old+6*i, d->qvel+adr, 6);
-
-    // compute external force = qfrc + qfrc_bias (undo bias subtraction)
-    mjtNum qfrc_total[6];
-    mju_add(qfrc_total, qfrc+adr, d->qfrc_bias+adr, 6);
-
-    // gravity handled inside mj_midpoint (accelerating frame of reference)
-    const mjtNum* gravity = mjDISABLED(mjDSBL_GRAVITY) ? NULL : m->opt.gravity;
-
-    // midpoint solver for free joint j
-    mj_midpoint(m->body_mass[body], m->body_inertia+3*body, m->body_ipos+3*body,
-                m->body_iquat+4*body, d->xquat+4*body,
-                d->qvel+adr, qfrc_total, gravity, m->opt.timestep, qvel_new+6*i);
   }
 }
 
@@ -1765,7 +1725,7 @@ static void midpoint(const mjModel* m, const mjData* d, const mjtNum* qfrc,
 // fully implicit in velocity, possibly skipping factorization
 void mj_implicitSkip(const mjModel* m, mjData* d, int skipfactor) {
   TM_START;
-  int nD = m->nD, nC = m->nC;
+  int nD = m->nD, nC = m->nC, njnt = m->njnt;
 
   mj_markStack(d);
   mjtNum* qfrc = mjSTACKALLOC(d, m->nv, mjtNum);
@@ -1782,9 +1742,6 @@ void mj_implicitSkip(const mjModel* m, mjData* d, int skipfactor) {
   } else {
     mju_add(qfrc, d->qfrc_smooth, d->qfrc_constraint, nv);
   }
-
-  // check for flex_interp that needs implicit treatment
-  int has_flex_stiffness = !sleep_filter && flex_has_implicit_stiffness(m);
 
   // factorization
   if (!skipfactor) {
@@ -1810,6 +1767,18 @@ void mj_implicitSkip(const mjModel* m, mjData* d, int skipfactor) {
 
       // set qH = M - dt*qDeriv
       mju_addScl(d->qH, d->M, d->qH, -m->opt.timestep, nC);
+
+      // standalone free bodies: reset qH block rows to M; their qDeriv rows may be asymmetric and
+      // are handled by the local LU solve; we reset to keep LTL well-defined
+      for (int j=0; j < njnt; j++) {
+        if (m->jnt_type[j] != mjJNT_FREE || !mj_isFreeBody(m, m->jnt_bodyid[j])) {
+          continue;
+        }
+        int adr = m->jnt_dofadr[j];
+        for (int r=0; r < 6; r++) {
+          mju_copy(d->qH + m->M_rowadr[adr+r], d->M + m->M_rowadr[adr+r], m->M_rownnz[adr+r]);
+        }
+      }
     } else {
       mjERROR("integrator must be implicit or implicitfast");
     }
@@ -1837,70 +1806,30 @@ void mj_implicitSkip(const mjModel* m, mjData* d, int skipfactor) {
     mj_solveLD(qacc, d->qH, d->qHDiagInv, nv, 1, m->M_rownnz, m->M_rowadr, m->M_colind, dof_awake_ind);
   }
 
-  // flex: CG correction for implicit flex stiffness
-  if (has_flex_stiffness) {
-    flexInterp_cgsolve(m, d, qacc, qfrc, m->nv);
-  }
-
-  // count and list joints of free bodies eligible for midpoint integration
-  int nfree = 0;
-  int* free_jntid = NULL;
-  if (!mjENABLED(mjENBL_INVDISCRETE) &&
-      m->opt.integrator == mjINT_IMPLICITFAST &&
-      m->opt.density == 0 && m->opt.viscosity == 0) {
-    free_jntid = mjSTACKALLOC(d, m->njnt, int);
+  // implicitfast: local unsymmetric solve for standalone free bodies
+  // adds the bias (gyroscopic) derivative, dropped from the global symmetric solve; the
+  // 6x6 block of M - h*D is decoupled from the rest of the system (D sparsity is tree-local),
+  // so overwriting these rows of qacc leaves all other DOFs unaffected
+  if (m->opt.integrator == mjINT_IMPLICITFAST) {
     for (int j=0; j < m->njnt; j++) {
-      if (midpoint_eligible(m, d, j)) {
-        free_jntid[nfree++] = j;
-      }
-    }
-  }
-
-  // compute midpoint velocities (used to update positions)
-  int* dofadr = NULL;
-  mjtNum* qvel_old = NULL;
-  mjtNum* qvel_new = NULL;
-  mjtNum* qvel_mid = NULL;
-  if (nfree) {
-    // allocate arrays, call midpoint solver for all eligible free joints
-    dofadr = mjSTACKALLOC(d, nfree, int);
-    qvel_new = mjSTACKALLOC(d, 6*nfree, mjtNum);
-    qvel_old = mjSTACKALLOC(d, 6*nfree, mjtNum);
-    midpoint(m, d, qfrc, free_jntid, nfree, qvel_old, qvel_new, dofadr);
-
-    // build qvel_mid = d->qvel + h*qacc for all DOFs, then overwrite midpoint DOFs
-    qvel_mid = mjSTACKALLOC(d, m->nv, mjtNum);
-    mju_addScl(qvel_mid, d->qvel, qacc, m->opt.timestep, m->nv);
-    for (int i=0; i < nfree; i++) {
-      int adr = dofadr[i];
-      int start = midpoint_aligned(m, free_jntid[i]) ? 3 : 0;
-      for (int k=start; k < 6; k++) {
-        qvel_mid[adr+k] = 0.5*(qvel_new[6*i+k] + qvel_old[6*i+k]);
-      }
-    }
-  }
-
-  // advance state and time (use qvel_mid if allocated, NULL otherwise)
-  mj_advance(m, d, d->act_dot, qacc, qvel_mid);
-
-  // overwrite midpoint DOFs with true next velocity and acceleration
-  if (nfree) {
-    mjtNum h_inv = 1.0 / m->opt.timestep;
-    for (int i=0; i < nfree; i++) {
-      // skip sleeping tree (may have been put to sleep during mj_advance)
-      int adr = dofadr[i];
-      if (!d->tree_awake[m->dof_treeid[adr]]) {
+      mjtNum A[36];
+      if (!mjd_freeMhat(m, d, j, m->opt.timestep, A, /*flg_discrete=*/0)) {
         continue;
       }
 
-      // overwrite 3 or 6 midpoint DOFs with true next velocity and acceleration
-      int start = midpoint_aligned(m, free_jntid[i]) ? 3 : 0;
-      for (int k=start; k < 6; k++) {
-        d->qvel[adr+k] = qvel_new[6*i+k];
-        d->qacc[adr+k] = (qvel_new[6*i+k] - qvel_old[6*i+k]) * h_inv;
+      // solve A * qacc_block = qfrc_block
+      int adr = m->jnt_dofadr[j];
+      int pivot[6];
+      if (mju_factorLU6(A, pivot)) {
+        mjtNum x[6];  // local vector for guaranteed memory alignment
+        mju_solveLU6(x, A, qfrc+adr, pivot);
+        mji_copy6(qacc+adr, x);
       }
     }
   }
+
+  // advance state and time
+  mj_advance(m, d, d->act_dot, qacc, NULL);
 
   mj_freeStack(d);
 
@@ -1919,6 +1848,9 @@ void mj_implicit(const mjModel* m, mjData* d) {
 // forward dynamics with skip; skipstage is mjtStage
 void mj_forwardSkip(const mjModel* m, mjData* d, int skipstage, int skipsensor) {
   TM_START;
+
+  // validate option combinations for the discrete integrator
+  mj_checkDiscrete(m);
 
   // position-dependent
   if (skipstage < mjSTAGE_POS) {
@@ -1956,6 +1888,11 @@ void mj_forwardSkip(const mjModel* m, mjData* d, int skipstage, int skipsensor) 
   }
 
   mj_fwdActuation(m, d);
+  mjd_effActuation(m, d);
+  if (mj_isMetric(m)) {
+    mj_regularizeConstraint(m, d, /*flg_AR=*/1);
+    mj_referenceConstraint(m, d);
+  }
   mj_fwdAcceleration(m, d);
   mj_fwdConstraint(m, d);
   if (!skipsensor) {
@@ -2003,6 +1940,10 @@ void mj_step(const mjModel* m, mjData* d) {
     mj_implicit(m, d);
     break;
 
+  case mjINT_DISCRETE:
+    mj_discrete(m, d);
+    break;
+
   default:
     mjERROR("invalid integrator");
   }
@@ -2014,6 +1955,7 @@ void mj_step(const mjModel* m, mjData* d) {
 // advance simulation in two phases: before input is set by user
 void mj_step1(const mjModel* m, mjData* d) {
   TM_START;
+  mj_checkDiscrete(m);
   mj_checkPos(m, d);
   mj_checkVel(m, d);
   mj_fwdPosition(m, d);
@@ -2047,6 +1989,11 @@ void mj_step1(const mjModel* m, mjData* d) {
 void mj_step2(const mjModel* m, mjData* d) {
   TM_START;
   mj_fwdActuation(m, d);
+  mjd_effActuation(m, d);
+  if (mj_isMetric(m)) {
+    mj_regularizeConstraint(m, d, /*flg_AR=*/1);
+    mj_referenceConstraint(m, d);
+  }
   mj_fwdAcceleration(m, d);
   mj_fwdConstraint(m, d);
   d->flg_rnepost = 0;  // clear flag for lazy evaluation
@@ -2058,8 +2005,10 @@ void mj_step2(const mjModel* m, mjData* d) {
     mj_compareFwdInv(m, d);
   }
 
-  // integrate with Euler or implicit; RK4 defaults to Euler
-  if (m->opt.integrator == mjINT_IMPLICIT || m->opt.integrator == mjINT_IMPLICITFAST) {
+  // integrate with Euler, implicit or discrete; RK4 defaults to Euler
+  if (m->opt.integrator == mjINT_DISCRETE) {
+    mj_discrete(m, d);
+  } else if (m->opt.integrator == mjINT_IMPLICIT || m->opt.integrator == mjINT_IMPLICITFAST) {
     mj_implicit(m, d);
   } else {
     mj_Euler(m, d);

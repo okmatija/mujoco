@@ -58,13 +58,37 @@ enum {
 };
 
 
+// check if geom type is a builtin shape with explicit UVs
+static int isBuiltinWithUV(int type) {
+  return (type == mjGEOM_PLANE ||
+          type == mjGEOM_SPHERE ||
+          type == mjGEOM_ELLIPSOID ||
+          type == mjGEOM_BOX ||
+          type == mjGEOM_CYLINDER ||
+          type == mjGEOM_CAPSULE ||
+          type == mjGEOM_ARROW ||
+          type == mjGEOM_ARROW1 ||
+          type == mjGEOM_ARROW2 ||
+          type == mjGEOM_TRIANGLE);
+}
+
+
 // enable/disable texture mapping
 static void settexture(int type, int state, const mjrContext* con, const mjvGeom* geom) {
   float plane[4], scl[2];
-  int texid = -1;
+  int texid = -1, texuniform = 0;
+  float texrepeat[2] = {0, 0};
   if (geom) {
-    if (geom->matid >= 0) {
+    if (geom->texid >= 0) {
+      texid = geom->texid;
+      texuniform = geom->texuniform;
+      texrepeat[0] = geom->texrepeat[0];
+      texrepeat[1] = geom->texrepeat[1];
+    } else if (geom->matid >= 0) {
       texid = con->mat_texid[mjNTEXROLE * geom->matid + mjTEXROLE_RGB];
+      texuniform = con->mat_texuniform[geom->matid];
+      texrepeat[0] = con->mat_texrepeat[geom->matid*2];
+      texrepeat[1] = con->mat_texrepeat[geom->matid*2+1];
     }
   }
 
@@ -93,18 +117,45 @@ static void settexture(int type, int state, const mjrContext* con, const mjvGeom
   }
 
   // explicit texture coordinates
-  else if (type == mjtexREGULAR && geom->texcoord) {
+  else if (type == mjtexREGULAR && geom &&
+           (geom->texcoord || geom->type == mjGEOM_FLEX || geom->type == mjGEOM_SKIN ||
+            (texid >= 0 && con->textureType[texid] == mjTEXTURE_2D && isBuiltinWithUV(geom->type)))) {
     // enable
     if (state && texid >= 0) {
       glActiveTexture(GL_TEXTURE0);
       glEnable(GL_TEXTURE_2D);
       glBindTexture(GL_TEXTURE_2D, con->texture[texid]);
+
+      // determine scaling
+      scl[0] = texrepeat[0] > 0 ? texrepeat[0] : 1.0f;
+      scl[1] = texrepeat[1] > 0 ? texrepeat[1] : 1.0f;
+
+      // uniform: repeat relative to spatial units rather than object
+      if (texuniform && geom->type != mjGEOM_FLEX && geom->type != mjGEOM_SKIN) {
+        if (geom->size[0] > 0) {
+          scl[0] = scl[0] * geom->size[0];
+        }
+        if (geom->size[1] > 0) {
+          scl[1] = scl[1] * geom->size[1];
+        }
+      }
+
+      glMatrixMode(GL_TEXTURE);
+      glLoadIdentity();
+      if (geom->type == mjGEOM_PLANE && (geom->size[0] <= 0 || geom->size[1] <= 0)) {
+        glTranslatef(-0.5f, -0.5f, 0.0f);
+      }
+      glScalef(scl[0], scl[1], 1.0f);
+      glMatrixMode(GL_MODELVIEW);
     }
 
     // disable
     else {
       glActiveTexture(GL_TEXTURE0);
       glDisable(GL_TEXTURE_2D);
+      glMatrixMode(GL_TEXTURE);
+      glLoadIdentity();
+      glMatrixMode(GL_MODELVIEW);
     }
   }
 
@@ -119,8 +170,8 @@ static void settexture(int type, int state, const mjrContext* con, const mjvGeom
       glBindTexture(GL_TEXTURE_2D, con->texture[texid]);
 
       // determine scaling, adjust for pre-scaled geoms
-      scl[0] = con->mat_texrepeat[geom->matid*2];
-      scl[1] = con->mat_texrepeat[geom->matid*2+1];
+      scl[0] = texrepeat[0];
+      scl[1] = texrepeat[1];
       if (geom->dataid >= 0) {
         if (geom->size[0] > 0) {
           scl[0] = scl[0] / mju_max(mjMINVAL, geom->size[0]);
@@ -132,7 +183,7 @@ static void settexture(int type, int state, const mjrContext* con, const mjvGeom
       }
 
       // uniform: repeat relative to spatial units rather than object
-      if (con->mat_texuniform[geom->matid]) {
+      if (texuniform) {
         if (geom->size[0] > 0) {
           scl[0] = scl[0] * geom->size[0];
         }
@@ -171,11 +222,11 @@ static void settexture(int type, int state, const mjrContext* con, const mjvGeom
 
       // set mapping : cube
       if (type == mjtexREGULAR) {
-        mjr_setf4(plane, con->mat_texuniform[geom->matid] ? geom->size[0] : 1, 0, 0, 0);
+        mjr_setf4(plane, texuniform ? geom->size[0] : 1, 0, 0, 0);
         glTexGenfv(GL_S, GL_OBJECT_PLANE, plane);
-        mjr_setf4(plane, 0, con->mat_texuniform[geom->matid] ? geom->size[1] : 1, 0, 0);
+        mjr_setf4(plane, 0, texuniform ? geom->size[1] : 1, 0, 0);
         glTexGenfv(GL_T, GL_OBJECT_PLANE, plane);
-        mjr_setf4(plane, 0, 0, con->mat_texuniform[geom->matid] ? geom->size[2] : 1, 0);
+        mjr_setf4(plane, 0, 0, texuniform ? geom->size[2] : 1, 0);
         glTexGenfv(GL_R, GL_OBJECT_PLANE, plane);
       }
 
@@ -449,8 +500,11 @@ static void renderGeom(const mjvGeom* geom, int mode, const float* headpos,
     glDisable(GL_CULL_FACE);
     glBegin(GL_TRIANGLES);
     glNormal3f(0, 0, 1);
+    glTexCoord2f(0, 1);
     glVertex3f(0, 0, 0);
+    glTexCoord2f(1, 1);
     glVertex3f(size[0], 0, 0);
+    glTexCoord2f(0, 0);
     glVertex3f(0, size[1], 0);
     glEnd();
     if (scn->flags[mjRND_CULL_FACE]) {
@@ -658,10 +712,23 @@ static void initGL3(const mjvScene* scn, const mjrContext* con) {
 
 
 
+// light type is supported by the fixed-function pipeline
+static int isSupportedLight(const mjvLight* light) {
+  return light->type == mjLIGHT_DIRECTIONAL || light->type == mjLIGHT_SPOT;
+}
+
+
+
 // init lights
 static void initLights(mjvScene* scn) {
-  // create some ambient light if no ligths are present
-  float global = scn->nlight ? 0 : 0.3f;
+  // count supported lights
+  int nsupported = 0;
+  for (int i=0; i < scn->nlight; i++) {
+    nsupported += isSupportedLight(scn->lights+i);
+  }
+
+  // create some ambient light if no supported lights are present
+  float global = nsupported ? 0 : 0.3f;
   float rgba_global[4] = {global, global, global, 1};
 
   // init light model
@@ -671,6 +738,11 @@ static void initLights(mjvScene* scn) {
 
   // set light properties
   for (int i=0; i < scn->nlight; i++) {
+    // ignore unsupported light types: mjLIGHT_POINT, mjLIGHT_IMAGE
+    if (!isSupportedLight(scn->lights+i)) {
+      continue;
+    }
+
     // colors
     glLightfv(GL_LIGHT0+i, GL_AMBIENT, scn->lights[i].ambient);
     glLightfv(GL_LIGHT0+i, GL_DIFFUSE, scn->lights[i].diffuse);
@@ -692,10 +764,6 @@ static void initLights(mjvScene* scn) {
       glLightf(GL_LIGHT0+i, GL_CONSTANT_ATTENUATION,  scn->lights[i].attenuation[0]);
       glLightf(GL_LIGHT0+i, GL_LINEAR_ATTENUATION,    scn->lights[i].attenuation[1]);
       glLightf(GL_LIGHT0+i, GL_QUADRATIC_ATTENUATION, scn->lights[i].attenuation[2]);
-    }
-
-    else {
-      // ignore unsupported light types: mjLIGHT_POINT, mjLIGHT_IMAGE
     }
   }
 
@@ -875,6 +943,10 @@ void mjr_render(mjrRect viewport, mjvScene* scn, const mjrContext* con) {
                  3*scn->skinvertnum[i]*sizeof(float),
                  scn->skinnormal + 3*scn->skinvertadr[i],
                  GL_STREAM_DRAW);
+  }
+  // avoid leaking VBO bindings to subsequent client-array draws (e.g. flex geoms)
+  if (scn->nskin > 0) {
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
   }
 
   // determine drawbuffer; may be changed by stereo later
@@ -1080,10 +1152,12 @@ void mjr_render(mjrRect viewport, mjvScene* scn, const mjrContext* con) {
           glPushMatrix();
           mjr_reflect(thisgeom->pos, thisgeom->mat);
 
-          // set light position and direction, enable
+          // set light position and direction, enable supported lights
           for (int j=0; j < nlight; j++) {
-            adjustLight(scn->lights+j, j);
-            glEnable(GL_LIGHT0+j);
+            if (isSupportedLight(scn->lights+j)) {
+              adjustLight(scn->lights+j, j);
+              glEnable(GL_LIGHT0+j);
+            }
           }
 
           // render reflected non-transparent geoms, except for thisgeom
@@ -1134,8 +1208,13 @@ void mjr_render(mjrRect viewport, mjvScene* scn, const mjrContext* con) {
 
     // set light position and direction, enable non-shadow lights
     for (int i=0; i < nlight; i++) {
-      // set light
+      // get pointer, ignore unsupported light types
       thislight = scn->lights + i;
+      if (!isSupportedLight(thislight)) {
+        continue;
+      }
+
+      // set light
       adjustLight(thislight, i);
 
       // enable lights without shadows
@@ -1175,10 +1254,10 @@ void mjr_render(mjrRect viewport, mjvScene* scn, const mjrContext* con) {
     // shadow map rendering
     if (scn->flags[mjRND_SHADOW] && con->shadowFBO) {
       for (int i=0; i < nlight; i++) {
-        // get pointer
+        // get pointer, ignore unsupported light types
         thislight = scn->lights + i;
 
-        if (thislight->castshadow) {
+        if (thislight->castshadow && isSupportedLight(thislight)) {
           // prepare up-direction
           mjr_orthoVec(temp, thislight->dir);
 
@@ -1201,8 +1280,6 @@ void mjr_render(mjrRect viewport, mjvScene* scn, const mjrContext* con) {
           } else if (thislight->type == mjLIGHT_SPOT) {
             mjr_perspective(mju_min(2*thislight->cutoff*con->shadowScale, 160), 1,
                             cam.frustum_near, cam.frustum_far);
-          } else {
-            // ignore unsupported light types: mjLIGHT_POINT, mjLIGHT_IMAGE
           }
           glGetFloatv(GL_PROJECTION_MATRIX, lightProject);
 
@@ -1317,7 +1394,7 @@ void mjr_render(mjrRect viewport, mjvScene* scn, const mjrContext* con) {
         if (con->textureType[i] == mjTEXTURE_SKYBOX) {
           // save first skybox texture id in tempgeom
           memset(&tempgeom, 0, sizeof(mjvGeom));
-          tempgeom.matid = mjMAXMATERIAL - 1;
+          tempgeom.texid = i;
 
           // modify settings
           glDisable(GL_LIGHTING);
@@ -1399,9 +1476,11 @@ void mjr_render(mjrRect viewport, mjvScene* scn, const mjrContext* con) {
 
     //------------------------------------ transparent regular rendering
 
-    // enable lights
+    // enable supported lights
     for (int i=0; i < nlight; i++) {
-      glEnable(GL_LIGHT0+i);
+      if (isSupportedLight(scn->lights+i)) {
+        glEnable(GL_LIGHT0+i);
+      }
     }
 
     // blend mode

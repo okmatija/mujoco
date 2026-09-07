@@ -358,6 +358,8 @@ typedef struct mjsGeom_ {          // geom specification
   mjtNum solimp[mjNIMP];           // solver impedance
   double margin;                   // margin for contact detection
   double gap;                      // additional contact detection buffer
+  double surfacevel[6];            // surface velocity in local frame: linear, angular
+  double adhesion;                 // adhesive force of contacts
 
   // inertia inference
   double mass;                     // used to compute density
@@ -453,6 +455,7 @@ typedef struct mjsLight_ {         // light specification
   float range;                     // range of effectiveness
   float attenuation[3];            // OpenGL attenuation (quadratic model)
   float cutoff;                    // OpenGL cutoff
+  float softness;                  // spotlight edge softness
   float exponent;                  // OpenGL exponent
   float ambient[3];                // ambient color
   float diffuse[3];                // diffuse color
@@ -641,6 +644,7 @@ typedef struct mjsPair_ {          // pair specification
   mjtNum solimp[mjNIMP];           // solver impedance
   double margin;                   // margin for contact detection
   double gap;                      // additional contact detection buffer
+  double adhesion;                 // adhesive force of contacts
   double friction[5];              // full contact friction
   mjString* info;                  // message appended to errors
 } mjsPair;
@@ -715,12 +719,15 @@ typedef struct mjsActuator_ {      // actuator specification
   mjtGain gaintype;                // gain type
   double gainprm[mjNGAIN];         // gain parameters
   mjtBias biastype;                // bias type
-  double biasprm[mjNGAIN];         // bias parameters
+  double biasprm[mjNBIAS];         // bias parameters
 
   // activation state
   mjtDyn dyntype;                  // dynamics type
   double dynprm[mjNDYN];           // dynamics parameters
   int actdim;                      // number of activation variables
+  int ctrlspec;                    // input signature, scoped by gaintype; 0: type default
+  double velrange[2];              // range of the velocity-setpoint input (pid)
+  double ffrange[2];               // range of the feedforward input (pid)
   mjtBool actearly;                // apply next activations to qfrc
 
   // transmission

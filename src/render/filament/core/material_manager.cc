@@ -17,6 +17,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <string_view>
 
 #include <filament/Color.h>
 #include <filament/Material.h>
@@ -126,36 +127,48 @@ MaterialManager::MaterialType MaterialManager::GetMaterialType(
   if (material.decor_ux) {
     if (material.color_texture) {
       return ObjectManager::kUnlitUi;
+    } else if (material.color[3] < 1.0f) {
+      return ObjectManager::kDecorFade;
     } else {
       return ObjectManager::kDecor;
     }
   } else if (material.orm_texture) {
     if (material.opacity_texture) {
       return ObjectManager::kPbrPackedTransparent;
+    } else if (material.reflectance > 0) {
+      return ObjectManager::kPbrPackedReflect;
     } else {
       return ObjectManager::kPbrPacked;
     }
   } else if (material.metallic_texture) {
     if (material.opacity_texture) {
       return ObjectManager::kPbrPackedTransparent;
+    } else if (material.reflectance > 0) {
+      return ObjectManager::kPbrReflect;
     } else {
       return ObjectManager::kPbr;
     }
   } else if (material.roughness_texture) {
     if (material.color[3] < 1.0f) {
       return ObjectManager::kPbrTransparent;
+    } else if (material.reflectance > 0) {
+      return ObjectManager::kPbrReflect;
     } else {
       return ObjectManager::kPbr;
     }
   } else if (material.metallic >= 0) {
     if (material.color[3] < 1.0f) {
       return ObjectManager::kPbrTransparent;
+    } else if (material.reflectance > 0) {
+      return ObjectManager::kPbrReflect;
     } else {
       return ObjectManager::kPbr;
     }
   } else if (material.roughness >= 0) {
     if (material.color[3] < 1.0f) {
       return ObjectManager::kPbrTransparent;
+    } else if (material.reflectance > 0) {
+      return ObjectManager::kPbrReflect;
     } else {
       return ObjectManager::kPbr;
     }
@@ -194,10 +207,10 @@ MaterialManager::MaterialType MaterialManager::GetMaterialType(
       return ObjectManager::kPhong2dUv;
     }
   } else {
+    // Reached only by a mesh without texture coordinates. Meshes are not planar
+    // reflectors, so reflectance has no reflect variant here.
     if (material.color[3] < 1.0f) {
       return ObjectManager::kPhong2dFade;
-    } else if (material.reflectance > 0) {
-      return ObjectManager::kPhong2dReflect;
     } else {
       return ObjectManager::kPhong2d;
     }
@@ -236,7 +249,11 @@ MaterialManager::MaterialKey MaterialManager::PrepareMaterialInstance(
   return key;
 }
 
-filament::MaterialInstance* MaterialManager::GetInstance(MaterialKey key) {
+const filament::MaterialInstance* MaterialManager::GetInstance(MaterialKey key) {
+  if (key == 0) {
+    return GetEngine()->getDefaultMaterial()->getDefaultInstance();
+  }
+
   auto it = instances_.find(key);
   if (it == instances_.end()) {
     return nullptr;
@@ -295,6 +312,14 @@ void MaterialManager::UpdateMaterialInstance(
   }
   if (fmaterial->hasParameter("Reflectance")) {
     instance->setParameter("Reflectance", material.reflectance);
+  }
+  if (fmaterial->hasParameter("ReflectionNormal")) {
+    instance->setParameter("ReflectionNormal",
+                           ReadFloat3(material.reflection_normal));
+  }
+  if (fmaterial->hasParameter("ReflectionViewProj")) {
+    instance->setParameter("ReflectionViewProj",
+                           ReadMat4(material.reflection_view_proj));
   }
 
   // All textures use the same default sampler.

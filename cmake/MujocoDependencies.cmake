@@ -14,10 +14,6 @@
 
 # Build configuration for third party libraries used in MuJoCo.
 
-set(MUJOCO_DEP_VERSION_lodepng
-    17d08dd26cac4d63f43af217ebd70318bfb8189c
-    CACHE STRING "Version of `lodepng` to be fetched."
-)
 set(MUJOCO_DEP_VERSION_tinyxml2
     e6caeae85799003f4ca74ff26ee16a789bc2af48
     CACHE STRING "Version of `tinyxml2` to be fetched."
@@ -53,7 +49,7 @@ set(MUJOCO_DEP_VERSION_abseil
 )
 
 set(MUJOCO_DEP_VERSION_gtest
-    52eb8108c5bdec04579160ae17225d66034bd723 # v1.17.0
+    063de7e9578f82b369302001269680b4b1553359 # v1.18.0
     CACHE STRING "Version of `gtest` to be fetched."
 )
 
@@ -62,7 +58,6 @@ set(MUJOCO_DEP_VERSION_benchmark
     CACHE STRING "Version of `benchmark` to be fetched."
 )
 
-mark_as_advanced(MUJOCO_DEP_VERSION_lodepng)
 mark_as_advanced(MUJOCO_DEP_VERSION_MarchingCubeCpp)
 mark_as_advanced(MUJOCO_DEP_VERSION_tinyxml2)
 mark_as_advanced(MUJOCO_DEP_VERSION_tinyobjloader)
@@ -88,29 +83,7 @@ set(BUILD_SHARED_LIBS
     CACHE INTERNAL "Build SHARED libraries"
 )
 
-if(NOT TARGET lodepng)
-  FetchContent_Declare(
-    lodepng
-    GIT_REPOSITORY https://github.com/lvandeve/lodepng.git
-    GIT_TAG ${MUJOCO_DEP_VERSION_lodepng}
-  )
-
-  FetchContent_GetProperties(lodepng)
-  if(NOT lodepng_POPULATED)
-    FetchContent_Populate(lodepng)
-    # This is not a CMake project.
-    set(LODEPNG_SRCS ${lodepng_SOURCE_DIR}/lodepng.cpp)
-    set(LODEPNG_HEADERS ${lodepng_SOURCE_DIR}/lodepng.h)
-    add_library(lodepng STATIC ${LODEPNG_HEADERS} ${LODEPNG_SRCS})
-    target_compile_options(lodepng PRIVATE ${MUJOCO_MACOS_COMPILE_OPTIONS})
-    target_link_options(lodepng PRIVATE ${MUJOCO_MACOS_LINK_OPTIONS})
-    if(NOT EMSCRIPTEN)
-      target_include_directories(lodepng PUBLIC ${lodepng_SOURCE_DIR})
-    else()
-      target_include_directories(lodepng PUBLIC  $<BUILD_INTERFACE:${lodepng_SOURCE_DIR}> $<INSTALL_INTERFACE:include>)
-    endif()
-  endif()
-endif()
+include(third_party_deps/lodepng)
 
 if(NOT TARGET marchingcubecpp)
   FetchContent_Declare(
@@ -129,7 +102,7 @@ endif()
 set(QHULL_ENABLE_TESTING OFF)
 # Patch changes in https://github.com/qhull/qhull/pull/173.patch
 set(QHULL_PATCH_COMMAND
-  git apply --reject --whitespace=fix ${mujoco_SOURCE_DIR}/cmake/qhull-support-emscripten.patch
+  git --git-dir=. -c core.autocrlf=false -c core.whitespace=cr-at-eol apply --verbose --whitespace=fix --ignore-space-change ${mujoco_SOURCE_DIR}/cmake/qhull-support-emscripten.patch
 )
 
 findorfetch(
@@ -200,12 +173,17 @@ if(CMAKE_POLICY_VERSION_MINIMUM_LOCALLY_DEFINED)
   unset(CMAKE_POLICY_VERSION_MINIMUM_LOCALLY_DEFINED)
 endif()
 
-set(ENABLE_DOUBLE_PRECISION ON)
+# build ccd in single precision when MuJoCo is built with mjUSESINGLE
+if(CMAKE_C_FLAGS MATCHES "mjUSESINGLE")
+  set(ENABLE_DOUBLE_PRECISION OFF)
+else()
+  set(ENABLE_DOUBLE_PRECISION ON)
+endif()
 set(CCD_HIDE_ALL_SYMBOLS ON)
 
 # Patch changes in https://github.com/danfis/libccd/pull/83.patch
 set(CCD_PATCH_COMMAND
-  git apply --reject --whitespace=fix ${mujoco_SOURCE_DIR}/cmake/ccd-support-emscripten.patch
+  git --git-dir=. -c core.autocrlf=false -c core.whitespace=cr-at-eol apply --verbose --whitespace=fix --ignore-space-change ${mujoco_SOURCE_DIR}/cmake/ccd-support-emscripten.patch
 )
 
 # update cmake_minimum_required version for compatibility with newer version of cmake
@@ -279,7 +257,7 @@ if(MUJOCO_BUILD_TESTS OR MUJOCO_BUILD_STUDIO OR MUJOCO_USE_FILAMENT)
   )
 
   set(ABSL_PATCH_COMMAND
-    git apply --reject --whitespace=fix ${mujoco_SOURCE_DIR}/cmake/abseil-cpp-source_location.patch
+    git --git-dir=. -c core.autocrlf=false -c core.whitespace=cr-at-eol apply --verbose --whitespace=fix --ignore-space-change ${mujoco_SOURCE_DIR}/cmake/abseil-cpp-source_location.patch
   )
   set(ABSL_BUILD_TESTING OFF)
   findorfetch(

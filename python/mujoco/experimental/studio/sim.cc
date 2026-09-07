@@ -17,13 +17,14 @@
 #include <tuple>
 
 #include <mujoco/mujoco.h>
-#include <mujoco/experimental/platform/sim/step_control.h>
+#include <mujoco/experimental/studio/sim/sim_history.h>
+#include <mujoco/experimental/studio/sim/step_control.h>
 #include "structs.h"
 #include <pybind11/pybind11.h>
 
 namespace py = pybind11;
 
-using StepControl = mujoco::platform::StepControl;
+using StepControl = mujoco::studio::StepControl;
 
 PYBIND11_MODULE(sim, m, pybind11::mod_gil_not_used()) {
   py::module_::import("mujoco._structs");
@@ -32,14 +33,12 @@ PYBIND11_MODULE(sim, m, pybind11::mod_gil_not_used()) {
   py::enum_<StepControl::Status>(m, "StepStatus")
       .value("OK", StepControl::Status::kOk)
       .value("PAUSED", StepControl::Status::kPaused)
-      .value("VISCOUS_PAUSED", StepControl::Status::kViscousPaused)
       .value("AUTO_RESET", StepControl::Status::kAutoReset)
       .value("DIVERGED", StepControl::Status::kDiverged);
 
   py::enum_<StepControl::PauseState>(m, "PauseState")
       .value("UNPAUSED", StepControl::PauseState::kUnpaused)
-      .value("NORMAL_PAUSED", StepControl::PauseState::kNormalPaused)
-      .value("VISCOUS_PAUSED", StepControl::PauseState::kViscousPaused);
+      .value("NORMAL_PAUSED", StepControl::PauseState::kNormalPaused);
 
   py::class_<StepControl>(m, "StepControl")
       .def(py::init<>())
@@ -84,4 +83,19 @@ PYBIND11_MODULE(sim, m, pybind11::mod_gil_not_used()) {
       .def("set_noise_parameters", &StepControl::SetNoiseParameters,
            py::arg("noise_scale"), py::arg("noise_rate"),
            "Sets the noise parameters.");
+
+  using SimHistory = mujoco::studio::SimHistory;
+  constexpr int max_history = 2048;
+  constexpr int max_bytes = 128 * 1024 * 1024;  // 128 MiB
+  py::class_<SimHistory>(m, "SimHistory")
+      .def(py::init<>())
+      .def("init", &SimHistory::Init, py::arg("state_size"),
+           py::arg("max_history") = max_history,
+           py::arg("max_bytes") = max_bytes,
+           "Clears and initializes the history buffer to hold `state_size` "
+           "mjtNum states.")
+      .def("get_index", &SimHistory::GetIndex,
+           "Returns the current history offset (0 is the most recent state).")
+      .def("size", &SimHistory::Size,
+           "Returns the number of recorded states.");
 }

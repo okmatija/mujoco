@@ -946,7 +946,17 @@ STRUCTS: Mapping[str, StructDecl] = dict([
              StructFieldDecl(
                  name='nu',
                  type=ValueType(name='mjtSize'),
-                 doc='number of actuators/controls = dim(ctrl)',
+                 doc='number of scalar controls = dim(ctrl)',
+             ),
+             StructFieldDecl(
+                 name='nactuator',
+                 type=ValueType(name='mjtSize'),
+                 doc='number of actuators',
+             ),
+             StructFieldDecl(
+                 name='nout',
+                 type=ValueType(name='mjtSize'),
+                 doc='number of force outputs, derived from transmission type',
              ),
              StructFieldDecl(
                  name='na',
@@ -1067,6 +1077,16 @@ STRUCTS: Mapping[str, StructDecl] = dict([
                  name='nflexbending',
                  type=ValueType(name='mjtSize'),
                  doc='number of bending parameters in all flexes',
+             ),
+             StructFieldDecl(
+                 name='nefm0dof',
+                 type=ValueType(name='mjtSize'),
+                 doc='number of dofs covered by the constant metric factor',
+             ),
+             StructFieldDecl(
+                 name='nefm0L',
+                 type=ValueType(name='mjtSize'),
+                 doc='number of non-zeros in the constant metric factor',
              ),
              StructFieldDecl(
                  name='nflexelemedge',
@@ -1364,6 +1384,16 @@ STRUCTS: Mapping[str, StructDecl] = dict([
                  doc='number of potential contacts in contact list (legacy)',
              ),
              StructFieldDecl(
+                 name='npolygonmax',
+                 type=ValueType(name='mjtSize'),
+                 doc='maximum number of vertices in a mesh polygon',
+             ),
+             StructFieldDecl(
+                 name='nmeshdegmax',
+                 type=ValueType(name='mjtSize'),
+                 doc='maximum number of edges adjacent to a mesh vertex',
+             ),
+             StructFieldDecl(
                  name='nuserdata',
                  type=ValueType(name='mjtSize'),
                  doc='number of mjtNums reserved for the user',
@@ -1392,6 +1422,21 @@ STRUCTS: Mapping[str, StructDecl] = dict([
                  name='nbuffer',
                  type=ValueType(name='mjtSize'),
                  doc='number of bytes in buffer',
+             ),
+             StructFieldDecl(
+                 name='flg_gravcomp',
+                 type=ValueType(name='mjtBool'),
+                 doc='whether any body has nonzero gravcomp',
+             ),
+             StructFieldDecl(
+                 name='flg_surfacevel',
+                 type=ValueType(name='mjtBool'),
+                 doc='whether any geom has nonzero surfacevel',
+             ),
+             StructFieldDecl(
+                 name='flg_adhesion',
+                 type=ValueType(name='mjtBool'),
+                 doc='whether any geom or pair has nonzero adhesion',
              ),
              StructFieldDecl(
                  name='opt',
@@ -1452,7 +1497,7 @@ STRUCTS: Mapping[str, StructDecl] = dict([
                  type=PointerType(
                      inner_type=ValueType(name='int'),
                  ),
-                 doc='top ancestor with no dofs to this body',
+                 doc='top dof-less ancestor; mocap: own root',
                  array_extent=('nbody',),
              ),
              StructFieldDecl(
@@ -1612,7 +1657,7 @@ STRUCTS: Mapping[str, StructDecl] = dict([
                  type=PointerType(
                      inner_type=ValueType(name='mjtNum'),
                  ),
-                 doc='MAX over all geom margins',
+                 doc='MAX over all geom margins+gaps',
                  array_extent=('nbody',),
              ),
              StructFieldDecl(
@@ -2216,6 +2261,22 @@ STRUCTS: Mapping[str, StructDecl] = dict([
                  array_extent=('ngeom',),
              ),
              StructFieldDecl(
+                 name='geom_surfacevel',
+                 type=PointerType(
+                     inner_type=ValueType(name='mjtNum'),
+                 ),
+                 doc='surface velocity in local frame: lin,ang',
+                 array_extent=('ngeom', 6),
+             ),
+             StructFieldDecl(
+                 name='geom_adhesion',
+                 type=PointerType(
+                     inner_type=ValueType(name='mjtNum'),
+                 ),
+                 doc='adhesive force of contacts',
+                 array_extent=('ngeom',),
+             ),
+             StructFieldDecl(
                  name='geom_fluid',
                  type=PointerType(
                      inner_type=ValueType(name='mjtNum'),
@@ -2581,6 +2642,14 @@ STRUCTS: Mapping[str, StructDecl] = dict([
                      inner_type=ValueType(name='float'),
                  ),
                  doc='OpenGL cutoff',
+                 array_extent=('nlight',),
+             ),
+             StructFieldDecl(
+                 name='light_softness',
+                 type=PointerType(
+                     inner_type=ValueType(name='float'),
+                 ),
+                 doc='spotlight edge softness',
                  array_extent=('nlight',),
              ),
              StructFieldDecl(
@@ -3096,6 +3165,46 @@ STRUCTS: Mapping[str, StructDecl] = dict([
                  array_extent=('nflexbending',),
              ),
              StructFieldDecl(
+                 name='efm0_dofid',
+                 type=PointerType(
+                     inner_type=ValueType(name='int'),
+                 ),
+                 doc='constant metric factor row->dof address',
+                 array_extent=('nefm0dof',),
+             ),
+             StructFieldDecl(
+                 name='efm0_L_rownnz',
+                 type=PointerType(
+                     inner_type=ValueType(name='int'),
+                 ),
+                 doc='constant metric factor row nonzeros',
+                 array_extent=('nefm0dof',),
+             ),
+             StructFieldDecl(
+                 name='efm0_L_rowadr',
+                 type=PointerType(
+                     inner_type=ValueType(name='int'),
+                 ),
+                 doc='constant metric factor row addresses',
+                 array_extent=('nefm0dof',),
+             ),
+             StructFieldDecl(
+                 name='efm0_L_colind',
+                 type=PointerType(
+                     inner_type=ValueType(name='int'),
+                 ),
+                 doc='constant metric factor column indices',
+                 array_extent=('nefm0L',),
+             ),
+             StructFieldDecl(
+                 name='efm0_L',
+                 type=PointerType(
+                     inner_type=ValueType(name='mjtNum'),
+                 ),
+                 doc='factor of M + (dt^2+dt*d)*K_bend',
+                 array_extent=('nefm0L',),
+             ),
+             StructFieldDecl(
                  name='flex_damping',
                  type=PointerType(
                      inner_type=ValueType(name='mjtNum'),
@@ -3342,6 +3451,14 @@ STRUCTS: Mapping[str, StructDecl] = dict([
                  ),
                  doc='graph data address; -1: no graph',
                  array_extent=('nmesh',),
+             ),
+             StructFieldDecl(
+                 name='mesh_extrema',
+                 type=PointerType(
+                     inner_type=ValueType(name='int'),
+                 ),
+                 doc='extremum vertices in 3x3x3 directions',
+                 array_extent=('nmesh', 27),
              ),
              StructFieldDecl(
                  name='mesh_vert',
@@ -3944,6 +4061,14 @@ STRUCTS: Mapping[str, StructDecl] = dict([
                  array_extent=('npair',),
              ),
              StructFieldDecl(
+                 name='pair_adhesion',
+                 type=PointerType(
+                     inner_type=ValueType(name='mjtNum'),
+                 ),
+                 doc='adhesive force of contacts',
+                 array_extent=('npair',),
+             ),
+             StructFieldDecl(
                  name='pair_friction',
                  type=PointerType(
                      inner_type=ValueType(name='mjtNum'),
@@ -4301,7 +4426,7 @@ STRUCTS: Mapping[str, StructDecl] = dict([
                      inner_type=ValueType(name='int'),
                  ),
                  doc='transmission type (mjtTrn)',
-                 array_extent=('nu',),
+                 array_extent=('nactuator',),
              ),
              StructFieldDecl(
                  name='actuator_dyntype',
@@ -4309,7 +4434,7 @@ STRUCTS: Mapping[str, StructDecl] = dict([
                      inner_type=ValueType(name='int'),
                  ),
                  doc='dynamics type (mjtDyn)',
-                 array_extent=('nu',),
+                 array_extent=('nactuator',),
              ),
              StructFieldDecl(
                  name='actuator_gaintype',
@@ -4317,7 +4442,7 @@ STRUCTS: Mapping[str, StructDecl] = dict([
                      inner_type=ValueType(name='int'),
                  ),
                  doc='gain type (mjtGain)',
-                 array_extent=('nu',),
+                 array_extent=('nactuator',),
              ),
              StructFieldDecl(
                  name='actuator_biastype',
@@ -4325,39 +4450,47 @@ STRUCTS: Mapping[str, StructDecl] = dict([
                      inner_type=ValueType(name='int'),
                  ),
                  doc='bias type (mjtBias)',
-                 array_extent=('nu',),
+                 array_extent=('nactuator',),
              ),
              StructFieldDecl(
-                 name='actuator_trnid',
+                 name='actuator_ctrladr',
                  type=PointerType(
                      inner_type=ValueType(name='int'),
                  ),
-                 doc='transmission id: joint, tendon, site',
-                 array_extent=('nu', 2),
+                 doc='address of first control',
+                 array_extent=('nactuator',),
              ),
              StructFieldDecl(
-                 name='actuator_damping',
+                 name='actuator_ctrlnum',
                  type=PointerType(
-                     inner_type=ValueType(name='mjtNum'),
+                     inner_type=ValueType(name='int'),
                  ),
-                 doc='linear damping coefficient',
-                 array_extent=('nu',),
+                 doc='number of controls',
+                 array_extent=('nactuator',),
              ),
              StructFieldDecl(
-                 name='actuator_dampingpoly',
+                 name='actuator_ctrlspec',
                  type=PointerType(
-                     inner_type=ValueType(name='mjtNum'),
+                     inner_type=ValueType(name='int'),
                  ),
-                 doc='high-order damping coefficients',
-                 array_extent=('nu', 'mjNPOLY'),
+                 doc='input signature, scoped by gaintype',
+                 array_extent=('nactuator',),
              ),
              StructFieldDecl(
-                 name='actuator_armature',
+                 name='actuator_outadr',
                  type=PointerType(
-                     inner_type=ValueType(name='mjtNum'),
+                     inner_type=ValueType(name='int'),
                  ),
-                 doc='armature added to target (joint, tendon)',
-                 array_extent=('nu',),
+                 doc='address of first force output',
+                 array_extent=('nactuator',),
+             ),
+             StructFieldDecl(
+                 name='actuator_outnum',
+                 type=PointerType(
+                     inner_type=ValueType(name='int'),
+                 ),
+                 doc='number of force outputs, from trntype',
+                 array_extent=('nactuator',),
              ),
              StructFieldDecl(
                  name='actuator_actadr',
@@ -4365,7 +4498,7 @@ STRUCTS: Mapping[str, StructDecl] = dict([
                      inner_type=ValueType(name='int'),
                  ),
                  doc='first activation address; -1: stateless',
-                 array_extent=('nu',),
+                 array_extent=('nactuator',),
              ),
              StructFieldDecl(
                  name='actuator_actnum',
@@ -4373,63 +4506,23 @@ STRUCTS: Mapping[str, StructDecl] = dict([
                      inner_type=ValueType(name='int'),
                  ),
                  doc='number of activation variables',
-                 array_extent=('nu',),
+                 array_extent=('nactuator',),
              ),
              StructFieldDecl(
-                 name='actuator_group',
+                 name='actuator_trnid',
                  type=PointerType(
                      inner_type=ValueType(name='int'),
                  ),
-                 doc='group for visibility',
-                 array_extent=('nu',),
+                 doc='transmission id: joint, tendon, site',
+                 array_extent=('nactuator', 2),
              ),
              StructFieldDecl(
-                 name='actuator_history',
-                 type=PointerType(
-                     inner_type=ValueType(name='int'),
-                 ),
-                 doc='history buffer: [nsample, interp]',
-                 array_extent=('nu', 2),
-             ),
-             StructFieldDecl(
-                 name='actuator_historyadr',
-                 type=PointerType(
-                     inner_type=ValueType(name='int'),
-                 ),
-                 doc='address in history buffer; -1: none',
-                 array_extent=('nu',),
-             ),
-             StructFieldDecl(
-                 name='actuator_delay',
+                 name='actuator_cranklength',
                  type=PointerType(
                      inner_type=ValueType(name='mjtNum'),
                  ),
-                 doc='delay time in seconds; 0: no delay',
-                 array_extent=('nu',),
-             ),
-             StructFieldDecl(
-                 name='actuator_ctrllimited',
-                 type=PointerType(
-                     inner_type=ValueType(name='mjtBool'),
-                 ),
-                 doc='is control limited',
-                 array_extent=('nu',),
-             ),
-             StructFieldDecl(
-                 name='actuator_forcelimited',
-                 type=PointerType(
-                     inner_type=ValueType(name='mjtBool'),
-                 ),
-                 doc='is force limited',
-                 array_extent=('nu',),
-             ),
-             StructFieldDecl(
-                 name='actuator_actlimited',
-                 type=PointerType(
-                     inner_type=ValueType(name='mjtBool'),
-                 ),
-                 doc='is activation limited',
-                 array_extent=('nu',),
+                 doc='crank length for slider-crank',
+                 array_extent=('nactuator',),
              ),
              StructFieldDecl(
                  name='actuator_dynprm',
@@ -4437,7 +4530,7 @@ STRUCTS: Mapping[str, StructDecl] = dict([
                      inner_type=ValueType(name='mjtNum'),
                  ),
                  doc='dynamics parameters',
-                 array_extent=('nu', 'mjNDYN'),
+                 array_extent=('nactuator', 'mjNDYN'),
              ),
              StructFieldDecl(
                  name='actuator_gainprm',
@@ -4445,7 +4538,7 @@ STRUCTS: Mapping[str, StructDecl] = dict([
                      inner_type=ValueType(name='mjtNum'),
                  ),
                  doc='gain parameters',
-                 array_extent=('nu', 'mjNGAIN'),
+                 array_extent=('nactuator', 'mjNGAIN'),
              ),
              StructFieldDecl(
                  name='actuator_biasprm',
@@ -4453,7 +4546,23 @@ STRUCTS: Mapping[str, StructDecl] = dict([
                      inner_type=ValueType(name='mjtNum'),
                  ),
                  doc='bias parameters',
-                 array_extent=('nu', 'mjNBIAS'),
+                 array_extent=('nactuator', 'mjNBIAS'),
+             ),
+             StructFieldDecl(
+                 name='actuator_actlimited',
+                 type=PointerType(
+                     inner_type=ValueType(name='mjtBool'),
+                 ),
+                 doc='is activation limited',
+                 array_extent=('nactuator',),
+             ),
+             StructFieldDecl(
+                 name='actuator_actrange',
+                 type=PointerType(
+                     inner_type=ValueType(name='mjtNum'),
+                 ),
+                 doc='range of activations',
+                 array_extent=('nactuator', 2),
              ),
              StructFieldDecl(
                  name='actuator_actearly',
@@ -4461,6 +4570,102 @@ STRUCTS: Mapping[str, StructDecl] = dict([
                      inner_type=ValueType(name='mjtBool'),
                  ),
                  doc='step activation before force',
+                 array_extent=('nactuator',),
+             ),
+             StructFieldDecl(
+                 name='actuator_history',
+                 type=PointerType(
+                     inner_type=ValueType(name='int'),
+                 ),
+                 doc='history buffer: [nsample, interp]',
+                 array_extent=('nactuator', 2),
+             ),
+             StructFieldDecl(
+                 name='actuator_historyadr',
+                 type=PointerType(
+                     inner_type=ValueType(name='int'),
+                 ),
+                 doc='address in history buffer; -1: none',
+                 array_extent=('nactuator',),
+             ),
+             StructFieldDecl(
+                 name='actuator_delay',
+                 type=PointerType(
+                     inner_type=ValueType(name='mjtNum'),
+                 ),
+                 doc='delay time; 0: no delay',
+                 array_extent=('nactuator',),
+             ),
+             StructFieldDecl(
+                 name='actuator_damping',
+                 type=PointerType(
+                     inner_type=ValueType(name='mjtNum'),
+                 ),
+                 doc='linear damping coefficient',
+                 array_extent=('nactuator',),
+             ),
+             StructFieldDecl(
+                 name='actuator_dampingpoly',
+                 type=PointerType(
+                     inner_type=ValueType(name='mjtNum'),
+                 ),
+                 doc='high-order damping coefficients',
+                 array_extent=('nactuator', 'mjNPOLY'),
+             ),
+             StructFieldDecl(
+                 name='actuator_armature',
+                 type=PointerType(
+                     inner_type=ValueType(name='mjtNum'),
+                 ),
+                 doc='armature added to target (joint, tendon)',
+                 array_extent=('nactuator',),
+             ),
+             StructFieldDecl(
+                 name='actuator_group',
+                 type=PointerType(
+                     inner_type=ValueType(name='int'),
+                 ),
+                 doc='group for visibility',
+                 array_extent=('nactuator',),
+             ),
+             StructFieldDecl(
+                 name='actuator_user',
+                 type=PointerType(
+                     inner_type=ValueType(name='mjtNum'),
+                 ),
+                 doc='user data',
+                 array_extent=('nactuator', 'nuser_actuator'),
+             ),
+             StructFieldDecl(
+                 name='actuator_plugin',
+                 type=PointerType(
+                     inner_type=ValueType(name='int'),
+                 ),
+                 doc='plugin instance id; -1: not a plugin',
+                 array_extent=('nactuator',),
+             ),
+             StructFieldDecl(
+                 name='actuator_forcelimited',
+                 type=PointerType(
+                     inner_type=ValueType(name='mjtBool'),
+                 ),
+                 doc='is force limited',
+                 array_extent=('nactuator',),
+             ),
+             StructFieldDecl(
+                 name='actuator_forcerange',
+                 type=PointerType(
+                     inner_type=ValueType(name='mjtNum'),
+                 ),
+                 doc='range of forces',
+                 array_extent=('nactuator', 2),
+             ),
+             StructFieldDecl(
+                 name='actuator_ctrllimited',
+                 type=PointerType(
+                     inner_type=ValueType(name='mjtBool'),
+                 ),
+                 doc='is control limited',
                  array_extent=('nu',),
              ),
              StructFieldDecl(
@@ -4472,36 +4677,12 @@ STRUCTS: Mapping[str, StructDecl] = dict([
                  array_extent=('nu', 2),
              ),
              StructFieldDecl(
-                 name='actuator_forcerange',
-                 type=PointerType(
-                     inner_type=ValueType(name='mjtNum'),
-                 ),
-                 doc='range of forces',
-                 array_extent=('nu', 2),
-             ),
-             StructFieldDecl(
-                 name='actuator_actrange',
-                 type=PointerType(
-                     inner_type=ValueType(name='mjtNum'),
-                 ),
-                 doc='range of activations',
-                 array_extent=('nu', 2),
-             ),
-             StructFieldDecl(
                  name='actuator_gear',
                  type=PointerType(
                      inner_type=ValueType(name='mjtNum'),
                  ),
                  doc='scale length and transmitted force',
-                 array_extent=('nu', 6),
-             ),
-             StructFieldDecl(
-                 name='actuator_cranklength',
-                 type=PointerType(
-                     inner_type=ValueType(name='mjtNum'),
-                 ),
-                 doc='crank length for slider-crank',
-                 array_extent=('nu',),
+                 array_extent=('nout', 6),
              ),
              StructFieldDecl(
                  name='actuator_acc0',
@@ -4509,7 +4690,7 @@ STRUCTS: Mapping[str, StructDecl] = dict([
                      inner_type=ValueType(name='mjtNum'),
                  ),
                  doc='acceleration from unit force in qpos0',
-                 array_extent=('nu',),
+                 array_extent=('nout',),
              ),
              StructFieldDecl(
                  name='actuator_length0',
@@ -4517,7 +4698,7 @@ STRUCTS: Mapping[str, StructDecl] = dict([
                      inner_type=ValueType(name='mjtNum'),
                  ),
                  doc='actuator length in qpos0',
-                 array_extent=('nu',),
+                 array_extent=('nout',),
              ),
              StructFieldDecl(
                  name='actuator_lengthrange',
@@ -4525,23 +4706,7 @@ STRUCTS: Mapping[str, StructDecl] = dict([
                      inner_type=ValueType(name='mjtNum'),
                  ),
                  doc='feasible actuator length range',
-                 array_extent=('nu', 2),
-             ),
-             StructFieldDecl(
-                 name='actuator_user',
-                 type=PointerType(
-                     inner_type=ValueType(name='mjtNum'),
-                 ),
-                 doc='user data',
-                 array_extent=('nu', 'nuser_actuator'),
-             ),
-             StructFieldDecl(
-                 name='actuator_plugin',
-                 type=PointerType(
-                     inner_type=ValueType(name='int'),
-                 ),
-                 doc='plugin instance id; -1: not a plugin',
-                 array_extent=('nu',),
+                 array_extent=('nout', 2),
              ),
              StructFieldDecl(
                  name='sensor_type',
@@ -5005,7 +5170,7 @@ STRUCTS: Mapping[str, StructDecl] = dict([
                      inner_type=ValueType(name='int'),
                  ),
                  doc='actuator name pointers',
-                 array_extent=('nu',),
+                 array_extent=('nactuator',),
              ),
              StructFieldDecl(
                  name='name_sensoradr',
@@ -5288,6 +5453,11 @@ STRUCTS: Mapping[str, StructDecl] = dict([
                      extents=(5,),
                  ),
                  doc='constraint solver impedance',
+             ),
+             StructFieldDecl(
+                 name='adhesion',
+                 type=ValueType(name='mjtNum'),
+                 doc='adhesive force along the contact normal',
              ),
              StructFieldDecl(
                  name='mu',
@@ -5579,6 +5749,41 @@ STRUCTS: Mapping[str, StructDecl] = dict([
                  name='nJ',
                  type=ValueType(name='int'),
                  doc='number of non-zeros in constraint Jacobian',
+             ),
+             StructFieldDecl(
+                 name='efm_active',
+                 type=ValueType(name='int'),
+                 doc='implicit effective metric M+K is active (see mjd_effBuild)',  # pylint: disable=line-too-long
+             ),
+             StructFieldDecl(
+                 name='nefmK',
+                 type=ValueType(name='int'),
+                 doc='number of non-zeros in effective-stiffness CSR',
+             ),
+             StructFieldDecl(
+                 name='nefmcon',
+                 type=ValueType(name='int'),
+                 doc='packed length of the contact rank-1 rows',
+             ),
+             StructFieldDecl(
+                 name='nefmT',
+                 type=ValueType(name='int'),
+                 doc='number of tendons with terms in the metric',
+             ),
+             StructFieldDecl(
+                 name='nefmA',
+                 type=ValueType(name='int'),
+                 doc='number of actuators with terms in the metric',
+             ),
+             StructFieldDecl(
+                 name='nefmdof',
+                 type=ValueType(name='int'),
+                 doc='number of 3x3 blocks in the effective-metric preconditioner',  # pylint: disable=line-too-long
+             ),
+             StructFieldDecl(
+                 name='nefmL',
+                 type=ValueType(name='int'),
+                 doc='size of the effective-metric block storage (9*nefmdof)',
              ),
              StructFieldDecl(
                  name='nY',
@@ -5980,6 +6185,14 @@ STRUCTS: Mapping[str, StructDecl] = dict([
                  array_extent=('nflexelem', 6),
              ),
              StructFieldDecl(
+                 name='flexelem_krot',
+                 type=PointerType(
+                     inner_type=ValueType(name='mjtNum'),
+                 ),
+                 doc='corotated element stiffness (implicit only)',
+                 array_extent=('nflexstiffness',),
+             ),
+             StructFieldDecl(
                  name='flexedge_J',
                  type=PointerType(
                      inner_type=ValueType(name='mjtNum'),
@@ -6072,8 +6285,8 @@ STRUCTS: Mapping[str, StructDecl] = dict([
                  type=PointerType(
                      inner_type=ValueType(name='mjtNum'),
                  ),
-                 doc='actuator lengths',
-                 array_extent=('nu',),
+                 doc='actuator lengths, one per force output',
+                 array_extent=('nout',),
              ),
              StructFieldDecl(
                  name='moment_rownnz',
@@ -6081,7 +6294,7 @@ STRUCTS: Mapping[str, StructDecl] = dict([
                      inner_type=ValueType(name='int'),
                  ),
                  doc='number of non-zeros in actuator_moment row',
-                 array_extent=('nu',),
+                 array_extent=('nout',),
              ),
              StructFieldDecl(
                  name='moment_rowadr',
@@ -6089,7 +6302,7 @@ STRUCTS: Mapping[str, StructDecl] = dict([
                      inner_type=ValueType(name='int'),
                  ),
                  doc='row start address in colind array',
-                 array_extent=('nu',),
+                 array_extent=('nout',),
              ),
              StructFieldDecl(
                  name='moment_colind',
@@ -6208,8 +6421,8 @@ STRUCTS: Mapping[str, StructDecl] = dict([
                  type=PointerType(
                      inner_type=ValueType(name='mjtNum'),
                  ),
-                 doc='actuator velocities',
-                 array_extent=('nu',),
+                 doc='actuator velocities, one per force output',
+                 array_extent=('nout',),
              ),
              StructFieldDecl(
                  name='cvel',
@@ -6265,6 +6478,14 @@ STRUCTS: Mapping[str, StructDecl] = dict([
                      inner_type=ValueType(name='mjtNum'),
                  ),
                  doc='passive fluid force',
+                 array_extent=('nv',),
+             ),
+             StructFieldDecl(
+                 name='qfrc_adhesion',
+                 type=PointerType(
+                     inner_type=ValueType(name='mjtNum'),
+                 ),
+                 doc='passive contact adhesion force',
                  array_extent=('nv',),
              ),
              StructFieldDecl(
@@ -6329,14 +6550,14 @@ STRUCTS: Mapping[str, StructDecl] = dict([
                      inner_type=ValueType(name='mjtNum'),
                  ),
                  doc='actuator force in actuation space',
-                 array_extent=('nu',),
+                 array_extent=('nout',),
              ),
              StructFieldDecl(
                  name='qfrc_actuator',
                  type=PointerType(
                      inner_type=ValueType(name='mjtNum'),
                  ),
-                 doc='actuator force',
+                 doc='actuator force in joint space',
                  array_extent=('nv',),
              ),
              StructFieldDecl(
@@ -6802,6 +7023,166 @@ STRUCTS: Mapping[str, StructDecl] = dict([
                  ),
                  doc='reference pseudo-acceleration',
                  array_extent=('nefc',),
+             ),
+             StructFieldDecl(
+                 name='efm_c',
+                 type=PointerType(
+                     inner_type=ValueType(name='mjtNum'),
+                 ),
+                 doc='smooth-force shift h*K*qvel',
+                 array_extent=('nv',),
+             ),
+             StructFieldDecl(
+                 name='efm_diag',
+                 type=PointerType(
+                     inner_type=ValueType(name='mjtNum'),
+                 ),
+                 doc='effective-metric diagonal h*D + h^2*K',
+                 array_extent=('nv',),
+             ),
+             StructFieldDecl(
+                 name='efm_ck',
+                 type=PointerType(
+                     inner_type=ValueType(name='mjtNum'),
+                 ),
+                 doc='diagonal stiffness h*k, for the smooth shift',
+                 array_extent=('nv',),
+             ),
+             StructFieldDecl(
+                 name='efm_sdiag',
+                 type=PointerType(
+                     inner_type=ValueType(name='mjtNum'),
+                 ),
+                 doc='diagonal additions to M in the backbone',
+                 array_extent=('nv',),
+             ),
+             StructFieldDecl(
+                 name='efm_fluid',
+                 type=PointerType(
+                     inner_type=ValueType(name='mjtNum'),
+                 ),
+                 doc="fluid drag blocks in M's sparsity pattern",
+                 array_extent=('nC',),
+             ),
+             StructFieldDecl(
+                 name='efm_tid',
+                 type=PointerType(
+                     inner_type=ValueType(name='int'),
+                 ),
+                 doc='ids of tendons with terms in the metric',
+                 array_extent=('ntendon',),
+             ),
+             StructFieldDecl(
+                 name='efm_ts',
+                 type=PointerType(
+                     inner_type=ValueType(name='mjtNum'),
+                 ),
+                 doc='tendon metric scale h^2*k + h*b, tid indexed',
+                 array_extent=('ntendon',),
+             ),
+             StructFieldDecl(
+                 name='efm_tk',
+                 type=PointerType(
+                     inner_type=ValueType(name='mjtNum'),
+                 ),
+                 doc='tendon stiffness h*k for shift, tid indexed',
+                 array_extent=('ntendon',),
+             ),
+             StructFieldDecl(
+                 name='efm_aid',
+                 type=PointerType(
+                     inner_type=ValueType(name='int'),
+                 ),
+                 doc='ids of actuators with terms in the metric',
+                 array_extent=('nactuator',),
+             ),
+             StructFieldDecl(
+                 name='efm_as',
+                 type=PointerType(
+                     inner_type=ValueType(name='mjtNum'),
+                 ),
+                 doc='actuator metric scale h^2*gp + h*gv, aid indexed',
+                 array_extent=('nactuator',),
+             ),
+             StructFieldDecl(
+                 name='efm_ak',
+                 type=PointerType(
+                     inner_type=ValueType(name='mjtNum'),
+                 ),
+                 doc='actuator stiffness h*gp, aid indexed',
+                 array_extent=('nactuator',),
+             ),
+             StructFieldDecl(
+                 name='efm_ca',
+                 type=PointerType(
+                     inner_type=ValueType(name='mjtNum'),
+                 ),
+                 doc='actuation-stage smooth-force shift',
+                 array_extent=('nv',),
+             ),
+             StructFieldDecl(
+                 name='efm_K_rownnz',
+                 type=PointerType(
+                     inner_type=ValueType(name='int'),
+                 ),
+                 doc='effective-stiffness CSR row nonzeros',
+                 array_extent=('nv',),
+             ),
+             StructFieldDecl(
+                 name='efm_K_rowadr',
+                 type=PointerType(
+                     inner_type=ValueType(name='int'),
+                 ),
+                 doc='effective-stiffness CSR row addresses',
+                 array_extent=('nv',),
+             ),
+             StructFieldDecl(
+                 name='efm_K_colind',
+                 type=PointerType(
+                     inner_type=ValueType(name='int'),
+                 ),
+                 doc='effective-stiffness CSR column indices',
+                 array_extent=('nefmK',),
+             ),
+             StructFieldDecl(
+                 name='efm_K_val',
+                 type=PointerType(
+                     inner_type=ValueType(name='mjtNum'),
+                 ),
+                 doc='effective-stiffness CSR values',
+                 array_extent=('nefmK',),
+             ),
+             StructFieldDecl(
+                 name='efm_dofid',
+                 type=PointerType(
+                     inner_type=ValueType(name='int'),
+                 ),
+                 doc='block k -> dof address of its vertex triple',
+                 array_extent=('nefmdof',),
+             ),
+             StructFieldDecl(
+                 name='efm_con_ind',
+                 type=PointerType(
+                     inner_type=ValueType(name='int'),
+                 ),
+                 doc='contact rank-1 rows, packed [nnz, colind...]',
+                 array_extent=('nefmcon',),
+             ),
+             StructFieldDecl(
+                 name='efm_con_val',
+                 type=PointerType(
+                     inner_type=ValueType(name='mjtNum'),
+                 ),
+                 doc='contact rank-1 rows, packed [scale, val...]',
+                 array_extent=('nefmcon',),
+             ),
+             StructFieldDecl(
+                 name='efm_L',
+                 type=PointerType(
+                     inner_type=ValueType(name='mjtNum'),
+                 ),
+                 doc='factored 3x3 diagonal blocks of M+K',
+                 array_extent=('nefmL',),
              ),
              StructFieldDecl(
                  name='efc_b',
@@ -7748,6 +8129,19 @@ STRUCTS: Mapping[str, StructDecl] = dict([
                  doc='additional contact detection buffer',
              ),
              StructFieldDecl(
+                 name='surfacevel',
+                 type=ArrayType(
+                     inner_type=ValueType(name='double'),
+                     extents=(6,),
+                 ),
+                 doc='surface velocity in local frame: linear, angular',
+             ),
+             StructFieldDecl(
+                 name='adhesion',
+                 type=ValueType(name='double'),
+                 doc='adhesive force of contacts',
+             ),
+             StructFieldDecl(
                  name='mass',
                  type=ValueType(name='double'),
                  doc='used to compute density',
@@ -8151,6 +8545,11 @@ STRUCTS: Mapping[str, StructDecl] = dict([
                  name='cutoff',
                  type=ValueType(name='float'),
                  doc='OpenGL cutoff',
+             ),
+             StructFieldDecl(
+                 name='softness',
+                 type=ValueType(name='float'),
+                 doc='spotlight edge softness',
              ),
              StructFieldDecl(
                  name='exponent',
@@ -9021,6 +9420,11 @@ STRUCTS: Mapping[str, StructDecl] = dict([
                  doc='additional contact detection buffer',
              ),
              StructFieldDecl(
+                 name='adhesion',
+                 type=ValueType(name='double'),
+                 doc='adhesive force of contacts',
+             ),
+             StructFieldDecl(
                  name='friction',
                  type=ArrayType(
                      inner_type=ValueType(name='double'),
@@ -9377,6 +9781,27 @@ STRUCTS: Mapping[str, StructDecl] = dict([
                  name='actdim',
                  type=ValueType(name='int'),
                  doc='number of activation variables',
+             ),
+             StructFieldDecl(
+                 name='ctrlspec',
+                 type=ValueType(name='int'),
+                 doc='input signature, scoped by gaintype; 0: type default',
+             ),
+             StructFieldDecl(
+                 name='velrange',
+                 type=ArrayType(
+                     inner_type=ValueType(name='double'),
+                     extents=(2,),
+                 ),
+                 doc='range of the velocity-setpoint input (pid)',
+             ),
+             StructFieldDecl(
+                 name='ffrange',
+                 type=ArrayType(
+                     inner_type=ValueType(name='double'),
+                     extents=(2,),
+                 ),
+                 doc='range of the feedforward input (pid)',
              ),
              StructFieldDecl(
                  name='actearly',
@@ -10141,6 +10566,16 @@ STRUCTS: Mapping[str, StructDecl] = dict([
                  doc='material id; -1: no textured material',
              ),
              StructFieldDecl(
+                 name='texid',
+                 type=ValueType(name='int'),
+                 doc='texture id; -1: none',
+             ),
+             StructFieldDecl(
+                 name='texuniform',
+                 type=ValueType(name='int'),
+                 doc='uniform cube mapping',
+             ),
+             StructFieldDecl(
                  name='texcoord',
                  type=ValueType(name='int'),
                  doc='mesh or flex geom has texture coordinates',
@@ -10201,6 +10636,14 @@ STRUCTS: Mapping[str, StructDecl] = dict([
                  name='reflectance',
                  type=ValueType(name='float'),
                  doc='reflectance coef',
+             ),
+             StructFieldDecl(
+                 name='texrepeat',
+                 type=ArrayType(
+                     inner_type=ValueType(name='float'),
+                     extents=(2,),
+                 ),
+                 doc='texture repetition for 2d mapping',
              ),
              StructFieldDecl(
                  name='label',
@@ -10329,6 +10772,11 @@ STRUCTS: Mapping[str, StructDecl] = dict([
                  name='range',
                  type=ValueType(name='float'),
                  doc='range of effectiveness',
+             ),
+             StructFieldDecl(
+                 name='softness',
+                 type=ValueType(name='float'),
+                 doc='spotlight edge softness',
              ),
          ),
      )),
@@ -10995,18 +11443,32 @@ STRUCTS: Mapping[str, StructDecl] = dict([
              ),
          ),
      )),
+    ('mjrRendererInfo',
+     StructDecl(
+         name='mjrRendererInfo',
+         declname='struct mjrRendererInfo_',
+         fields=(
+             StructFieldDecl(
+                 name='renderer',
+                 type=PointerType(
+                     inner_type=ValueType(name='char', is_const=True),
+                 ),
+                 doc='renderer family: classic, filament, noop',
+             ),
+             StructFieldDecl(
+                 name='backend',
+                 type=PointerType(
+                     inner_type=ValueType(name='char', is_const=True),
+                 ),
+                 doc='graphics backend: opengl, vulkan; empty if uninitialized',
+             ),
+         ),
+     )),
     ('mjrVertexAttribute',
      StructDecl(
          name='mjrVertexAttribute',
          declname='struct mjrVertexAttribute_',
          fields=(
-             StructFieldDecl(
-                 name='bytes',
-                 type=PointerType(
-                     inner_type=ValueType(name='void', is_const=True),
-                 ),
-                 doc='vertex data',
-             ),
              StructFieldDecl(
                  name='usage',
                  type=ValueType(name='int'),

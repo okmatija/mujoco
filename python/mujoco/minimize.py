@@ -405,7 +405,7 @@ def least_squares(
       print(message, file=output)
 
     # Append log to trace, call iter_callback.
-    log = IterLog(candidate=x, objective=y, reduction=reduction, regularizer=mu)
+    log = IterLog(candidate=x, objective=y, reduction=reduction, regularizer=mu)  # pyrefly: ignore[bad-argument-type]
     if verbose >= Verbosity.FULLITER.value:
       log = dataclasses.replace(
           log, residual=r, jacobian=jac, grad=grad / D, step=step
@@ -416,6 +416,8 @@ def least_squares(
 
     # Check termination condition on step norm.
     if dx_norm < xtol * (xtol + np.linalg.norm(x)):
+      x = xnew
+      r = rnew
       status = Status.DX_TOL
       break
 

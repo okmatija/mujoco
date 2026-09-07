@@ -66,18 +66,11 @@ Parse spec from a file.
 
 .. mujoco-include:: mj_encode
 
-Encode :ref:`mjSpec` or :ref:`mjModel` to a file. The output format is determined by the file extension (case insensitive) or
-``content_type``. Returns the number of bytes written on success, -1 on failure.
+Encode :ref:`mjSpec` or :ref:`mjModel` to a file. The output format is determined by the file extension
+(case insensitive) or ``content_type``. Returns the number of bytes written on success, -1 on failure.
 
-The following formats are supported natively, without a registered encoder:
-
-- **MJCF XML** — extension: ``.xml``, content_type: ``text/xml``. If an :ref:`mjSpec` is provided, saves via
-  :ref:`mj_saveXML`. Otherwise falls back to :ref:`mj_saveLastXML`, which requires a compiled :ref:`mjModel`.
-- **MJB** — extension: ``.mjb``. MuJoCo binary format. Requires a compiled :ref:`mjModel`.
-- **TXT** — extension: ``.txt``, content_type: ``text/plain``. Human-readable text dump via :ref:`mj_printModel`.
-  Requires a compiled :ref:`mjModel`.
-
-For all other formats, a registered encoder is looked up via :ref:`mjp_findEncoder`.
+For detailed documentation, supported output formats (``.xml``, ``.mjb``, ``.txt``, ``.mjz``), and custom encoder
+plugins, see :ref:`Model Encoding & Saving <meSaving>`.
 
 *Nullable:* ``s``, ``m``, ``vfs``, ``error``
 
@@ -602,6 +595,16 @@ Get id of object with the specified :ref:`mjtObj` type and name, returns -1 if i
 .. mujoco-include:: mj_id2name
 
 Get name of object with the specified :ref:`mjtObj` type and id, returns ``NULL`` if name not found.
+
+.. _mj_actuatorInputName:
+
+`mj_actuatorInputName <#mj_actuatorInputName>`__
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. mujoco-include:: mj_actuatorInputName
+
+Get name of actuator input, determined by the actuator type and input signature;
+return NULL if the actuator type defines no input names.
 
 .. _mj_fullM:
 
@@ -1639,6 +1642,17 @@ Close a resource; no-op if resource is NULL.
 Set buffer to bytes read from the resource and return number of bytes in buffer;
 return negative value if error.
 
+.. _mju_writeResource:
+
+`mju_writeResource <#mju_writeResource>`__
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. mujoco-include:: mju_writeResource
+
+Write resource data via its resource provider, return bytes written or -1 on error.
+
+*Nullable:* ``vfs``, ``error``
+
 .. _mju_getResourceDir:
 
 `mju_getResourceDir <#mju_getResourceDir>`__
@@ -1809,6 +1823,15 @@ m is only required to contain the size fields from MJMODEL_INTS.
 .. mujoco-include:: mjv_copyData
 
 Copy mjData, skip large arrays not required for visualization.
+
+.. _mj_resetCtrl:
+
+`mj_resetCtrl <#mj_resetCtrl>`__
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. mujoco-include:: mj_resetCtrl
+
+Reset ctrl to neutral values: zero, except quaternion inputs which reset to the identity.
 
 .. _mj_resetData:
 
@@ -2600,6 +2623,15 @@ Set perturb force,torque in d->xfrc_applied, if selected body is dynamic.
 
 Return the average of two OpenGL cameras.
 
+.. _mjv_camera2GLCamera:
+
+`mjv_camera2GLCamera <#mjv_camera2GLCamera>`__
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. mujoco-include:: mjv_camera2GLCamera
+
+Converts a mjvCamera to a mjvGLCamera.
+
 .. _mjv_select:
 
 `mjv_select <#mjv_select>`__
@@ -2785,6 +2817,24 @@ of how to use these functions.
 .. mujoco-include:: mjr_defaultContext
 
 Set default mjrContext.
+
+.. _mjr_defaultRendererInfo:
+
+`mjr_defaultRendererInfo <#mjr_defaultRendererInfo>`__
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. mujoco-include:: mjr_defaultRendererInfo
+
+Set default mjrRendererInfo.
+
+.. _mjr_getRendererInfo:
+
+`mjr_getRendererInfo <#mjr_getRendererInfo>`__
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. mujoco-include:: mjr_getRendererInfo
+
+Get active renderer information.
 
 .. _mjr_makeContext:
 
@@ -3018,6 +3068,533 @@ Call glGetError and return result.
 .. mujoco-include:: mjr_findRect
 
 Find first rectangle containing mouse, -1: not found.
+
+.. _FilamentRenderingApi:
+
+Filament rendering
+^^^^^^^^^^^^^^^^^^
+
+Rendering functions using the Filament rendering engine. These functions are prefixed with ``mjrf``. See
+:ref:`Filament Rendering<tyFilamentRenderStructure>` for an overview of the core types and their uses.
+
+.. _mjrf_defaultContextConfig:
+
+`mjrf_defaultContextConfig <#mjrf_defaultContextConfig>`__
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. mujoco-include:: mjrf_defaultContextConfig
+
+Initializes the mjrfContextConfig to default values.
+
+.. _mjrf_createContext:
+
+`mjrf_createContext <#mjrf_createContext>`__
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. mujoco-include:: mjrf_createContext
+
+Creates a filament rendering context.
+
+.. _mjrf_destroyContext:
+
+`mjrf_destroyContext <#mjrf_destroyContext>`__
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. mujoco-include:: mjrf_destroyContext
+
+Destroys the filament rendering context.
+
+.. _mjrf_getRendererInfo:
+
+`mjrf_getRendererInfo <#mjrf_getRendererInfo>`__
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. mujoco-include:: mjrf_getRendererInfo
+
+Gets active renderer information for the given filament context.
+
+.. _mjrf_defaultRenderRequest:
+
+`mjrf_defaultRenderRequest <#mjrf_defaultRenderRequest>`__
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. mujoco-include:: mjrf_defaultRenderRequest
+
+Initializes the mjrfRenderRequest to default values.
+
+.. _mjrf_defaultReadPixelsRequest:
+
+`mjrf_defaultReadPixelsRequest <#mjrf_defaultReadPixelsRequest>`__
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. mujoco-include:: mjrf_defaultReadPixelsRequest
+
+Initializes the mjrfReadPixelsRequest to default values.
+
+.. _mjrf_render:
+
+`mjrf_render <#mjrf_render>`__
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. mujoco-include:: mjrf_render
+
+Submits the given requests for rendering. Because rendering happens asynchronously, callers have
+to submit both the render and read requests in the same call. Multiple requests and reads can be
+submitted in a single call. These requests will be processed in order, so some care must be
+taken. Firstly, requests should be grouped by target. Next, the combined area of the viewports
+for all requests for a given target must be contained within the dimensions of the target itself.
+
+Callbacks will be invoked from within this function, though there is no guarantee on which
+invocation of this function it will be done.
+
+.. _mjrf_waitForFrame:
+
+`mjrf_waitForFrame <#mjrf_waitForFrame>`__
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. mujoco-include:: mjrf_waitForFrame
+
+Waits for all rendering operations to complete for the given frame handle, triggering any
+callbacks as needed.
+
+.. _mjrf_setClearColor:
+
+`mjrf_setClearColor <#mjrf_setClearColor>`__
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. mujoco-include:: mjrf_setClearColor
+
+Sets the clear color for the renderer.
+
+.. _mjrf_defaultFrameStats:
+
+`mjrf_defaultFrameStats <#mjrf_defaultFrameStats>`__
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. mujoco-include:: mjrf_defaultFrameStats
+
+Initializes the mjrFrameStats to default values.
+
+.. _mjrf_getFrameStats:
+
+`mjrf_getFrameStats <#mjrf_getFrameStats>`__
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. mujoco-include:: mjrf_getFrameStats
+
+Returns the stats for the given frame but updating the given `stats_out`.
+
+.. _mjrf_defaultTextureConfig:
+
+`mjrf_defaultTextureConfig <#mjrf_defaultTextureConfig>`__
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. mujoco-include:: mjrf_defaultTextureConfig
+
+Initializes the mjrfTextureConfig to default values.
+
+.. _mjrf_createTexture:
+
+`mjrf_createTexture <#mjrf_createTexture>`__
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. mujoco-include:: mjrf_createTexture
+
+Creates a filament texture. Note that the texture will not be created on the GPU until
+`mjrf_setTextureData()` is called.
+
+.. _mjrf_destroyTexture:
+
+`mjrf_destroyTexture <#mjrf_destroyTexture>`__
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. mujoco-include:: mjrf_destroyTexture
+
+Destroys the texture.
+
+.. _mjrf_defaultTextureData:
+
+`mjrf_defaultTextureData <#mjrf_defaultTextureData>`__
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. mujoco-include:: mjrf_defaultTextureData
+
+Initializes the mjrfTextureData to default values.
+
+.. _mjrf_setTextureData:
+
+`mjrf_setTextureData <#mjrf_setTextureData>`__
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. mujoco-include:: mjrf_setTextureData
+
+Uploads the given texture data to the texture.
+
+.. _mjrf_getTextureWidth:
+
+`mjrf_getTextureWidth <#mjrf_getTextureWidth>`__
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. mujoco-include:: mjrf_getTextureWidth
+
+Returns the width of the texture.
+
+.. _mjrf_getTextureHeight:
+
+`mjrf_getTextureHeight <#mjrf_getTextureHeight>`__
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. mujoco-include:: mjrf_getTextureHeight
+
+Returns the height of the texture.
+
+.. _mjrf_getTextureSamplerType:
+
+`mjrf_getTextureSamplerType <#mjrf_getTextureSamplerType>`__
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. mujoco-include:: mjrf_getTextureSamplerType
+
+Returns the sampler type (mjrSamplerType) used by the texture.
+[returns: mjrSamplerType]
+
+.. _mjrf_defaultMeshConfig:
+
+`mjrf_defaultMeshConfig <#mjrf_defaultMeshConfig>`__
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. mujoco-include:: mjrf_defaultMeshConfig
+
+Initializes the mjrfMeshConfig to default values.
+
+.. _mjrf_createMesh:
+
+`mjrf_createMesh <#mjrf_createMesh>`__
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. mujoco-include:: mjrf_createMesh
+
+Creates an empty mesh with the given config.
+
+.. _mjrf_destroyMesh:
+
+`mjrf_destroyMesh <#mjrf_destroyMesh>`__
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. mujoco-include:: mjrf_destroyMesh
+
+Destroys the mesh.
+
+.. _mjrf_defaultMeshData:
+
+`mjrf_defaultMeshData <#mjrf_defaultMeshData>`__
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. mujoco-include:: mjrf_defaultMeshData
+
+Initializes the mjrfMeshData to default values.
+
+.. _mjrf_setMeshData:
+
+`mjrf_setMeshData <#mjrf_setMeshData>`__
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. mujoco-include:: mjrf_setMeshData
+
+Uploads the given mesh data to the mesh.
+
+.. _mjrf_defaultSceneParams:
+
+`mjrf_defaultSceneParams <#mjrf_defaultSceneParams>`__
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. mujoco-include:: mjrf_defaultSceneParams
+
+Initializes the mjrfSceneParams to default values.
+
+.. _mjrf_createScene:
+
+`mjrf_createScene <#mjrf_createScene>`__
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. mujoco-include:: mjrf_createScene
+
+Creates a scene with the given parameters.
+
+.. _mjrf_destroyScene:
+
+`mjrf_destroyScene <#mjrf_destroyScene>`__
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. mujoco-include:: mjrf_destroyScene
+
+Destroys the scene.
+
+.. _mjrf_addLightToScene:
+
+`mjrf_addLightToScene <#mjrf_addLightToScene>`__
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. mujoco-include:: mjrf_addLightToScene
+
+Adds a light to the scene.
+
+.. _mjrf_removeLightFromScene:
+
+`mjrf_removeLightFromScene <#mjrf_removeLightFromScene>`__
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. mujoco-include:: mjrf_removeLightFromScene
+
+Removes the light from the scene.
+
+.. _mjrf_addRenderableToScene:
+
+`mjrf_addRenderableToScene <#mjrf_addRenderableToScene>`__
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. mujoco-include:: mjrf_addRenderableToScene
+
+Adds a renderable to the scene.
+
+.. _mjrf_removeRenderableFromScene:
+
+`mjrf_removeRenderableFromScene <#mjrf_removeRenderableFromScene>`__
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. mujoco-include:: mjrf_removeRenderableFromScene
+
+Removes the renderable from the scene.
+
+.. _mjrf_setSceneSkybox:
+
+`mjrf_setSceneSkybox <#mjrf_setSceneSkybox>`__
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. mujoco-include:: mjrf_setSceneSkybox
+
+Sets the skybox (cube texture) for the scene.
+
+.. _mjrf_configureSceneFromModel:
+
+`mjrf_configureSceneFromModel <#mjrf_configureSceneFromModel>`__
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. mujoco-include:: mjrf_configureSceneFromModel
+
+Configures the scene based on the parameters in an mjModel.
+
+.. _mjrf_defaultLightParams:
+
+`mjrf_defaultLightParams <#mjrf_defaultLightParams>`__
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. mujoco-include:: mjrf_defaultLightParams
+
+Initializes the mjrfLightParams to default values.
+
+.. _mjrf_createLight:
+
+`mjrf_createLight <#mjrf_createLight>`__
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. mujoco-include:: mjrf_createLight
+
+Creates a light for the filament renderer.
+
+.. _mjrf_destroyLight:
+
+`mjrf_destroyLight <#mjrf_destroyLight>`__
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. mujoco-include:: mjrf_destroyLight
+
+Destroys the light.
+
+.. _mjrf_setLightEnabled:
+
+`mjrf_setLightEnabled <#mjrf_setLightEnabled>`__
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. mujoco-include:: mjrf_setLightEnabled
+
+Enables or disables the light.
+
+.. _mjrf_setLightIntensity:
+
+`mjrf_setLightIntensity <#mjrf_setLightIntensity>`__
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. mujoco-include:: mjrf_setLightIntensity
+
+Sets the intensity of the light, in candela.
+
+.. _mjrf_setLightShadowMapSize:
+
+`mjrf_setLightShadowMapSize <#mjrf_setLightShadowMapSize>`__
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. mujoco-include:: mjrf_setLightShadowMapSize
+
+Sets the resolution of the light's shadow map, in texels.
+
+.. _mjrf_setLightColor:
+
+`mjrf_setLightColor <#mjrf_setLightColor>`__
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. mujoco-include:: mjrf_setLightColor
+
+Sets the RGB color of the light.
+
+.. _mjrf_setLightTransform:
+
+`mjrf_setLightTransform <#mjrf_setLightTransform>`__
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. mujoco-include:: mjrf_setLightTransform
+
+Sets the position and direction of the light.
+
+.. _mjrf_getLightType:
+
+`mjrf_getLightType <#mjrf_getLightType>`__
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. mujoco-include:: mjrf_getLightType
+
+Returns the type of the light (mjrLightType).
+
+.. _mjrf_defaultMaterial:
+
+`mjrf_defaultMaterial <#mjrf_defaultMaterial>`__
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. mujoco-include:: mjrf_defaultMaterial
+
+Initializes the mjrfMaterial to default values.
+
+.. _mjrf_defaultRenderableParams:
+
+`mjrf_defaultRenderableParams <#mjrf_defaultRenderableParams>`__
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. mujoco-include:: mjrf_defaultRenderableParams
+
+Initializes the mjrfRenderableParams to default values.
+
+.. _mjrf_createRenderable:
+
+`mjrf_createRenderable <#mjrf_createRenderable>`__
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. mujoco-include:: mjrf_createRenderable
+
+Creates a renderable with the given parameters.
+
+.. _mjrf_destroyRenderable:
+
+`mjrf_destroyRenderable <#mjrf_destroyRenderable>`__
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. mujoco-include:: mjrf_destroyRenderable
+
+Destroys the renderable.
+
+.. _mjrf_setRenderableMesh:
+
+`mjrf_setRenderableMesh <#mjrf_setRenderableMesh>`__
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. mujoco-include:: mjrf_setRenderableMesh
+
+Sets the mesh of the renderable.
+
+.. _mjrf_setRenderableGeomMesh:
+
+`mjrf_setRenderableGeomMesh <#mjrf_setRenderableGeomMesh>`__
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. mujoco-include:: mjrf_setRenderableGeomMesh
+
+Sets the mesh of the renderable to a built-in mesh based on the geom type. Note: using the same
+parameters (nstack, nslice, nquad) will have better performance as the internal mesh data can be
+shared across renderables.
+[type: mjtGeom]
+
+.. _mjrf_setRenderableMaterial:
+
+`mjrf_setRenderableMaterial <#mjrf_setRenderableMaterial>`__
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. mujoco-include:: mjrf_setRenderableMaterial
+
+Sets the material properties and textures of the renderable.
+
+.. _mjrf_getRenderableMaterial:
+
+`mjrf_getRenderableMaterial <#mjrf_getRenderableMaterial>`__
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. mujoco-include:: mjrf_getRenderableMaterial
+
+Copies the material properties of the renderable into the given mjrfMaterial.
+
+.. _mjrf_setRenderableTransform:
+
+`mjrf_setRenderableTransform <#mjrf_setRenderableTransform>`__
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. mujoco-include:: mjrf_setRenderableTransform
+
+Sets the transform position and rotation of the renderable.
+
+.. _mjrf_setRenderableSize:
+
+`mjrf_setRenderableSize <#mjrf_setRenderableSize>`__
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. mujoco-include:: mjrf_setRenderableSize
+
+Sets the size of the renderable. Note that, for most renderables, this is equivalent to setting
+the scale. However, for some geom-based renderables, the size scale is not applied uniformly
+(e.g. the spherical ends of a capsule are scaled such that they always remain spherical).
+
+.. _mjrf_defaultRenderTargetConfig:
+
+`mjrf_defaultRenderTargetConfig <#mjrf_defaultRenderTargetConfig>`__
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. mujoco-include:: mjrf_defaultRenderTargetConfig
+
+Initializes the RenderTargetConfig to default values.
+
+.. _mjrf_createRenderTarget:
+
+`mjrf_createRenderTarget <#mjrf_createRenderTarget>`__
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. mujoco-include:: mjrf_createRenderTarget
+
+Creates a render target for the filament renderer.
+
+.. _mjrf_destroyRenderTarget:
+
+`mjrf_destroyRenderTarget <#mjrf_destroyRenderTarget>`__
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. mujoco-include:: mjrf_destroyRenderTarget
+
+Destroys the render target.
+
+.. _mjrf_resizeRenderTarget:
+
+`mjrf_resizeRenderTarget <#mjrf_resizeRenderTarget>`__
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. mujoco-include:: mjrf_resizeRenderTarget
+
+Resizes the render target to the given width and height.
 
 .. _UIframework:
 
@@ -4729,6 +5306,24 @@ Set actuator to integrated velocity; return error if any.
 
 Set actuator to velocity servo; return error if any.
 
+.. _mjs_setToOrientation:
+
+`mjs_setToOrientation <#mjs_setToOrientation>`__
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. mujoco-include:: mjs_setToOrientation
+
+Set actuator to orientation servo.
+
+.. _mjs_setToPID:
+
+`mjs_setToPID <#mjs_setToPID>`__
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. mujoco-include:: mjs_setToPID
+
+Set actuator to PID controller.
+
 .. _mjs_setToDamper:
 
 `mjs_setToDamper <#mjs_setToDamper>`__
@@ -5750,4 +6345,3 @@ Safely cast an element as mjsMaterial, or return NULL if the element is not an m
 .. mujoco-include:: mjs_asPlugin
 
 Safely cast an element as mjsPlugin, or return NULL if the element is not an mjsPlugin.
-

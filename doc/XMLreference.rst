@@ -14,7 +14,7 @@ XML schema
 ~~~~~~~~~~
 
 The dropdown below summarizes the XML elements and their attributes in MJCF. All information in MJCF is entered through
-elements and attributes. Text content in elements is not used; if present, the parser ignores it.
+elements and attributes. Text content in elements is not used (except for CDATA in :ref:`custom text<custom-text>` elements); if present, the parser ignores it.
 
 .. only:: html
 
@@ -87,6 +87,53 @@ will appear in the reference documentation as
    .. raw:: html
 
       <p style="display: none"></p>
+
+
+.. _CXSD:
+
+XSD schema
+~~~~~~~~~~
+
+The schema is also emitted as an `XML Schema <https://www.w3.org/TR/xmlschema-1/>`__ (XSD) document, generated from the
+same source of truth and checked in as
+`src/xml/generated/mjcf.xsd <https://github.com/google-deepmind/mujoco/blob/main/src/xml/generated/mjcf.xsd>`__.
+Editors use it to complete elements, attributes and keywords, and to report ill-formed values as you type:
+
+.. image:: images/XMLreference/xsd_editor.png
+   :width: 100%
+   :align: center
+   :class: only-light
+
+.. image:: images/XMLreference/xsd_editor_dark.png
+   :width: 100%
+   :align: center
+   :class: only-dark
+
+To enable this in VS Code, install the Red Hat
+`XML extension <https://marketplace.visualstudio.com/items?itemName=redhat.vscode-xml>`__ (or the same extension from
+`Open VSX <https://open-vsx.org/extension/redhat/vscode-xml>`__ in forks such as Cursor and VSCodium) and reference
+the schema in the model's root element
+(`example <https://github.com/google-deepmind/mujoco/blob/main/test/xml/testdata/schema_location.xml>`__):
+
+.. code-block:: xml
+
+   <mujoco xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+           xsi:noNamespaceSchemaLocation="https://raw.githubusercontent.com/google-deepmind/mujoco/refs/heads/main/src/xml/generated/mjcf.xsd">
+
+Alternatively, associate model files with the schema in the editor's settings, leaving the models untouched:
+
+.. code-block:: json
+
+   "xml.fileAssociations": [{
+     "pattern": "**/*.xml",
+     "systemId": "https://raw.githubusercontent.com/google-deepmind/mujoco/refs/heads/main/src/xml/generated/mjcf.xsd"
+   }]
+
+Replace ``refs/heads/main`` with a release tag to pin the schema to a MuJoCo version.
+
+The XSD is not a specification of model validity: it never rejects a model that MuJoCo accepts, but does accept models
+that the compiler rejects. Constraints that XSD 1.0 cannot express -- child cardinality and presence constraints
+between attributes -- are carried as annotations.
 
 
 .. _Reference:
@@ -389,11 +436,12 @@ adjust it properly through the XML.
 
 .. _option-integrator:
 
-:at:`integrator`: :at-val:`[Euler, RK4, implicit, implicitfast], "Euler"`
+:at:`integrator`: :at-val:`[Euler, RK4, implicit, implicitfast, discrete], "Euler"`
    This attribute selects the numerical :ref:`integrator <geIntegration>` to be used. Currently the available
-   integrators are the semi-implicit Euler method, the fixed-step 4-th order Runge Kutta method, the
-   Implicit-in-velocity Euler method, and :at:`implicitfast`, which drops the Coriolis and centrifugal terms. See
-   :ref:`Numerical Integration<geIntegration>` for more details.
+   integrators are the semi-implicit Euler method, the fixed-step 4th-order Runge-Kutta method, the
+   implicit-in-velocity Euler method, :at:`implicitfast`, which drops the Coriolis and centrifugal terms, and
+   :at:`discrete`, a velocity-stepping integrator which unifies constraint solving and implicit position/velocity
+   updates in an effective inertia metric. See :ref:`Numerical Integration<geIntegration>` for more details.
 
 .. _option-cone:
 
@@ -418,16 +466,20 @@ adjust it properly through the XML.
 
 :at:`iterations`: :at-val:`int, "100"`
    Maximum number of iterations of the constraint solver. When the warmstart attribute of :ref:`flag <option-flag>` is
-   enabled (which is the default), accurate results are obtained with fewer iterations. Larger and more complex systems
-   with many interacting constraints require more iterations. Note that mjData.solver contains statistics about solver
-   convergence, also shown in the profiler.
+   enabled (which is the default), accurate results are obtained with fewer iterations; if the warmstarted solution
+   already satisfies the tolerance, the CG and Newton solvers terminate with zero iterations. Larger and more complex
+   systems with many interacting constraints require more iterations. Note that mjData.solver contains statistics about
+   solver convergence, also shown in the profiler.
 
 .. _option-tolerance:
 
 :at:`tolerance`: :at-val:`real, "1e-8"`
    Tolerance threshold used for early termination of the iterative solver. For PGS, the threshold is applied to the cost
    improvement between two iterations. For CG and Newton, it is applied to the smaller of the cost improvement and the
-   gradient norm. Set the tolerance to 0 to disable early termination.
+   gradient norm. For Newton, it is additionally applied to the Newton decrement :math:`\tfrac{1}{2} g^T H^{-1} g`, the
+   predicted cost improvement of the next iteration. Before the first iteration, CG and Newton also apply it to a
+   :ref:`convergence certificate<soAlgorithms>` of the warmstarted solution, possibly terminating with zero iterations.
+   Set the tolerance to 0 to disable early termination.
 
 .. _option-ls_iterations:
 
@@ -466,7 +518,7 @@ adjust it properly through the XML.
 
 .. _option-sleep_tolerance:
 
-:at:`sleep_tolerance`: :at-val:`real, "1e-4"`
+:at:`sleep_tolerance`: :at-val:`real, "1e-3"`
    Velocity tolerance below which :ref:`sleeping<Sleeping>` is allowed.
 
 .. _option-sdf_iterations:
@@ -587,7 +639,9 @@ from its default.
    This flag enables a safety mechanism that prevents instabilities due to solref[0] being too small compared to the
    simulation timestep. Recall that solref[0] is the stiffness of the virtual spring-damper used for constraint
    stabilization. If this setting is enabled, the solver uses max(solref[0], 2*timestep) in place of solref[0]
-   separately for each active constraint.
+   separately for each active constraint. Under the :ref:`discrete<geIntegrators>` integrator, the flag instead
+   replaces contact and limit rows whose spring the timestep cannot resolve (solref[0]*solref[1] < timestep) by the
+   stiffest zero-restitution row for the timestep.
 
 .. _option-flag-sensor:
 
@@ -657,22 +711,13 @@ from its default.
 .. _option-flag-invdiscrete:
 
 :at:`invdiscrete`: :at-val:`[disable, enable], "disable"`
-   This dual-purpose flag enables discrete-time inverse dynamics and disables :ref:`midpoint integration<geMidpoint>`.
-
-   Enable discrete-time inverse dynamics
-     This flag **enables** discrete-time inverse dynamics with :ref:`mj_inverse` for all
-     :ref:`integrators<option-integrator>` other than ``RK4``. Recall from the :ref:`numerical
-     integration<geIntegration>` section that the one-step integrators (``Euler``, ``implicit`` and ``implicitfast``),
-     modify the mass matrix :math:`M \rightarrow M-hD`. This implies that finite-differenced accelerations
-     :math:`(v_{t+h} - v_t)/h` will not correspond to the continuous-time acceleration ``mjData.qacc``. When this flag
-     is enabled, :ref:`mj_inverse` will interpret ``qacc`` as having been computed from the difference of two sequential
-     velocities, and undo the above modification.
-
-   Disable midpoint integration
-     Additionally and relatedly, this flag **disables** :ref:`midpoint integration<geMidpoint>` for free bodies, which
-     would otherwise break the linear relationship between finite-differenced velocities and forces assumed by discrete
-     inverse dynamics. Note that disabling midpoint integration might be useful for debugging or for other reasons,
-     regardless or whether inverse dynamics are used.
+   This flag enables discrete-time inverse dynamics with :ref:`mj_inverse` for all
+   :ref:`integrators<option-integrator>` other than ``RK4``. Recall from the
+   :ref:`numerical integration<geIntegration>` section that the one-step integrators (``Euler``, ``implicit`` and
+   ``implicitfast``), modify the mass matrix :math:`M \rightarrow M-hD`. This implies that finite-differenced
+   accelerations :math:`(v_{t+h} - v_t)/h` will not correspond to the continuous-time acceleration ``mjData.qacc``.
+   When this flag is enabled, :ref:`mj_inverse` will interpret ``qacc`` as having been computed from the difference of
+   two sequential velocities, and undo the above modification.
 
 
 .. _option-flag-multiccd:
@@ -710,6 +755,9 @@ from its default.
    negligible since :math:`Y` is computed anyway. Consider enabling this flag when observing divergence or poor
    constraint quality, particularly in models with highly anisotropic body inertias or bodies operating far from the
    initial configuration ``qpos0``.
+
+   Under the ``discrete`` :ref:`integrator<option-integrator>`, the exact diagonal is computed against the factored
+   backbone of the effective metric :math:`\widehat{M}`; tendon, actuator and flex couplings are not included.
 
 .. _compiler:
 
@@ -1658,18 +1706,9 @@ The texture data can be loaded from files or can be generated by the compiler as
 different texture types require different parameters, only a subset of the attributes below are used for any given
 texture. Provisions are provided for loading cube and skybox textures from individual image files.
 
-Three file formats are supported for loading textures: PNG, KTX, and a custom MuJoCo texture format. The
-loader will use the extension of the file name to determine which format to use, defaulting to the custom format if
-the extension is not recognized. Alternatively, the content_type attribute can be used to specify the format
-explicitly. Only ``image/png``, ``image/ktx``, or ``image/vnd.mujoco.texture`` are supported.
-
-The custom MuJoCo format is assumed to be a binary file containing the following data:
-
-.. code:: Text
-
-       (int32)   width
-       (int32)   height
-       (byte)    rgb_data[3*width*height]
+Two file formats are supported for loading textures: PNG and KTX. The loader will use the extension of the file name to
+determine which format to use. Alternatively, the content_type attribute can be used to specify the format explicitly.
+Only ``image/png`` and ``image/ktx`` are supported.
 
 .. _asset-texture-name:
 
@@ -1692,7 +1731,7 @@ The custom MuJoCo format is assumed to be a binary file containing the following
    corresponding texture color. The six square images defining the cube can be the same or different; if they are the
    same, only one copy is stored in mjModel. There are four mechanisms for specifying the texture data:
 
-   #. Single file (PNG or custom) specified with the file attribute, containing a square image which is repeated on each
+   #. Single file (PNG or KTX) specified with the file attribute, containing a square image which is repeated on each
       side of the cube. This is the most common approach. If for example the goal is to create the appearance of wood,
       repeating the same image on all sides is sufficient.
    #. Single file containing a composite image from which the six squares are extracted by the compiler. The layout of
@@ -1727,8 +1766,7 @@ The custom MuJoCo format is assumed to be a binary file containing the following
 :at:`content_type`: :at-val:`string, optional`
    If the file attribute is specified, then this sets the
    `Media Type <https://www.iana.org/assignments/media-types/media-types.xhtml>`_ (formerly known as MIME types) of the
-   file to be loaded. Any filename extensions will be ignored.  Currently ``image/png``, ``image/ktx``, and
-   ``image/vnd.mujoco.texture`` are supported.
+   file to be loaded. Any filename extensions will be ignored.  Currently ``image/png`` and ``image/ktx`` are supported.
 
 .. _asset-texture-file:
 
@@ -2095,7 +2133,10 @@ defined. Its body name is automatically defined as "world".
    time step. The size of these arrays is adjusted by the compiler so as to match the number of mocap bodies in the
    model. This mechanism can be used to stream motion capture data into the simulation. Mocap bodies can also be moved
    via mouse perturbations in the interactive visualizer, even in dynamic simulation mode. This can be useful for
-   creating props with adjustable position and orientation.
+   creating props with adjustable position and orientation. Mocap bodies are the weld root of their own kinematic
+   subtree rather than being welded to the world: their children receive standard parent-child collision filtering,
+   they do not generate contacts with static geometry, and contact with a mocap body wakes
+   :ref:`sleeping<Sleeping>` bodies. See :ref:`mocap bodies<CMocap>` for more details.
 
 .. _body-pos:
 
@@ -2776,6 +2817,56 @@ helps clarify the role of bodies and geoms in MuJoCo.
    actuators which use contacts in the gap zone to generate adhesive forces without producing contact forces.
    See :ref:`margin and gap<coMarginGap>`.
 
+.. _body-geom-surfacevel:
+
+.. youtube:: PdSdrqhSiZA
+   :aspect: 16:7
+   :align: right
+   :width: 35%
+
+:at:`surfacevel`: :at-val:`real(6), "0 0 0 0 0 0"`
+   Velocity of the geom's surface as seen by contacts, given as a velocity field :math:`\sigma(x)` with two components:
+   a constant velocity :math:`v` (first three numbers) and a rotational field with angular velocity :math:`\omega` (last
+   three numbers) about the geom frame origin :math:`p`, both expressed in the geom frame:
+
+   .. math::
+      \sigma(x) = v + \omega \times (x - p)
+
+   A contact with the geom observes the surface moving along this field, with the velocity projected onto the contact's
+   tangent plane: no normal velocity is imparted. When :at:`condim` is 4 or larger, the angular velocity :math:`\omega`
+   also drives torsional friction. :at:`surfacevel` models surfaces that move while the geom itself does not: conveyor
+   belts, treadmills and turntables can be constructed with no degrees of freedom. Friction drives touching bodies along
+   the motion of the surface: objects placed on a conveyor are transported at belt speed, and a turntable (angular
+   surface velocity about the cylinder axis) imparts tangential velocity that grows with radius. Surface velocities of
+   two touching geoms compose as relative velocity, and compose correctly with body motion (a conveyor mounted on a
+   moving vehicle works as expected). Note that this attribute describes the geom's *entire* surface: a box with
+   constant ``surfacevel`` moves all six faces. When contact points are visualized, a contact with a moving surface
+   additionally displays an arrow along the tangential surface velocity at the contact point. This attribute can be
+   modified at runtime.
+
+.. _body-geom-adhesion:
+
+.. youtube:: GioWwB36XHI
+   :align: right
+   :width: 40%
+
+:at:`adhesion`: :at-val:`real, "0"`
+   Adhesive force of contacts with this geom, in units of force. Geometrically, the friction cone is translated down
+   along the normal so that the force origin lies strictly inside it: each contact can pull with up to ``adhesion``
+   before breaking, and the friction budget becomes :math:`\mu(f_N + \text{adhesion})`. Contacts resist sliding even
+   under zero normal force, the defining property of cohesive materials. This is useful for sticky materials (tape,
+   gecko feet, tacky rubber) and as a physical stabilizer for grasping. The adhesion of a contact is the sum of the
+   values of the two contacting geoms, or the value of the higher-:ref:`priority<body-geom-priority>` geom if priorities
+   differ; an explicit contact :ref:`pair<contact-pair>` overrides both. Note that adhesion is *per contact*: a box face
+   resting on a plane generates four contact points and therefore four times the pull-off force of a single-point
+   contact. To let adhesion act across a small separation (attraction at a distance), set :ref:`gap<body-geom-gap>` to
+   the desired interaction range. This can be used to model magnets. Resting penetration is unaffected by adhesion (the
+   compression behavior of the contact is unchanged; only a tensile branch is added), and :ref:`mj_contactForce` reports
+   the net interface force, whose normal component can be negative under tension. The underlying model is described in
+   the :ref:`Computation chapter<soAdhesion>`. For adhesion as a *controlled* force — switched on and off like a vacuum
+   gripper, dividing a total force between a body's contacts and pressing the bodies together — see the :ref:`adhesion
+   actuator<actuator-adhesion>`.
+
 .. _body-geom-fromto:
 
 :at:`fromto`: :at-val:`real(6), optional`
@@ -3256,24 +3347,36 @@ Attributes may be applied or ignored depending on the lighting model being used.
 .. _body-light-bulbradius:
 
 :at:`bulbradius`: :at-val:`real, "0.02"`
-   The radius of the light source which can affect shadow softness depending on the
-   renderer. This only applies to spotlights.
+   The radius of the light-emitting surface. Larger radii produce softer shadows in renderers that
+   support soft shadows. Ignored by the classic renderer.
 
 .. _body-light-attenuation:
 
 :at:`attenuation`: :at-val:`real(3), "1 0 0"`
-   These are the constant, linear and quadratic attenuation coefficients for Phong lighting.
-   The default corresponds to no attenuation.
+   These are the constant, linear and quadratic attenuation coefficients, used by the default Phong lighting model.
+   The default corresponds to no attenuation. Physically-based lighting models instead attenuate with the inverse
+   square of distance, scaled by :ref:`intensity<body-light-intensity>` and limited by :ref:`range<body-light-range>`.
 
 .. _body-light-cutoff:
 
 :at:`cutoff`: :at-val:`real, "45"`
-   Cutoff angle for spotlights, always in degrees regardless of the global angle setting.
+   Cutoff angle for spotlights, always in degrees regardless of the global angle setting. The falloff of intensity
+   inside the cone is controlled by :ref:`softness<body-light-softness>` for physically-based lighting models and by
+   :ref:`exponent<body-light-exponent>` for the default Phong lighting model.
+
+.. _body-light-softness:
+
+:at:`softness`: :at-val:`real, "0.2"`
+   Edge softness for spotlights, as a fraction of the :ref:`cutoff<body-light-cutoff>` angle in [0, 1], used by
+   physically-based lighting models. The light delivers its full :ref:`intensity<body-light-intensity>` inside the
+   cone, falling to zero over the outer softness fraction of the cone angle; the default corresponds to a sharp-edged
+   cone. This is unused by the default Phong lighting model, which uses :ref:`exponent<body-light-exponent>`.
 
 .. _body-light-exponent:
 
 :at:`exponent`: :at-val:`real, "10"`
-   Exponent for spotlights. This setting controls the softness of the spotlight cutoff.
+   Exponent for spotlights, used by the default Phong lighting model. This setting controls the softness of the
+   spotlight cutoff. Physically-based lighting models use :ref:`softness<body-light-softness>` instead.
 
 .. _body-composite:
 
@@ -3465,10 +3568,14 @@ joints and tendons have different sets of attributes, while all geoms in the com
 
 .. _composite-geom-gap:
 
+.. _composite-geom-surfacevel:
+
+.. _composite-geom-adhesion:
+
 .. |body/composite/geom attrib list| replace::
    :at:`type`, :at:`contype`, :at:`conaffinity`, :at:`condim`, :at:`group`, :at:`priority`, :at:`size`, :at:`material`,
    :at:`rgba`, :at:`friction`, :at:`mass`, :at:`density`, :at:`solmix`, :at:`solref`, :at:`solimp`, :at:`margin`,
-   :at:`gap`
+   :at:`gap`, :at:`surfacevel`, :at:`adhesion`
 
 |body/composite/geom attrib list|
    Same meaning as regular :ref:`geom <body-geom>` attributes.
@@ -4201,6 +4308,12 @@ friction can only be created with this element.
    ``margin`` and ``margin + gap`` are included in ``mjData.contact`` as inactive contacts but no contact forces are
    generated.
 
+.. _contact-pair-adhesion:
+
+:at:`adhesion`: :at-val:`real, "0"`
+   Adhesive force of contacts generated by this pair, overriding the sum of the geoms'
+   :ref:`adhesion<body-geom-adhesion>` values. See there for detailed semantics.
+
 
 .. _contact-exclude:
 
@@ -4333,6 +4446,13 @@ cases, the user will specify a :el:`flexcomp` which will then automatically cons
    The degrees-of-freedom of the flex.
    An array of MuJoCo body names (separated by white space) to which each node belongs. The number of body names
    should equal the number of nodes (nnode). See the flexcomp :ref:`dof<body-flexcomp-dof>` attribute for more details.
+
+.. _deformable-flex-nodecoord:
+
+:at:`nodecoord`: :at-val:`real(3*nnode), optional`
+   The local coordinates of the nodes within the corresponding body frames. If this attribute is omitted, all
+   coordinates are (0,0,0) or in other words, the nodes coincide with the centers of the body frames. Nonzero
+   coordinates are required when several nodes share a body, for example nodes pinned to a parent body.
 
 .. _deformable-flex-cellcount:
 
@@ -4476,9 +4596,24 @@ extensions specific to flexes.
 .. _flex-contact-passive:
 
 :at:`passive`: :at-val:`[true, false], "false"`
-   When enabled, the contact is not added to the contact solver but it is instead used to compute passive
-   (spring-damper) contact forces. All contacts, regardless of the specified condim, are frictionless (condim 1). This
-   is an experimental feature.
+   When enabled, contact of this flex with another flex, with itself, or with static geometry is not added to the
+   contact solver and is instead applied as a passive normal force. Contact with a body that can move is left on the
+   constraint solver.
+
+   Friction is not modelled on this path: every passive contact is frictionless (condim 1) regardless of the
+   specified condim, and the force is purely normal. A flex therefore slides freely over static geometry, so a cloth
+   will not stay draped over a fixed shape and will not come to rest on a slope. Where friction matters more than
+   non-penetration, leave this option off.
+
+   The force is a penalty on penetration depth whose stiffness is chosen as a natural frequency scaled by the
+   participating vertex mass, so a single value is appropriate across model scales; it is not user-specified. That
+   stiffness is integrated implicitly, its curvature being carried by the effective metric, and is therefore far
+   stiffer than an explicit force at the same timestep could be. It follows that the feature requires an integrator
+   whose constraint solve runs in that metric: :at:`implicit` or :at:`implicitfast` with the CG solver, pyramidal
+   friction cones and sleep disabled. A model requesting passive flex collisions otherwise is rejected with an error.
+
+   Being a penalty force, it does not guarantee non-penetration: a thin flex moving fast enough to cross another
+   within one step will pass through it. This is an experimental feature.
 
 
 .. _deformable-skin:
@@ -5434,6 +5569,8 @@ specify them independently.
 
 :at:`forcerange`: :at-val:`real(2), "0 0"`
    Range for clamping the force output. The first value must be no greater than the second value.
+   On :ref:`orientation<actuator-orientation>` actuators the force is a 3D torque, clamped on its norm: the second
+   value bounds the torque magnitude and the first value must be 0.
    |br| Setting this attribute without specifying :at:`forcelimited` is an error if :at:`autolimits` is "false" in
    :ref:`compiler <compiler>`.
 
@@ -5508,16 +5645,23 @@ specify them independently.
 
 :at:`joint`: :at-val:`string, optional`
    This and the next four attributes determine the type of actuator transmission. All of them are optional, and exactly
-   one of them must be specified. If this attribute is specified, the actuator acts on the given joint. For **hinge**
-   and **slide** joints, the actuator length equals the joint position/angle times the first element of :at:`gear`. For
-   **ball** joints, the first three elements of gear define a 3d rotation axis in the child frame around which the
+   one of them must be specified. If this attribute is specified, the actuator acts on the given joint.
+
+   For **hinge** and **slide** joints, the actuator length equals the joint position/angle times the first element of
+   :at:`gear`.
+
+   For **ball** joints, the first three elements of gear define a 3d rotation axis in the child frame around which the
    actuator produces torque. The actuator length is defined as the dot-product between this gear axis and the angle-axis
    representation of the joint quaternion, and is in units of radian if :at:`gear` is normalized (generally scaled by
-   by the norm of :at:`gear`). Note that after total rotation of more than :math:`\pi`, the length will wrap to :math:`-
-   \pi`, and vice-versa. Therefore :el:`position` servos for ball joints should generally use tighter limits which
-   prevent this wrapping. For **free** joints, gear defines a 3d translation axis in the world frame followed by a 3d
-   rotation axis in the child frame. The actuator generates force and torque relative to the specified axes. The
-   actuator length for free joints is defined as zero (so it should not be used with position servos).
+   the norm of :at:`gear`). Note that the length is defined on a circle: after total rotation of more than :math:`\pi`
+   it wraps to :math:`-\pi`, and vice-versa. :ref:`position<actuator-position>` and
+   :ref:`intvelocity<actuator-intvelocity>` servos on such transmissions interpret their setpoint on the circle, driving
+   towards the nearest representative of the target, so targets can be wound continuously through any number of turns
+   and no control limits are required to prevent wrapping.
+
+   For **free** joints, gear defines a 3d translation axis in the world frame followed by a 3d rotation axis in the
+   child frame. The actuator generates force and torque relative to the specified axes. The actuator length for free
+   joints is defined as zero (so cannot be used with position servos).
 
 .. _actuator-general-jointinparent:
 
@@ -5538,6 +5682,7 @@ specify them independently.
    translation and rotation are global for :at:`jointinparent`.
 
 ..  youtube:: s-0JHanqV1A
+    :aspect: 16:7
     :align: right
     :height: 150px
 
@@ -5547,13 +5692,14 @@ specify them independently.
    When using a :at:`site` transmission, measure the translation and rotation w.r.t the frame of the :at:`refsite`. In
    this case the actuator *does* have length and :el:`position` actuators can be used to directly control an end
    effector, see `refsite.xml
-   <https://github.com/google-deepmind/mujoco/tree/main/test/engine/testdata/actuation/refsite.xml>`__ example
-   model. As above, the length is the dot product of the :at:`gear` vector and the frame difference. So ``gear="0 1 0 0
-   0 0"`` means "Y-offset of :at:`site` in the :at:`refsite` frame", while ``gear="0 0 0 0 0 1"`` means rotation "Z-
-   rotation of :at:`site` in the :at:`refsite` frame". It is recommended to use a normalized :at:`gear` vector with
-   nonzeros in only the first 3 *or* the last 3 elements of :at:`gear`, so the actuator length will be in either length
-   units or radians, respectively. As with ball joints (see :at:`joint` above), for rotations which exceed a total angle
-   of :math:`\pi` will wrap around, so tighter limits are recommended.
+   <https://github.com/google-deepmind/mujoco/tree/main/test/engine/testdata/actuation/refsite.xml>`__ example model. As
+   above, the length is the dot product of the :at:`gear` vector and the frame difference. So ``gear="0 1 0 0 0 0"``
+   means "Y-offset of :at:`site` in the :at:`refsite` frame", while ``gear="0 0 0 0 0 1"`` means rotation "Z- rotation
+   of :at:`site` in the :at:`refsite` frame". It is recommended to use a normalized :at:`gear` vector with nonzeros in
+   only the first 3 *or* the last 3 elements of :at:`gear`, so the actuator length will be in either length units or
+   radians, respectively. As with ball joints (see :ref:`general/joint<actuator-general-joint>` above), rotational
+   lengths are defined on a circle and servo setpoints are interpreted on it; control limits are not required to prevent
+   wrapping.
 
 .. _actuator-general-body:
 
@@ -5598,25 +5744,27 @@ specify them independently.
 
 .. _actuator-general-dyntype:
 
-:at:`dyntype`: :at-val:`[none, integrator, filter, filterexact, muscle, user], "none"`
+:at:`dyntype`: :at-val:`[none, integrator, filter, filterexact, pid, dcmotor, muscle, user], "none"`
    Activation dynamics type for the actuator. The available dynamics types were already described in the :ref:`Actuation
    model <geActuation>` section. Repeating that description in somewhat different notation (corresponding to the mjModel
    and mjData fields involved) we have:
 
-   =========== ======================================
-   Keyword     Description
-   =========== ======================================
-   none        No internal state
-   integrator  act_dot = ctrl
-   filter      act_dot = (ctrl - act) / dynprm[0]
-   filterexact Like filter but with exact integration
-   muscle      act_dot = mju_muscleDynamics(...)
-   user        act_dot = mjcb_act_dyn(...)
-   =========== ======================================
+   ============= ======================================
+   Keyword       Description
+   ============= ======================================
+   none          No internal state
+   integrator    act_dot = ctrl
+   filter        act_dot = (ctrl - act) / dynprm[0]
+   filterexact   Like filter but with exact integration
+   pid           act_dot = position error; see :ref:`pid<actuator-pid>`
+   dcmotor       DC motor electrical dynamics, see :ref:`dcmotor<actuator-dcmotor>`
+   muscle        act_dot = mju_muscleDynamics(...)
+   user          act_dot = mjcb_act_dyn(...)
+   ============= ======================================
 
 .. _actuator-general-gaintype:
 
-:at:`gaintype`: :at-val:`[fixed, affine, muscle, user], "fixed"`
+:at:`gaintype`: :at-val:`[fixed, affine, muscle, dcmotor, pid, so3, user], "fixed"`
    The gain and bias together determine the output of the force generation mechanism, which is currently assumed to be
    affine. As already explained in :ref:`Actuation model <geActuation>`, the general formula is:
    scalar_force = gain_term \* (act or ctrl) + bias_term.
@@ -5629,12 +5777,15 @@ specify them independently.
    fixed   gain_term = gainprm[0]
    affine  gain_term = gain_prm[0] + gain_prm[1]*length + gain_prm[2]*velocity
    muscle  gain_term = mju_muscleGain(...)
+   dcmotor DC motor gain (K or K/R), see :ref:`dcmotor<actuator-dcmotor>`
+   pid     PID controller with setpoint inputs, see :ref:`pid<actuator-pid>`
+   so3     geodesic orientation servo, computed jointly over 3 force outputs, see :ref:`orientation<actuator-orientation>`
    user    gain_term = mjcb_act_gain(...)
    ======= ===============================
 
 .. _actuator-general-biastype:
 
-:at:`biastype`: :at-val:`[none, affine, muscle, user], "none"`
+:at:`biastype`: :at-val:`[none, affine, muscle, dcmotor, so3, user], "none"`
    The keywords have the following meaning:
 
    ======= ================================================================
@@ -5643,8 +5794,12 @@ specify them independently.
    none    bias_term = 0
    affine  bias_term = biasprm[0] + biasprm[1]*length + biasprm[2]*velocity
    muscle  bias_term = mju_muscleBias(...)
+   dcmotor DC motor bias: back-EMF, cogging, LuGre friction, see :ref:`dcmotor<actuator-dcmotor>`
+   so3     damping term of the geodesic orientation servo, see :ref:`orientation<actuator-orientation>`
    user    bias_term = mjcb_act_bias(...)
    ======= ================================================================
+
+   Note that :at:`gaintype` and :at:`biastype` must either both be "so3" or neither.
 
 .. _actuator-general-dynprm:
 
@@ -5668,6 +5823,25 @@ specify them independently.
    Bias parameters. The affine bias type uses three parameters. The length of this array is not enforced by the parser,
    so the user can enter as many parameters as needed. These defaults are not compatible with muscle actuators; see
    :ref:`muscle <actuator-muscle>` below.
+
+.. _actuator-general-velrange:
+
+:at:`velrange`: :at-val:`real(2), "0 0"`
+   Range of the velocity-setpoint input of a :ref:`pid<actuator-pid>` actuator.
+
+.. _actuator-general-ffrange:
+
+:at:`ffrange`: :at-val:`real(2), "0 0"`
+   Range of the feedforward input of a :ref:`pid<actuator-pid>` actuator.
+
+.. _actuator-general-input:
+
+:at:`input`: :at-val:`string, optional`
+   Input signature of the actuator: which controls make up its control block, recorded in
+   ``mjModel.actuator_ctrlspec``. For gaintype "so3" it selects the orientation chart: "expmap" (3 controls, the
+   default) or "quat" (4 controls); see :ref:`orientation/input<actuator-orientation-input>`. For gaintypes "pid" and
+   "dcmotor" it is a token list selecting the input subset; see :ref:`pid/input<actuator-pid-input>` and
+   :ref:`dcmotor/input<actuator-dcmotor-input>`.
 
 .. _actuator-general-actearly:
 
@@ -5771,6 +5945,7 @@ gaintype  fixed               gainprm   kp 0 0
 biastype  affine              biasprm   0 -kp -kv
 ========= =================== ========= =============
 
+On purely rotational transmissions, setpoints are interpreted on the circle; see :ref:`gear<actuator-general-gear>`.
 
 This element has one custom attribute in addition to the common attributes:
 
@@ -5876,14 +6051,250 @@ This element has one custom attribute in addition to the common attributes:
    :ref:`position<actuator-position>` attribute and in the :ref:`default class<default-position-inheritrange>`,
    saved XMLs always convert it to explicit :at:`ctrlrange` at the actuator.
 
+.. _actuator-pid:
+
+:el-prefix:`actuator/` |-| **pid** |*|
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+This element creates a PID controller with position and velocity setpoint inputs on a single force output, with optional
+integral action and feedforward. With the default input signature ``[pos, vel]`` the force is
+:math:`k_p (u_{pos} - l) + k_v (u_{vel} - v)` where :math:`l, v` are the actuator length and velocity; with a zero
+velocity setpoint this is identical to :ref:`position<actuator-position>`. The input signature is any subset of
+``[pos, vel, ff]``, selected by :ref:`input<actuator-pid-input>`: an absent setpoint input is fixed at zero, and the
+``ff`` input adds a feedforward force. Integral action is enabled by :ref:`ki<actuator-pid-ki>`: the position error is integrated in
+:ref:`act<siPhysicsState>` and contributes :math:`k_i \cdot act` to the force, with anti-windup clamping by
+:ref:`imax<actuator-pid-imax>`.
+:ref:`slewmax<actuator-pid-slewmax>` limits the rate of change of the effective position setpoint. Each of these
+features, when enabled, adds one activation state, in the order [slew, integral]. The underlying
+:ref:`general<actuator-general>` attributes are set as follows:
+
+========= ===================== ========= =========
+Attribute Setting               Attribute Setting
+========= ===================== ========= =========
+dyntype   none or pid dynprm    imax 0 0
+gaintype  pid                   gainprm   ki 0 0
+biastype  affine                biasprm   0 -kp -kv
+========= ===================== ========= =========
+
+This element has custom attributes in addition to the common attributes:
+
+.. _actuator-pid-name:
+
+.. _actuator-pid-class:
+
+.. _actuator-pid-group:
+
+.. _actuator-pid-nsample:
+
+.. _actuator-pid-interp:
+
+.. _actuator-pid-delay:
+
+.. _actuator-pid-ctrllimited:
+
+.. _actuator-pid-forcelimited:
+
+.. _actuator-pid-ctrlrange:
+
+.. _actuator-pid-forcerange:
+
+.. _actuator-pid-lengthrange:
+
+.. _actuator-pid-gear:
+
+.. _actuator-pid-damping:
+
+.. _actuator-pid-armature:
+
+.. _actuator-pid-cranklength:
+
+.. _actuator-pid-user:
+
+.. _actuator-pid-joint:
+
+.. _actuator-pid-jointinparent:
+
+.. _actuator-pid-tendon:
+
+.. _actuator-pid-slidersite:
+
+.. _actuator-pid-cranksite:
+
+.. _actuator-pid-site:
+
+.. _actuator-pid-refsite:
+
+.. _actuator-pid-kp:
+
+:at:`kp`: :at-val:`real, "1"`
+   Position feedback gain.
+
+.. _actuator-pid-kv:
+
+:at:`kv`: :at-val:`real, "0"`
+   Velocity feedback gain: applied to the velocity error when the ``vel`` input is present, and as pure damping
+   otherwise. When using this attribute, it is recommended to use the implicitfast or implicit
+   :ref:`integrators<geIntegration>`.
+
+.. _actuator-pid-dampratio:
+
+:at:`dampratio`: :at-val:`real, "0"`
+   Damping applied by the actuator, using damping ratio units, as for
+   :ref:`position/dampratio<actuator-position-dampratio>`. This attribute is exclusive with :at:`kv`.
+
+.. _actuator-pid-ki:
+
+:at:`ki`: :at-val:`real, "0"`
+   Integral gain. A nonzero value enables integral action: the position error is integrated in
+   :ref:`act<siPhysicsState>` (:ref:`dyntype<actuator-general-dyntype>` "pid") and contributes :math:`k_i \cdot act`
+   to the force.
+   Requires the ``pos`` input.
+
+.. _actuator-pid-imax:
+
+:at:`imax`: :at-val:`real, "0"`
+   Anti-windup limit on the integral state: accumulation stops beyond ±\ :at:`imax`. The default value 0 means
+   "unclamped".
+
+.. _actuator-pid-slewmax:
+
+:at:`slewmax`: :at-val:`real, "0"`
+   Maximum rate of change of the effective position setpoint. When positive, the commanded setpoint is rate-limited
+   through an activation state holding the effective setpoint, as for the
+   :ref:`dcmotor controller<actuator-dcmotor-controller>`. The default value 0 means "unlimited".
+
+.. _actuator-pid-input:
+
+:at:`input`: :at-val:`string, "pos vel"`
+   Input signature: a space-separated subset of the tokens "pos", "vel" and "ff", packed in this canonical order.
+   Absent setpoint inputs are fixed at zero, so the control vector contains no inert entries.
+
+.. _actuator-pid-posrange:
+
+:at:`posrange`: :at-val:`real(2), "0 0"`
+   Range of the position-setpoint input; an alias of :ref:`ctrlrange<actuator-general-ctrlrange>` (the first
+   input).
+
+.. _actuator-pid-velrange:
+
+:at:`velrange`: :at-val:`real(2), "0 0"`
+   Range of the velocity-setpoint input.
+
+.. _actuator-pid-ffrange:
+
+:at:`ffrange`: :at-val:`real(2), "0 0"`
+   Range of the feedforward input.
+
+.. _actuator-pid-inheritrange:
+
+:at:`inheritrange`: :at-val:`real, "0"`
+   Identical to :ref:`position/inheritrange<actuator-position-inheritrange>`, setting :at:`posrange` from the
+   transmission target's :at:`range`.
+
+.. _actuator-orientation:
+
+:el-prefix:`actuator/` |-| **orientation** |*|
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+.. youtube:: 17XpwnqyCXs
+   :aspect: 16:7
+   :align: right
+   :width: 40%
+
+This element creates an orientation servo: a geodesic PD controller on a relative orientation, targeting a ball
+:ref:`joint<actuator-general-joint>` or a :ref:`site<actuator-general-site>` with a
+:ref:`refsite<actuator-general-refsite>`. Unlike per-axis :ref:`position<actuator-position>` servos, the servo acts
+jointly on the full orientation: the force is :math:`k_p \log(q^{-1} q_{target}) - k_v \omega`, exact for arbitrary axis
+combinations, with a unique equilibrium at every commanded orientation. The transmission has 3 force outputs; force,
+error and angular velocity are expressed in the child (joint or site) frame. The commanded orientation is given in the
+:ref:`input<actuator-orientation-input>` chart: an exponential-map vector (3 controls, the default) or a quaternion (4
+controls). :ref:`forcerange<actuator-general-forcerange>` clamps the norm of the output torque,
+preserving its direction; the lower bound must be 0.
+:ref:`Actuator sensors<sensor-actuatorpos>` report one value per force output. The integrator variant, which
+stores the orientation setpoint in :ref:`act<siPhysicsState>`, is available via :ref:`general<actuator-general>` with
+:ref:`dyntype<actuator-general-dyntype>` "integrator" and is expmap-only. The video on the right shows this `example
+model <https://github.com/google-deepmind/mujoco/blob/main/test/engine/testdata/actuation/orientation.xml>`__.
+The underlying :el:`general` attributes are set as follows:
+
+========= ======= ========= =========
+Attribute Setting Attribute Setting
+========= ======= ========= =========
+dyntype   none    gainprm   kp 0 0
+gaintype  so3     biasprm   0 -kp -kv
+biastype  so3
+========= ======= ========= =========
+
+.. _actuator-orientation-ctrlrange:
+
+:at:`ctrlrange`: :at-val:`real(2), "0 0"`
+   Range for clamping the control input, as described in :ref:`ctrlrange <actuator-general-ctrlrange>`. For this
+   multi-input actuator, the same range limits are replicated and applied independently to each of the 3 (expmap) or 4
+   (quaternion) control inputs in the control block.
+
+.. _actuator-orientation-forcerange:
+
+:at:`forcerange`: :at-val:`real(2), "0 0"`
+   Range for clamping the torque output, as described in :ref:`forcerange <actuator-general-forcerange>`. The torque is
+   clamped on its norm, preserving its direction: the second value bounds the torque magnitude and the first value must
+   be 0.
+
+This element has custom attributes in addition to the common attributes:
+
+.. _actuator-orientation-name:
+
+.. _actuator-orientation-class:
+
+.. _actuator-orientation-group:
+
+.. _actuator-orientation-nsample:
+
+.. _actuator-orientation-interp:
+
+.. _actuator-orientation-delay:
+
+.. _actuator-orientation-forcelimited:
+
+.. _actuator-orientation-user:
+
+.. _actuator-orientation-joint:
+
+.. _actuator-orientation-site:
+
+.. _actuator-orientation-refsite:
+
+.. _actuator-orientation-kp:
+
+:at:`kp`: :at-val:`real, "1"`
+   Position feedback gain, in units of torque per radian of geodesic error.
+
+.. _actuator-orientation-kv:
+
+:at:`kv`: :at-val:`real, "0"`
+   Damping applied by the actuator, per force output.
+   When using this attribute, it is recommended to use the implicitfast or implicit :ref:`integrators<geIntegration>`.
+
+.. _actuator-orientation-dampratio:
+
+:at:`dampratio`: :at-val:`real, "0"`
+   Damping applied by the actuator, using damping ratio units, as for
+   :ref:`position/dampratio<actuator-position-dampratio>`. This attribute is exclusive with :at:`kv`.
+
+.. _actuator-orientation-input:
+
+:at:`input`: :at-val:`[expmap, quat], "expmap"`
+   `Chart <https://en.wikipedia.org/wiki/Manifold#Charts>`__ of the commanded orientation. With "expmap" the control
+   block is an exponential-map vector (3 controls, in radians). With "quat" the control block is a quaternion (4
+   controls, :ref:`w-first <siLayout>`); the commanded quaternion is normalized by the servo, making the force scale-
+   and antipodally-invariant, and the control block resets to the identity quaternion. The quat chart requires
+   ``dyntype="none"``.
+
 .. _actuator-velocity:
 
 :el-prefix:`actuator/` |-| **velocity** |*|
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-This element creates a velocity servo. Note that in order to create a PD controller, one has to define two actuators: a
-position servo and a velocity servo. This is because MuJoCo actuators are SISO while a PD controller takes two control
-inputs (reference position and reference velocity).
+This element creates a velocity servo. Note that a PD controller with both position and velocity setpoint inputs is
+provided by the :ref:`pid<actuator-pid>` actuator.
 When using this actuator, it is recommended to use the implicitfast or implicit :ref:`integrators<geIntegration>`.
 The underlying :el:`general` attributes are set as follows:
 
@@ -5966,14 +6377,18 @@ This element creates an integrated-velocity servo. For more information, see the
 :ref:`Activation clamping <CActRange>` section of the Modeling chapter. The underlying
 :el:`general` attributes are set as follows:
 
-==========   =========== ========= =========
-Attribute    Setting     Attribute Setting
-==========   =========== ========= =========
-dyntype      integrator  dynprm    1 0 0
-gaintype     fixed       gainprm   kp 0 0
-biastype     affine      biasprm   0 -kp -kv
-actlimited   true
-==========   =========== ========= =========
+========= =========== ========= =========
+Attribute Setting     Attribute Setting
+========= =========== ========= =========
+dyntype   integrator  dynprm    1 0 0
+gaintype  fixed       gainprm   kp 0 0
+biastype  affine      biasprm   0 -kp -kv
+========= =========== ========= =========
+
+Activation clamping is controlled by :at:`actlimited` and :at:`actrange`, like any stateful actuator. On purely
+rotational transmissions, setpoints are interpreted on the circle, as for :ref:`position<actuator-position>`; the
+integrated setpoint is re-anchored to a bounded representative at each timestep, so clamping is not required for
+winding targets.
 
 This element has one custom attribute in addition to the common attributes:
 
@@ -5992,6 +6407,8 @@ This element has one custom attribute in addition to the common attributes:
 .. _actuator-intvelocity-ctrllimited:
 
 .. _actuator-intvelocity-forcelimited:
+
+.. _actuator-intvelocity-actlimited:
 
 .. _actuator-intvelocity-ctrlrange:
 
@@ -6026,9 +6443,10 @@ This element has one custom attribute in addition to the common attributes:
 .. _actuator-intvelocity-armature:
 
 .. |actuator/intvelocity attrib list| replace::
-   :at:`name`, :at:`class`, :at:`group`, :at:`delay`, :at:`ctrllimited`, :at:`forcelimited`, :at:`ctrlrange`,
-   :at:`forcerange`, :at:`actrange`, :at:`lengthrange`, :at:`gear`, :at:`cranklength`, :at:`joint`, :at:`jointinparent`,
-   :at:`tendon`, :at:`cranksite`, :at:`slidersite`, :at:`site`, :at:`refsite`, :at:`user`, :at:`damping`, :at:`armature`
+   :at:`name`, :at:`class`, :at:`group`, :at:`delay`, :at:`ctrllimited`, :at:`forcelimited`, :at:`actlimited`,
+   :at:`ctrlrange`, :at:`forcerange`, :at:`actrange`, :at:`lengthrange`, :at:`gear`, :at:`cranklength`, :at:`joint`,
+   :at:`jointinparent`, :at:`tendon`, :at:`cranksite`, :at:`slidersite`, :at:`site`, :at:`refsite`, :at:`user`,
+   :at:`damping`, :at:`armature`
 
 |actuator/intvelocity attrib list|
    Same as in actuator/ :ref:`general <actuator-general>`.
@@ -6363,6 +6781,7 @@ This element has nine custom attributes in addition to the common attributes:
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 ..  youtube:: BcHZ5BFeTmU
+    :aspect: 16:7
     :align: right
     :height: 150px
 
@@ -6376,7 +6795,9 @@ geckos and insects rather than an industrial vacuum gripper. In order to enable 
 :ref:`gap<body-geom-gap>` attribute of the body's geoms to a positive value. This creates a layer around each geom where
 contacts are detected but no contact forces are generated, and the adhesive force can act across this gap. In the video
 above, such inactive contacts are blue, while active contacts are orange. An adhesion actuator's length is always 0.
-:at:`ctrlrange` is required and must also be nonnegative (no repulsive forces are allowed). The underlying :el:`general`
+:at:`ctrlrange` is required and must also be nonnegative (no repulsive forces are allowed). For adhesion as a
+*passive* property of the contacting surfaces — always on, per contact, and leaving resting penetration unaffected —
+see the :ref:`geom/adhesion<body-geom-adhesion>` attribute. The underlying :el:`general`
 attributes are set as follows:
 
 =========== ======= =========== ========
@@ -6441,8 +6862,11 @@ the stateless case.
 - :ref:`resistance<actuator-dcmotor-resistance>`, :ref:`motorconst<actuator-dcmotor-motorconst>` and
   :ref:`nominal<actuator-dcmotor-nominal>` are each optional, but some combination of them is required.
   See Section 2.1 of the `technical note <_static/dcmotor.pdf>`__.
-- The control :ref:`input<actuator-dcmotor-input>` semantic is either the voltage applied to the motor terminals (the
-  default), or a position or velocity target for a :ref:`PID controller<actuator-dcmotor-controller>`.
+- The control block is selected by :ref:`input<actuator-dcmotor-input>`: any subset of ``[pos, vel, ff]``, where
+  ``pos`` and ``vel`` are setpoint inputs to the on-board :ref:`PID controller<actuator-dcmotor-controller>` and
+  ``ff`` is a torque feedforward added to its output; the ``voltage`` input is the raw terminal voltage. The
+  default is the plain voltage-commanded motor. With
+  ``input="none"`` the actuator has no control inputs at all and acts as a purely passive device.
 - Optional features include electrical dynamics (:ref:`inductance<actuator-dcmotor-inductance>`),
   :ref:`cogging torque<actuator-dcmotor-cogging>`, :ref:`thermal resistance variation<actuator-dcmotor-thermal>`, and
   :ref:`LuGre<actuator-dcmotor-lugre>` friction.
@@ -6581,22 +7005,38 @@ This element has the following custom attributes in addition to the common attri
 
 .. _actuator-dcmotor-input:
 
-:at:`input`: :at-val:`[voltage, position, velocity], "voltage"`
-   Specifies the input signal semantics. In "voltage" mode, the control directly sets applied motor voltage. In
-   "position" or "velocity" modes, the :ref:`PID controller<actuator-dcmotor-controller>` uses the control as a
-   reference setpoint relative to the joint trajectory. (see `tech note <_static/dcmotor.pdf>`__, Section 2.5)
+:at:`input`: :at-val:`string, "voltage"`
+   Input signature: a space-separated subset of the tokens "pos", "vel", "ff" and "voltage", required in this
+   canonical order. The ``pos`` and ``vel`` inputs are setpoints for the on-board
+   :ref:`controller<actuator-dcmotor-controller>`, and ``ff`` is a torque feedforward added to its output, as for
+   :ref:`pid/input<actuator-pid-input>`. The ``voltage`` input is different in kind: it is the raw terminal voltage
+   of the physical device, applied downstream of the controller and its :at-val:`Vmax` clamp.
+   ``input="voltage"`` (the default) is the plain voltage-commanded motor. Absent setpoint inputs are fixed at zero.
+   The keyword "none" selects the empty signature: the actuator has no control inputs and is purely
+   passive, useful for modeling :ref:`friction<actuator-dcmotor-lugre>` and :ref:`cogging<actuator-dcmotor-cogging>`
+   as passive joint forces. The terminal voltage is zero, so back-EMF drives current through the (shorted) motor and
+   brakes the joint; setting :ref:`motorconst<actuator-dcmotor-motorconst>` to zero disables the electrical branch.
+   (see `tech note <_static/dcmotor.pdf>`__, Section 2.5)
 
 .. _actuator-dcmotor-controller:
 
 :at:`controller`: :at-val:`real(6), "0 0 0 0 0 0"`
    PID controller parameters, defined as :at:`controller` = ":at-val:`kp` :at-val:`ki` :at-val:`kd`
-   :at-val:`slewmax` :at-val:`Imax` :at-val:`Vmax`". Depending on the :at:`input` mode, the controller stabilizes
-   either position or velocity. If the :at:`input` mode is voltage, :at-val:`kp`, :at-val:`ki`, :at-val:`kd` are
-   ignored. :at-val:`Vmax` sets the maximum drive voltage :math:`v_{\max}` (Volt); in position/velocity modes it clamps
-   the controller output, in voltage mode it clamps the control signal (if :at:`ctrlrange` is also set, the tighter
-   limit wins). A value of 0 (the default) disables the respective feature. When positive, :at-val:`slewmax` limits the
-   setpoint rate-of-change, :at-val:`Imax` clamps the integrator state (anti-windup), and :at-val:`Vmax` clamps the
-   drive voltage. (see `tech note <_static/dcmotor.pdf>`__, Section 2.5)
+   :at-val:`slewmax` :at-val:`Imax` :at-val:`Vmax`". The gains are in torque space, as for
+   :ref:`pid<actuator-pid>`: the controller commands the torque
+   :math:`\tau = k_p (u_{pos} - l) + k_d (u_{vel} - \dot{l}) + k_i x_I + u_{f\!f}` over the inputs present in the
+   :ref:`input<actuator-dcmotor-input>` signature, absent setpoints being fixed at zero, and drives the voltage
+   :math:`v = (R/K)\,\tau + K \dot{l}`, the second term compensating back-EMF as in a current-controlled driver:
+   commanded torque is delivered exactly until a limit is reached. Torque-space gains from datasheet voltage-space
+   values are obtained by multiplying by :math:`K/R`. The integrator state
+   :math:`x_I` accumulates position error and requires the ``pos`` input; controller gains require a controller
+   input and a positive :ref:`motorconst<actuator-dcmotor-motorconst>`.
+   A value of 0 (the default) disables the respective feature. When positive, :at-val:`slewmax` limits the
+   rate-of-change of the first input (position setpoint in rad/s, or with signatures lacking ``pos``, velocity
+   setpoint or torque feedforward), :at-val:`Imax` clamps the integrator state (anti-windup), and :at-val:`Vmax`
+   clamps the controller's drive voltage :math:`v_{\max}` (Volt). It does not bound the raw ``voltage`` input,
+   which is added downstream: use :at:`ctrlrange` to limit a voltage command.
+   (see `tech note <_static/dcmotor.pdf>`__, Section 2.5)
 
 .. _actuator-plugin:
 
@@ -6617,7 +7057,7 @@ Associate this actuator with an :ref:`engine plugin<exPlugin>`. Either :at:`plug
 
 .. _actuator-plugin-dyntype:
 
-:at:`dyntype`: :at-val:`[none, integrator, filter, filterexact, muscle, user], "none"`
+:at:`dyntype`: :at-val:`[none, integrator, filter, filterexact, pid, dcmotor, muscle, user], "none"`
    Activation dynamics type for the actuator. The available dynamics types were already described in the :ref:`Actuation
    model <geActuation>` section. If :ref:`dyntype<actuator-general-dyntype>` is not "none", an activation variable will
    be added to the actuator. This variable will be added after any activation state computed by the plugin (see
@@ -8601,6 +9041,8 @@ visualization of contact points.
 
 .. _sensor-tactile-name:
 
+.. _sensor-tactile-cutoff:
+
 .. _sensor-tactile-nsample:
 
 .. _sensor-tactile-interp:
@@ -8611,7 +9053,7 @@ visualization of contact points.
 
 .. _sensor-tactile-user:
 
-:at:`name`, :at:`nsample`, :at:`interval`, :at:`delay`, :at:`user`:
+:at:`name`, :at:`cutoff`, :at:`nsample`, :at:`interval`, :at:`delay`, :at:`user`:
    See :ref:`CSensor`.
 
 .. _sensor-e_potential:
@@ -8964,10 +9406,10 @@ is effectively a miscellaneous subsection.
 
 .. _visual-global-bvactive:
 
-:at:`bvactive`: :at-val:`[false, true], "true"`
+:at:`bvactive`: :at-val:`[false, true], "false"`
    This attribute specifies whether collision and raycasting code should mark elements of Bounding Volume Hierarchies
-   as intersecting, for the purpose of visualization. Setting this attribute to "false" can speed up simulation for
-   models with high-resolution meshes.
+   as intersecting, for the purpose of visualization. Setting this attribute to "true" can slow down simulation for
+   models with high-resolution meshes, due to the O(N) cost of clearing visualization flags at each step.
 
 .. _visual-quality:
 
@@ -9545,6 +9987,10 @@ if omitted.
 
 .. _default-geom-gap:
 
+.. _default-geom-surfacevel:
+
+.. _default-geom-adhesion:
+
 .. _default-geom-fromto:
 
 .. _default-geom-axisangle:
@@ -9686,6 +10132,8 @@ if omitted.
 
 .. _default-light-cutoff:
 
+.. _default-light-softness:
+
 .. _default-light-exponent:
 
 .. _default-light-mode:
@@ -9712,6 +10160,8 @@ if omitted.
 .. _default-pair-gap:
 
 .. _default-pair-margin:
+
+.. _default-pair-adhesion:
 
 :el-prefix:`default/` |-| **pair** |?|
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -9828,6 +10278,12 @@ if omitted.
 .. _default-general-gainprm:
 
 .. _default-general-biasprm:
+
+.. _default-general-velrange:
+
+.. _default-general-ffrange:
+
+.. _default-general-input:
 
 .. _default-general-actearly:
 
@@ -9965,6 +10421,8 @@ refsite, tendon, slidersite, cranksite.
 
 .. _default-intvelocity-forcelimited:
 
+.. _default-intvelocity-actlimited:
+
 .. _default-intvelocity-ctrlrange:
 
 .. _default-intvelocity-forcerange:
@@ -10002,6 +10460,95 @@ refsite, tendon, slidersite, cranksite.
 
 All :ref:`intvelocity <actuator-intvelocity>` attributes are available here except: name, class, joint, jointinparent,
 site, refsite, tendon, slidersite, cranksite.
+
+
+.. _default-pid:
+
+.. _default-pid-ctrllimited:
+
+.. _default-pid-forcelimited:
+
+.. _default-pid-ctrlrange:
+
+.. _default-pid-posrange:
+
+.. _default-pid-velrange:
+
+.. _default-pid-ffrange:
+
+.. _default-pid-forcerange:
+
+.. _default-pid-inheritrange:
+
+.. _default-pid-gear:
+
+.. _default-pid-damping:
+
+.. _default-pid-armature:
+
+.. _default-pid-cranklength:
+
+.. _default-pid-user:
+
+.. _default-pid-group:
+
+.. _default-pid-nsample:
+
+.. _default-pid-interp:
+
+.. _default-pid-delay:
+
+.. _default-pid-kp:
+
+.. _default-pid-kv:
+
+.. _default-pid-dampratio:
+
+.. _default-pid-ki:
+
+.. _default-pid-imax:
+
+.. _default-pid-slewmax:
+
+.. _default-pid-input:
+
+:el-prefix:`default/` |-| **pid** |?|
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+All :ref:`pid <actuator-pid>` attributes are available here except: name, class, joint, jointinparent,
+site, refsite, tendon, slidersite, cranksite.
+
+
+.. _default-orientation:
+
+.. _default-orientation-forcelimited:
+
+.. _default-orientation-ctrlrange:
+
+.. _default-orientation-forcerange:
+
+.. _default-orientation-user:
+
+.. _default-orientation-group:
+
+.. _default-orientation-nsample:
+
+.. _default-orientation-interp:
+
+.. _default-orientation-delay:
+
+.. _default-orientation-kp:
+
+.. _default-orientation-kv:
+
+.. _default-orientation-dampratio:
+
+.. _default-orientation-input:
+
+:el-prefix:`default/` |-| **orientation** |?|
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+All :ref:`orientation <actuator-orientation>` attributes are available here except: name, class, joint, site, refsite.
 
 
 .. _default-damper:
@@ -10263,8 +10810,9 @@ other custom computations.
 
 .. _custom-text-data:
 
-:at:`data`: :at-val:`string, required`
-   Custom text to be copied into mjModel.
+:at:`data`: :at-val:`string, optional`
+   Custom text to be copied into mjModel. Alternatively, the text can be provided in a
+   `CDATA section <https://www.w3.org/TR/xml/#sec-cdata-sect>`__ of the form ``<![CDATA[ ... ]]>`` in the ``<text>`` element.
 
 
 .. _custom-tuple:

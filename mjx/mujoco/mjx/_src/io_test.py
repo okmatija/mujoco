@@ -352,6 +352,43 @@ class ModelIOTest(parameterized.TestCase):
 
     _ = jax.tree.map_with_path(check_ndim, mx)
 
+  def test_put_model_warp_batch_sizes(self):
+    """Tests put_model can add an nworld axis to selected Warp model fields."""
+    if not mjxw.WARP_INSTALLED:
+      self.skipTest('Warp not installed.')
+    if not hasattr(mjxw_types.GraphMode, 'WARP'):
+      self.skipTest('Warp JAX FFI graph modes unavailable.')
+
+    m = mujoco.MjModel.from_xml_string("""
+      <mujoco>
+        <asset>
+          <texture name="red" type="2d" builtin="flat" width="4" height="4"
+            rgb1="1 0 0" rgb2="1 0 0"/>
+          <material name="mat" texture="red" rgba="0.5 0.6 0.7 1"/>
+        </asset>
+        <worldbody>
+          <geom type="sphere" size="0.1" material="mat"/>
+        </worldbody>
+      </mujoco>
+    """)
+
+    nworld = 3
+    mx = mjx.put_model(m, impl='warp', batch_sizes={'mat_texid': nworld})
+
+    self.assertEqual(mx.mat_texid.shape, (nworld,) + m.mat_texid.shape)
+    self.assertEqual(mx.geom_pos.shape, (m.ngeom, 3))
+    self.assertEqual(mx.geom_size.shape, (m.ngeom, 3))
+    self.assertEqual(mx.mat_rgba.shape, (m.nmat, 4))
+    self.assertEqual(mx.geom_type.shape, (m.ngeom,))
+    self.assertEqual(mx.geom_dataid.shape, (m.ngeom,))
+
+    np.testing.assert_array_equal(
+        np.asarray(mx.mat_texid), np.repeat(m.mat_texid[None], nworld, axis=0)
+    )
+    np.testing.assert_allclose(np.asarray(mx.geom_pos), m.geom_pos)
+    np.testing.assert_allclose(np.asarray(mx.geom_size), m.geom_size)
+    np.testing.assert_allclose(np.asarray(mx.mat_rgba), m.mat_rgba)
+
   @parameterized.parameters('JAX', 'WARP', None)
   def test_put_model_warp_graph_mode(self, mode: str | None):
     """Tests that put_model accepts graph_mode parameter."""
@@ -495,19 +532,21 @@ class DataIOTest(parameterized.TestCase):
     if not mjx_io.has_cuda_gpu_device():
       self.skipTest('No CUDA GPU device.')
     m = mujoco.MjModel.from_xml_string(_MULTIPLE_CONVEX_OBJECTS)
-    d = mjx.make_data(m, impl='warp', naconmax=9, njmax=23, nvmax=8)
+    d = mjx.make_data(m, impl='warp', naconmax=9, naccdmax=7, njmax=23, nvmax=8)
     self.assertEqual(d._impl.contact__dist.shape[0], 9)
+    self.assertEqual(d._impl.naccdmax, 7)
     self.assertEqual(d._impl.efc__pos.shape[0], 23)
     self.assertEqual(d._impl.nvmax, 8)
 
-  def test_put_data_warp_nvmax(self):
+  def test_put_data_warp(self):
     if not mjxw.WARP_INSTALLED:
       self.skipTest('Warp is not installed.')
     if not mjx_io.has_cuda_gpu_device():
       self.skipTest('No CUDA GPU device.')
     m = mujoco.MjModel.from_xml_string(_MULTIPLE_CONVEX_OBJECTS)
     d = mujoco.MjData(m)
-    dx = mjx.put_data(m, d, impl='warp', nvmax=8)
+    dx = mjx.put_data(m, d, impl='warp', naccdmax=7, nvmax=8)
+    self.assertEqual(dx._impl.naccdmax, 7)
     self.assertEqual(dx._impl.nvmax, 8)
 
   @parameterized.parameters('jax', 'cpp', 'warp')

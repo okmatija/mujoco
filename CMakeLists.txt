@@ -29,7 +29,7 @@ set(MSVC_INCREMENTAL_DEFAULT ON)
 
 project(
   mujoco
-  VERSION 3.10.1
+  VERSION 3.12.1
   DESCRIPTION "MuJoCo Physics Simulator"
   HOMEPAGE_URL "https://mujoco.org"
 )
@@ -165,15 +165,19 @@ add_subdirectory(src/engine)
 add_subdirectory(src/user)
 add_subdirectory(src/xml)
 add_subdirectory(src/xml/mjz)
+
+add_subdirectory(src/render/noop)
+
 if(NOT EMSCRIPTEN AND NOT MUJOCO_USE_FILAMENT_MJR_COMPAT)
   add_subdirectory(src/render/classic)
   add_subdirectory(src/ui)
 endif()
-add_subdirectory(src/render/noop)
 
 if(MUJOCO_USE_FILAMENT)
   add_subdirectory(src/render/filament)
-  add_subdirectory(src/experimental/filament)
+  if(MUJOCO_USE_FILAMENT_MJR_COMPAT)
+    add_subdirectory(src/experimental/filament)
+  endif()
 endif()
 
 if(EMSCRIPTEN)
@@ -268,7 +272,6 @@ if(MUJOCO_BUILD_SIMULATE)
 endif()
 
 if(MUJOCO_BUILD_STUDIO)
-  add_subdirectory(src/experimental/platform)
   add_subdirectory(src/experimental/studio)
 endif()
 
@@ -355,4 +358,67 @@ if(NOT EMSCRIPTEN AND NOT (APPLE AND MUJOCO_BUILD_MACOS_FRAMEWORKS))
     DESTINATION "${CMAKE_INSTALL_DATADIR}/mujoco"
     PATTERN "CMakeLists.txt" EXCLUDE
   )
+endif()
+
+if(MUJOCO_REQUIRED_TARGETS)
+  foreach(target IN LISTS MUJOCO_REQUIRED_TARGETS)
+    if(NOT TARGET ${target})
+      message(
+        FATAL_ERROR
+        "Required target '${target}' is not defined. "
+        "This target is required by the internal packaging workflow."
+      )
+    endif()
+  endforeach()
+endif()
+
+if(MUJOCO_REQUIRED_STATIC_LIBRARIES)
+  function(mujoco_get_all_targets targets_var dir)
+    get_property(subdirs DIRECTORY ${dir} PROPERTY SUBDIRECTORIES)
+    get_property(dir_targets DIRECTORY ${dir} PROPERTY BUILDSYSTEM_TARGETS)
+    set(all_targets ${dir_targets})
+    foreach(subdir ${subdirs})
+      mujoco_get_all_targets(sub_targets ${subdir})
+      list(APPEND all_targets ${sub_targets})
+    endforeach()
+    set(${targets_var} ${all_targets} PARENT_SCOPE)
+  endfunction()
+
+  mujoco_get_all_targets(all_project_targets ${CMAKE_CURRENT_SOURCE_DIR})
+
+  set(produced_static_lib_files "")
+  foreach(tgt IN LISTS all_project_targets)
+    get_target_property(tgt_type ${tgt} TYPE)
+    if(tgt_type STREQUAL "STATIC_LIBRARY")
+      get_target_property(out_name ${tgt} ARCHIVE_OUTPUT_NAME)
+      if(NOT out_name)
+        get_target_property(out_name ${tgt} OUTPUT_NAME)
+      endif()
+      if(NOT out_name)
+        set(out_name "${tgt}")
+      endif()
+
+      get_target_property(tgt_prefix ${tgt} PREFIX)
+      if(tgt_prefix STREQUAL "tgt_prefix-NOTFOUND")
+        set(tgt_prefix "${CMAKE_STATIC_LIBRARY_PREFIX}")
+      endif()
+
+      get_target_property(tgt_suffix ${tgt} SUFFIX)
+      if(tgt_suffix STREQUAL "tgt_suffix-NOTFOUND")
+        set(tgt_suffix "${CMAKE_STATIC_LIBRARY_SUFFIX}")
+      endif()
+
+      list(APPEND produced_static_lib_files "${tgt_prefix}${out_name}${tgt_suffix}")
+    endif()
+  endforeach()
+
+  foreach(req_file IN LISTS MUJOCO_REQUIRED_STATIC_LIBRARIES)
+    if(NOT req_file IN_LIST produced_static_lib_files)
+      message(
+        FATAL_ERROR
+        "Required static library file '${req_file}' is not produced by any CMake target. "
+        "This file is required by the internal packaging workflow."
+      )
+    endif()
+  endforeach()
 endif()

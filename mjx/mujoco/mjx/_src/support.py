@@ -219,7 +219,7 @@ def local_to_global(
 
 def _getnum(m: Union[Model, mujoco.MjModel], obj: mujoco._enums.mjtObj) -> int:
   """Gets the number of objects for the given object type."""
-  return {
+  counts = {
       mujoco.mjtObj.mjOBJ_BODY: m.nbody,
       mujoco.mjtObj.mjOBJ_JOINT: m.njnt,
       mujoco.mjtObj.mjOBJ_GEOM: m.ngeom,
@@ -236,14 +236,15 @@ def _getnum(m: Union[Model, mujoco.MjModel], obj: mujoco._enums.mjtObj) -> int:
       mujoco.mjtObj.mjOBJ_TUPLE: m.ntuple,
       mujoco.mjtObj.mjOBJ_KEY: m.nkey,
       mujoco.mjtObj.mjOBJ_FLEX: m.nflex,
-  }.get(obj, 0)
+  }
+  return {int(k): v for k, v in counts.items()}.get(int(obj), 0)
 
 
 def _getadr(
     m: Union[Model, mujoco.MjModel], obj: mujoco._enums.mjtObj
 ) -> np.ndarray:
   """Gets the name addresses for the given object type."""
-  return {
+  adrs = {
       mujoco.mjtObj.mjOBJ_BODY: m.name_bodyadr,
       mujoco.mjtObj.mjOBJ_JOINT: m.name_jntadr,
       mujoco.mjtObj.mjOBJ_GEOM: m.name_geomadr,
@@ -260,7 +261,8 @@ def _getadr(
       mujoco.mjtObj.mjOBJ_TUPLE: m.name_tupleadr,
       mujoco.mjtObj.mjOBJ_KEY: m.name_keyadr,
       mujoco.mjtObj.mjOBJ_FLEX: m.name_flexadr,
-  }[obj]
+  }
+  return {int(k): v for k, v in adrs.items()}[int(obj)]
 
 
 def id2name(
@@ -501,15 +503,15 @@ class BindData(object):
         num = sum((typ == jt) * jt.dof_width() for jt in JointType)
       if isinstance(self.id, list):
         idx = []
-        for a, n in zip(adr, num):
+        for a, n in zip(adr, num):  # pyrefly: ignore[bad-argument-type]
           idx.extend(a + j for j in range(n))
         return self._slice(self.__getname(name), idx)
       elif num > 1:
         return self._slice(self.__getname(name), slice(adr, adr + num))
       else:
-        return self._slice(self.__getname(name), adr)
+        return self._slice(self.__getname(name), adr)  # pyrefly: ignore[bad-argument-type]
     elif name in ('mocap_pos', 'mocap_quat'):
-      return self._slice(self.__getname(name), self.model.body_mocapid[self.id])
+      return self._slice(self.__getname(name), self.model.body_mocapid[self.id])  # pyrefly: ignore[bad-argument-type]
     return self._slice(self.__getname(name), self.id)
 
   def set(self, name: str, value: jax.Array) -> Data:
@@ -521,7 +523,7 @@ class BindData(object):
     try:
       iter(value)
     except TypeError:
-      value = [value]
+      value = [value]  # pyrefly: ignore[bad-assignment]
     if name in ('qpos', 'qvel', 'qacc', 'mocap_pos', 'mocap_quat'):
       adr = num = 0
       if name == 'qpos':
@@ -549,7 +551,7 @@ class BindData(object):
       num = [dim]
     i = 0
     value = jax.numpy.array(value).flatten()
-    for a, n in zip(adr, num):
+    for a, n in zip(adr, num):  # pyrefly: ignore[bad-argument-type]
       shape = array.shape
       array = array.flatten().at[a : a + n].set(value[i : i + n]).reshape(shape)
       i += n
@@ -623,7 +625,7 @@ def contact_force_dim(
   if m.opt.cone == ConeType.PYRAMIDAL:
     efc_address = (
         d._impl.contact.efc_address[idx_dim, None]  # pytype: disable=attribute-error
-        + np.arange(np.where(dim == 1, 1, 2 * (dim - 1)))[None]
+        + np.arange(np.where(dim == 1, 1, 2 * (dim - 1)))[None]  # pyrefly: ignore[no-matching-overload]
     )
     efc_force = d._impl.efc_force[efc_address]  # pytype: disable=attribute-error
     force = jax.vmap(_decode_pyramid, in_axes=(0, 0, None))(

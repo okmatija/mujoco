@@ -66,9 +66,25 @@ void mj_instantiateEquality(const mjModel* m, mjData* d);
 void mj_instantiateContact(const mjModel* m, mjData* d);
 
 // compute Jacobian for contact, return number of DOFs affected
+//
+// Arguments:
+//   m:       model structure (mjModel)
+//   d:       data structure (mjData)
+//   con:     contact information
+//   dim:     contact dimension (1 to 6)
+//   jacdifp: translational Jacobian difference [3 * (NV or nv)]
+//   jacdifr: rotational Jacobian difference    [3 * (NV or nv)], nullable, unused if dim <= 3
+//   jac1p:   translational Jacobian for body 1 [3 * (NV or nv)], nullable
+//   jac2p:   translational Jacobian for body 2 [3 * (NV or nv)], nullable
+//   jac1r:   rotational Jacobian for body 1    [3 * (NV or nv)], nullable, unused if dim <= 3
+//   jac2r:   rotational Jacobian for body 2    [3 * (NV or nv)], nullable, unused if dim <= 3
+//   chain:   list of DOF indices affecting contact [NV], unused if dense
+//
+// Returns:
+//   number of DOFs affected (NV for sparse, nv for dense)
 MJAPI int mj_contactJacobian(const mjModel* m, mjData* d, const mjContact* con, int dim,
-                             mjtNum* jac, mjtNum* jacdif, mjtNum* jacdifp,
-                             mjtNum* jacdifr, mjtNum* jac1p, mjtNum* jac2p,
+                             mjtNum* jacdifp, mjtNum* jacdifr,
+                             mjtNum* jac1p, mjtNum* jac2p,
                              mjtNum* jac1r, mjtNum* jac2r, int* chain);
 
 
@@ -89,8 +105,14 @@ MJAPI void mj_makeConstraint(const mjModel* m, mjData* d);
 // compute efc_AR
 MJAPI void mj_projectConstraint(const mjModel* m, mjData* d);
 
+// compute efc_vel
+void mj_velocityConstraint(const mjModel* m, mjData* d);
+
 // compute efc_vel, efc_aref
 MJAPI void mj_referenceConstraint(const mjModel* m, mjData* d);
+
+// compute efc_diagA (approximate or exact), efc_R, efc_D, efc_KBIP in the solve metric
+void mj_regularizeConstraint(const mjModel* m, mjData* d, int flg_AR);
 
 // compute efc_state, efc_force
 //  optional: cost(qacc) = s_hat(jar); cone Hessians

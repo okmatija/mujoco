@@ -350,6 +350,28 @@ This is useful for example when the MJB is not available as a file on disk.)"));
   mjModel.def_readonly("vis", &MjModelWrapper::vis);
   mjModel.def_readonly("stat", &MjModelWrapper::stat);
 
+  mjModel.def_property(
+      "flg_gravcomp",
+      [](const MjModelWrapper& m) { return m.get()->flg_gravcomp; },
+      [](MjModelWrapper& m, bool val) {
+        m.get()->flg_gravcomp = val;
+        m.get()->ngravcomp = val ? 1 : 0;
+      });
+
+  mjModel.def_property(
+      "flg_surfacevel",
+      [](const MjModelWrapper& m) { return m.get()->flg_surfacevel; },
+      [](MjModelWrapper& m, bool val) {
+        m.get()->flg_surfacevel = val;
+      });
+
+  mjModel.def_property(
+      "flg_adhesion",
+      [](const MjModelWrapper& m) { return m.get()->flg_adhesion; },
+      [](MjModelWrapper& m, bool val) {
+        m.get()->flg_adhesion = val;
+      });
+
 #define X(var)                   \
   mjModel.def_property_readonly( \
       #var, [](const MjModelWrapper& m) { return m.get()->var; });
@@ -755,6 +777,7 @@ This is useful for example when the MJB is not available as a file on disk.)"));
       })
   X(dist);
   X(includemargin);
+  X(adhesion);
   X(mu);
   X(dim);
   X(geom1);
@@ -806,6 +829,7 @@ This is useful for example when the MJB is not available as a file on disk.)"));
   XN(mjtNum, solref);
   XN(mjtNum, solreffriction);
   XN(mjtNum, solimp);
+  X(mjtNum, adhesion);
   X(mjtNum, mu);
   XN(mjtNum, H);
   X(int, dim);
@@ -893,6 +917,7 @@ This is useful for example when the MJB is not available as a file on disk.)"));
   MJDATA_ARENA_POINTERS_SOLVER
   MJDATA_ARENA_POINTERS_DUAL
   MJDATA_ARENA_POINTERS_ISLAND
+  MJDATA_ARENA_POINTERS_EFM
 
 #undef MJ_M
 #define MJ_M(x) (x)
@@ -1053,7 +1078,7 @@ This is useful for example when the MJB is not available as a file on disk.)"));
   py::class_<raw::MjrVertexAttribute> mjrVertexAttribute(m,
                                                          "MjrVertexAttribute");
   mjrVertexAttribute.def(py::init([](int usage, int type) {
-                           return raw::MjrVertexAttribute{nullptr, usage, type};
+                           return raw::MjrVertexAttribute{usage, type};
                          }),
                          py::arg("usage") = 0, py::arg("type") = 0);
   mjrVertexAttribute.def("__copy__", [](const raw::MjrVertexAttribute& other) {
@@ -1185,6 +1210,8 @@ This is useful for example when the MJB is not available as a file on disk.)"));
   X(objid);
   X(category);
   X(matid);
+  X(texid);
+  X(texuniform);
   X(texcoord);
   X(segid);
   X(emission);
@@ -1201,6 +1228,7 @@ This is useful for example when the MJB is not available as a file on disk.)"));
   X(pos);
   X(mat);
   X(rgba);
+  X(texrepeat);
 #undef X
 
   DefinePyStr(mjvGeom, "label", &raw::MjvGeom::label);
@@ -1231,6 +1259,7 @@ This is useful for example when the MJB is not available as a file on disk.)"));
   X(bulbradius);
   X(intensity);
   X(range);
+  X(softness);
 #undef X
 
 #define X(var) DefinePyArray(mjvLight, #var, &MjvLightWrapper::var)
@@ -1393,9 +1422,10 @@ This is useful for example when the MJB is not available as a file on disk.)"));
 
   mjvFigure.def_readonly("linename", &MjvFigureWrapper::linename);
 
-  // mjv_averageCamera returns an mjvGLCamera and we need to call the wrapper's
-  // constructor on the return value. Defining the binding for this function
-  // in this file to avoid symbol dependency across modules.
+  // mjv_averageCamera and mjv_camera2GLCamera both return an mjvGLCamera.
+  // We need to call the wrapper's constructor on the return value. Defining the
+  // binding for these functions in this file to avoid symbol dependency across
+  // modules.
   m.def(
       "mjv_averageCamera",
       [](const MjvGLCameraWrapper& cam1, const MjvGLCameraWrapper& cam2) {
@@ -1406,6 +1436,19 @@ This is useful for example when the MJB is not available as a file on disk.)"));
       },
       py::arg("cam1"), py::arg("cam2"),
       py::doc(python_traits::mjv_averageCamera::doc));
+
+  m.def(
+      "mjv_camera2GLCamera",
+      [](const MjModelWrapper& m, const MjDataWrapper& d,
+         const MjvCameraWrapper& cam) {
+        return MjvGLCameraWrapper([&m, &d, &cam]() {
+          py::gil_scoped_release no_gil;
+          return InterceptMjErrors(mjv_camera2GLCamera)(m.get(), d.get(),
+                                                        cam.get());
+        }());
+      },
+      py::arg("m"), py::arg("d"), py::arg("cam"),
+      py::doc(python_traits::mjv_camera2GLCamera::doc));
 
   m.def("_recompile_spec_addr", [](uintptr_t spec_addr, const MjModelWrapper& m,
                                    const MjDataWrapper& d) {

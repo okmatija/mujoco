@@ -18,7 +18,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
-#include <filesystem>
+#include <filesystem>  // NOLINT
 #include <functional>
 #include <map>
 #include <memory>
@@ -479,6 +479,71 @@ TEST_F(MujocoTest, SetToDCMotorLuGre) {
   EXPECT_EQ(actuator->biasprm[3], 0.5);   // coulomb
   EXPECT_EQ(actuator->biasprm[4], 0.7);   // static
   EXPECT_EQ(actuator->biasprm[5], 10.0);  // stribeck
+
+  mj_deleteSpec(spec);
+}
+
+TEST_F(MujocoTest, SetToOrientation) {
+  mjSpec* spec = mj_makeSpec();
+  mjsActuator* actuator = mjs_addActuator(spec, 0);
+
+  // kv variant, default (expmap) chart
+  double kv = 2.0;
+  const char* err = mjs_setToOrientation(actuator, 5.0, &kv, nullptr, 0);
+  EXPECT_STREQ(err, "");
+  EXPECT_EQ(actuator->gaintype, mjGAIN_SO3);
+  EXPECT_EQ(actuator->biastype, mjBIAS_SO3);
+  EXPECT_EQ(actuator->dyntype, mjDYN_NONE);
+  EXPECT_EQ(actuator->gainprm[0], 5.0);
+  EXPECT_EQ(actuator->biasprm[1], -5.0);
+  EXPECT_EQ(actuator->biasprm[2], -2.0);
+  EXPECT_EQ(actuator->ctrlspec, 0);
+
+  // dampratio variant, quat chart
+  double dampratio = 1.0;
+  err = mjs_setToOrientation(actuator, 5.0, nullptr, &dampratio, mjCHART_QUAT);
+  EXPECT_STREQ(err, "");
+  EXPECT_EQ(actuator->biasprm[2], 1.0);
+  EXPECT_EQ(actuator->ctrlspec, mjCHART_QUAT);
+
+  // kv and dampratio are mutually exclusive
+  err = mjs_setToOrientation(actuator, 5.0, &kv, &dampratio, 0);
+  EXPECT_STREQ(err, "kv and dampratio cannot both be defined");
+
+  mj_deleteSpec(spec);
+}
+
+TEST_F(MujocoTest, SetToPID) {
+  mjSpec* spec = mj_makeSpec();
+  mjsActuator* actuator = mjs_addActuator(spec, 0);
+
+  // stateless PID with kv, default input signature
+  double kv = 3.0;
+  const char* err = mjs_setToPID(actuator, 5.0, &kv, nullptr, nullptr, nullptr,
+                                 nullptr, 0, 0);
+  EXPECT_STREQ(err, "");
+  EXPECT_EQ(actuator->gaintype, mjGAIN_PID);
+  EXPECT_EQ(actuator->biastype, mjBIAS_AFFINE);
+  EXPECT_EQ(actuator->dyntype, mjDYN_NONE);
+  EXPECT_EQ(actuator->biasprm[1], -5.0);
+  EXPECT_EQ(actuator->biasprm[2], -3.0);
+  EXPECT_EQ(actuator->gainprm[0], 0.0);
+
+  // integral action with anti-windup, pos-only signature
+  double ki = 0.5, imax = 2.0, dampratio = 1.0;
+  err = mjs_setToPID(actuator, 5.0, nullptr, &dampratio, &ki, &imax, nullptr, 0,
+                     mjINPUT_POS);
+  EXPECT_STREQ(err, "");
+  EXPECT_EQ(actuator->dyntype, mjDYN_PID);
+  EXPECT_EQ(actuator->gainprm[0], 0.5);
+  EXPECT_EQ(actuator->dynprm[0], 2.0);
+  EXPECT_EQ(actuator->biasprm[2], 1.0);
+  EXPECT_EQ(actuator->ctrlspec, mjINPUT_POS);
+
+  // kv and dampratio are mutually exclusive
+  err = mjs_setToPID(actuator, 5.0, &kv, &dampratio, nullptr, nullptr, nullptr,
+                     0, 0);
+  EXPECT_STREQ(err, "kv and dampratio cannot both be defined");
 
   mj_deleteSpec(spec);
 }
@@ -1282,6 +1347,20 @@ TEST_F(MujocoTest, AttachSpatialTendonWithoutSidesite) {
   EXPECT_THAT(
       mjs_findElement(parent, mjOBJ_TENDON, "tendon_without_sidesite_child"),
       NotNull());
+
+  mjsTendon* tendon = mjs_asTendon(
+      mjs_findElement(parent, mjOBJ_TENDON, "tendon_with_sidesite_child"));
+  ASSERT_THAT(tendon, NotNull());
+  ASSERT_EQ(mjs_getWrapNum(tendon), 3);
+
+  EXPECT_EQ(mjs_getWrapTarget(mjs_getWrap(tendon, 0)),
+            mjs_findElement(parent, mjOBJ_SITE, "site_A_child"));
+  EXPECT_EQ(mjs_getWrapTarget(mjs_getWrap(tendon, 1)),
+            mjs_findElement(parent, mjOBJ_GEOM, "wrap_geom_child"));
+  EXPECT_EQ(mjs_getWrapTarget(mjs_getWrap(tendon, 2)),
+            mjs_findElement(parent, mjOBJ_SITE, "site_B_child"));
+  EXPECT_EQ(mjs_getWrapSideSite(mjs_getWrap(tendon, 1)),
+            mjs_asSite(mjs_findElement(parent, mjOBJ_SITE, "side_site_child")));
 
   mjModel* model = mj_compile(parent, nullptr);
   ASSERT_THAT(model, NotNull()) << mjs_getError(parent);
@@ -3601,6 +3680,78 @@ TEST_F(MujocoTest, MjEncodeNativeFormats) {
   std::filesystem::remove(txt_path);
   mj_deleteModel(model);
   mj_deleteSpec(spec);
+}
+
+// Tests that joint ordering is preserved after attach operations
+TEST_F(MujocoTest, AttachPreservesJointOrder) {
+  static constexpr char child_xml[] = R"(
+  <mujoco>
+    <worldbody>
+      <body name="slider_body">
+        <joint name="slide_joint" type="slide"/>
+        <geom type="box" size="0.1 0.1 0.1"/>
+      </body>
+      <body name="free_body" pos="1 0 0">
+        <freejoint name="free_joint"/>
+        <geom type="sphere" size="0.1"/>
+      </body>
+    </worldbody>
+  </mujoco>
+  )";
+
+  mjSpec* parent = mj_makeSpec();
+  mjsBody* parent_world = mjs_findBody(parent, "world");
+  mjsFrame* attach_frame = mjs_addFrame(parent_world, nullptr);
+  mjs_setName(attach_frame->element, "attach_frame");
+
+  std::array<char, 1000> error;
+  mjSpec* child =
+      mj_parseXMLString(child_xml, nullptr, error.data(), error.size());
+  ASSERT_THAT(child, NotNull()) << error.data();
+
+  mjsElement* attached =
+      mjs_attach(attach_frame->element, child->element, "child_", "");
+  ASSERT_THAT(attached, NotNull());
+
+  mjModel* model = mj_compile(parent, nullptr);
+  ASSERT_THAT(model, NotNull());
+
+  // Verify joint order: slide joint should come before free joint
+  int slide_id = mj_name2id(model, mjOBJ_JOINT, "child_slide_joint");
+  int free_id = mj_name2id(model, mjOBJ_JOINT, "child_free_joint");
+  ASSERT_GE(slide_id, 0);
+  ASSERT_GE(free_id, 0);
+  EXPECT_LT(slide_id, free_id)
+      << "Slide joint should have a lower ID than free joint";
+
+  // Export and re-import to test round-trip preservation
+  std::string exported_xml = SaveAndReadXml(parent);
+
+  mjSpec* reimported =
+      mj_parseXMLString(exported_xml.c_str(), nullptr, error.data(),
+                        error.size());
+  ASSERT_THAT(reimported, NotNull()) << error.data();
+
+  mjModel* reimported_model = mj_compile(reimported, nullptr);
+  ASSERT_THAT(reimported_model, NotNull());
+
+  // Verify joint order is preserved after round-trip
+  int reimported_slide_id = mj_name2id(reimported_model, mjOBJ_JOINT,
+                                       "child_slide_joint");
+  int reimported_free_id = mj_name2id(reimported_model, mjOBJ_JOINT,
+                                      "child_free_joint");
+  ASSERT_GE(reimported_slide_id, 0);
+  ASSERT_GE(reimported_free_id, 0);
+  EXPECT_EQ(reimported_slide_id, slide_id)
+      << "Joint IDs should be the same after XML round-trip";
+  EXPECT_EQ(reimported_free_id, free_id)
+      << "Joint IDs should be the same after XML round-trip";
+
+  mj_deleteModel(model);
+  mj_deleteModel(reimported_model);
+  mj_deleteSpec(child);
+  mj_deleteSpec(parent);
+  mj_deleteSpec(reimported);
 }
 }  // namespace
 }  // namespace mujoco

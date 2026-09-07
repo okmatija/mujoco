@@ -14,23 +14,25 @@
 """Interactive Studio GUI viewer for MuJoCo."""
 
 from absl import app as _app
-from absl import flags
+from absl import flags as _flags
 from mujoco.experimental.studio import launch_passive
 from mujoco.experimental.studio import messages
 from mujoco.experimental.studio import parser
-from mujoco.experimental.studio import sim
+from mujoco.experimental.studio import step_control
 from mujoco.experimental.studio import viewer_app
 from mujoco.experimental.studio import viewer_protocol
 
 vp = viewer_protocol
 
-_GFX = flags.DEFINE_enum('gfx', None, vp.GFX_MODES, 'Graphics mode.')
-_WIDTH = flags.DEFINE_integer('width', 1200, 'Width of output window.')
-_HEIGHT = flags.DEFINE_integer('height', 800, 'Height of output window.')
-_MJCF_PATH = flags.DEFINE_string('mjcf', None, 'Path to MJCF file.')
-_VIEWER = flags.DEFINE_enum_class(
-    'viewer', vp.ViewerMode.NATIVE, vp.ViewerMode, 'Viewer mode.'
+_MODEL = _flags.DEFINE_string('model', None, 'Path to model file.')
+_GFX = _flags.DEFINE_enum(
+    'gfx', None, vp.GFX_MODES, 'Graphics mode ("web" launches Web Viewer).'
 )
+_PORT = _flags.DEFINE_integer(
+    'port', 0, 'Web Viewer port (0 picks first free port >= 8080).'
+)
+_WIDTH = _flags.DEFINE_integer('width', 1200, 'Width of the output image.')
+_HEIGHT = _flags.DEFINE_integer('height', 800, 'Height of the output image')
 
 
 def main(argv: list[str]) -> None:
@@ -38,11 +40,11 @@ def main(argv: list[str]) -> None:
       width=_WIDTH.value,
       height=_HEIGHT.value,
       gfx=_GFX.value or '',
-      viewer_mode=_VIEWER.value,
+      http_port=_PORT.value,
   )
 
   # Resolve model path, if provided.
-  model_path = _MJCF_PATH.value or (
+  model_path = _MODEL.value or (
       argv[1] if len(argv) > 1 and not argv[1].startswith('--') else None
   )
 
@@ -53,17 +55,20 @@ def main(argv: list[str]) -> None:
 
   with launch_passive.launch_passive(
       config,
-      viewer_handlers=[viewer_app.ViewerApp()],
+      viewer_plugins=[viewer_app.ViewerApp()],
+      sim_plugins=[step_control.StepControl()],
   ) as handle:
     # Send the model to the viewer, if we have a model.
     if model is not None:
-      handle.send_to_viewer(messages.ModelEvent(model=model, path=model_path))
+      handle.send_to_viewer(messages.ModelEvent(model=model, path=model_path))  # pyrefly: ignore[bad-argument-type]
 
     # Run the simulation.
-    step_control = sim.StepControl()
-    while handle.is_running():
-      step_control.advance(model, data)
-      model, data, step_control = handle.sync(model, data, step_control)
+    try:
+      while handle.is_running():
+        model, data = handle.sync(model, data)
+    except KeyboardInterrupt:
+      # Ctrl+C is the documented way to quit; exit cleanly, no traceback.
+      print('\nShutting down.', flush=True)
 
 
 _app.run(main)

@@ -1263,10 +1263,10 @@ mjtNum mj_tendonDot(const mjModel* m, mjData* d, int id, const mjtNum* vec) {
 
 // compute actuator/transmission lengths and moments
 void mj_transmission(const mjModel* m, mjData* d) {
-  int nv = m->nv, nu = m->nu;
+  int nv = m->nv, nactuator = m->nactuator;
 
   // nothing to do
-  if (!nu) {
+  if (!nactuator) {
     return;
   }
 
@@ -1295,19 +1295,24 @@ void mj_transmission(const mjModel* m, mjData* d) {
   int sleep_filter = mjENABLED(mjENBL_SLEEP) && d->nv_awake < nv;
 
   // compute lengths and moments
-  for (int i=0; i < nu; i++) {
-    rowadr[i] = i == 0 ? 0 : rowadr[i-1] + rownnz[i-1];
-    int nnz, adr = rowadr[i];
+  for (int i=0; i < nactuator; i++) {
+    // address of the actuator's output block (single row for all current types)
+    int out = m->actuator_outadr[i];
+    rowadr[out] = out == 0 ? 0 : rowadr[out-1] + rownnz[out-1];
+    int nnz, adr = rowadr[out];
 
-    // skip sleeping actuator
+    // skip sleeping actuator: zero all rows of its output block
     if (sleep_filter && mj_sleepState(m, d, mjOBJ_ACTUATOR, i) == mjS_ASLEEP) {
-      rownnz[i] = 0;
+      for (int k=0; k < m->actuator_outnum[i]; k++) {
+        rowadr[out+k] = out+k == 0 ? 0 : rowadr[out+k-1] + rownnz[out+k-1];
+        rownnz[out+k] = 0;
+      }
       continue;
     }
 
     // extract info
     int id = m->actuator_trnid[2*i];
-    mjtNum* gear = m->actuator_gear+6*i;
+    mjtNum* gear = m->actuator_gear+6*out;
 
     // process according to transmission type
     switch ((mjtTrn) m->actuator_trntype[i]) {
@@ -1316,10 +1321,10 @@ void mj_transmission(const mjModel* m, mjData* d) {
       // slide and hinge joint: scalar gear
       if (m->jnt_type[id] == mjJNT_SLIDE || m->jnt_type[id] == mjJNT_HINGE) {
         // sparsity
-        rownnz[i] = 1;
+        rownnz[out] = 1;
         colind[adr] = m->jnt_dofadr[id];
 
-        length[i] = d->qpos[m->jnt_qposadr[id]]*gear[0];
+        length[out] = d->qpos[m->jnt_qposadr[id]]*gear[0];
         moment[adr] = gear[0];
       }
 
@@ -1341,7 +1346,7 @@ void mj_transmission(const mjModel* m, mjData* d) {
         }
 
         // length: axis*gearAxis
-        length[i] = mju_dot3(axis, gearAxis);
+        length[out] = mju_dot3(axis, gearAxis);
 
         // dof start address
         int jnt_dofadr = m->jnt_dofadr[id];
@@ -1350,7 +1355,7 @@ void mj_transmission(const mjModel* m, mjData* d) {
         for (int j = 0; j < 3; j++) {
           colind[adr+j] = jnt_dofadr + j;
         }
-        rownnz[i] = 3;
+        rownnz[out] = 3;
 
         // moment: gearAxis
         mji_copy3(moment+adr, gearAxis);
@@ -1359,7 +1364,7 @@ void mj_transmission(const mjModel* m, mjData* d) {
       // free joint: 6D wrench gear
       else {
         // cannot compute meaningful length, set to 0
-        length[i] = 0;
+        length[out] = 0;
 
         // gearAxis: rotate to world frame if necessary
         mjtNum gearAxis[3];
@@ -1380,7 +1385,7 @@ void mj_transmission(const mjModel* m, mjData* d) {
         for (int j = 0; j < 6; j++) {
           colind[adr+j] = jnt_dofadr + j;
         }
-        rownnz[i] = 6;
+        rownnz[out] = 6;
 
         // moment: gear(tran), gearAxis
         mji_copy3(moment+adr, gear);
@@ -1392,7 +1397,7 @@ void mj_transmission(const mjModel* m, mjData* d) {
       {
         // get data
         int idslider = m->actuator_trnid[2*i+1];
-        mjtNum rod = m->actuator_cranklength[i];
+        mjtNum rod = m->actuator_cranklength[out];
         mjtNum axis[3] = {d->site_xmat[9 * idslider + 2],
                           d->site_xmat[9 * idslider + 5],
                           d->site_xmat[9 * idslider + 8]};
@@ -1407,10 +1412,10 @@ void mj_transmission(const mjModel* m, mjData* d) {
         if (det <= 0) {
           ok = 0;
           sdet = 0;
-          length[i] = av;
+          length[out] = av;
         } else {
           sdet = mju_sqrt(det);
-          length[i] = av - sdet;
+          length[out] = av - sdet;
         }
 
         // compute derivatives of length w.r.t. vec and axis
@@ -1445,7 +1450,7 @@ void mj_transmission(const mjModel* m, mjData* d) {
         }
 
         // scale by gear ratio
-        length[i] *= gear[0];
+        length[out] *= gear[0];
 
         // sparsity (compress)
         nnz = 0;
@@ -1456,21 +1461,112 @@ void mj_transmission(const mjModel* m, mjData* d) {
             nnz++;
           }
         }
-        rownnz[i] = nnz;
+        rownnz[out] = nnz;
       }
       break;
 
     case mjTRN_TENDON:                  // tendon
-      length[i] = d->ten_length[id]*gear[0];
+      length[out] = d->ten_length[id]*gear[0];
 
       // moment
       {
         int ten_J_rownnz = m->ten_J_rownnz[id];
         int ten_J_rowadr = m->ten_J_rowadr[id];
-        rownnz[i] = ten_J_rownnz;
+        rownnz[out] = ten_J_rownnz;
         mju_copyInt(colind + adr, m->ten_J_colind + ten_J_rowadr, ten_J_rownnz);
 
         mju_scl(moment + adr, d->ten_J + ten_J_rowadr, gear[0], ten_J_rownnz);
+      }
+      break;
+
+    case mjTRN_SO3:                     // relative orientation: 3 lengths, 3 moment rows
+      // ball joint: lengths = expmap of the joint quaternion, rows = identity at the joint dofs
+      if (m->actuator_trnid[2*i+1] == -1) {
+        mjtNum axis[3], quat[4];
+        mji_copy4(quat, d->qpos+m->jnt_qposadr[id]);
+        mju_normalize4(quat);
+        mji_quat2Vel(axis, quat, 1);
+        for (int k=0; k < 3; k++) {
+          int outk = out + k;
+          rowadr[outk] = k == 0 ? adr : rowadr[outk-1] + rownnz[outk-1];
+          length[outk] = axis[k];
+          rownnz[outk] = 1;
+          colind[rowadr[outk]] = m->jnt_dofadr[id] + k;
+          moment[rowadr[outk]] = 1;
+        }
+      }
+
+      // site+refsite: lengths = relative expmap, rows = relative rotational Jacobian
+      else {
+        int refid = m->actuator_trnid[2*i+1];
+        if (!jacref) jacref = mjSTACKALLOC(d, 3*nv, mjtNum);
+        if (!moment_row) moment_row = mjSTACKALLOC(d, nv, mjtNum);
+
+        // relative rotation as expmap in the refsite frame
+        mjtNum quat[4], refquat[4], vec[3];
+        mji_mulQuat(quat, m->site_quat+4*id, d->xquat+4*m->site_bodyid[id]);
+        mji_mulQuat(refquat, m->site_quat+4*refid, d->xquat+4*m->site_bodyid[refid]);
+        mji_subQuat(vec, quat, refquat);
+
+        // relative rotational Jacobian in global frame
+        mj_jacSite(m, d, NULL, jacS, id);
+        mj_jacSite(m, d, NULL, jacref, refid);
+        mju_subFrom(jacS, jacref, 3*nv);
+
+        // if common ancestral dof exists, clear the columns of its parental chain
+        {
+          int b0 = m->body_weldid[m->site_bodyid[id]];
+          int b1 = m->body_weldid[m->site_bodyid[refid]];
+          int dofadr0 = m->body_dofadr[b0] + m->body_dofnum[b0] - 1;
+          int dofadr1 = m->body_dofadr[b1] + m->body_dofnum[b1] - 1;
+          int dofadr_common = -1;
+          if (dofadr0 >= 0 && dofadr1 >= 0) {
+            while (dofadr0 != dofadr1) {
+              if (dofadr0 < dofadr1) {
+                dofadr1 = m->dof_parentid[dofadr1];
+              } else {
+                dofadr0 = m->dof_parentid[dofadr0];
+              }
+              if (dofadr0 == -1 || dofadr1 == -1) {
+                break;
+              }
+            }
+            if (dofadr0 == dofadr1) {
+              dofadr_common = dofadr0;
+            }
+          }
+          int da = dofadr_common;
+          while (da >= 0) {
+            jacS[nv*0 + da] = 0;
+            jacS[nv*1 + da] = 0;
+            jacS[nv*2 + da] = 0;
+            da = m->dof_parentid[da];
+          }
+        }
+
+        // row k: site axis k in global frame, projected on the relative Jacobian; torque and
+        // velocity components are in the site frame, matching the ball branch's child frame
+        // (the expmap length components are frame-invariant: exp fixes its own axis)
+        for (int k=0; k < 3; k++) {
+          int outk = out + k;
+          rowadr[outk] = k == 0 ? adr : rowadr[outk-1] + rownnz[outk-1];
+          length[outk] = vec[k];
+
+          mjtNum wrench[3] = {d->site_xmat[9*id+k], d->site_xmat[9*id+k+3],
+                              d->site_xmat[9*id+k+6]};
+          mju_mulMatTVec(moment_row, jacS, wrench, 3, nv);
+
+          // sparsity (compress)
+          nnz = 0;
+          for (int j=0; j < nv; j++) {
+            if (moment_row[j]) {
+              moment[rowadr[outk]+nnz] = moment_row[j];
+              colind[rowadr[outk]+nnz] = j;
+              nnz++;
+            }
+          }
+          rownnz[outk] = nnz;
+        }
       }
       break;
 
@@ -1479,7 +1575,7 @@ void mj_transmission(const mjModel* m, mjData* d) {
       mj_jacSite(m, d, jac, jacS, id);
 
       // clear length
-      length[i] = 0;
+      length[out] = 0;
 
       if (!moment_row) moment_row = mjSTACKALLOC(d, nv, mjtNum);
 
@@ -1540,7 +1636,7 @@ void mj_transmission(const mjModel* m, mjData* d) {
           mju_mulMatTVec3(vec, d->site_xmat+9*refid, vec);
 
           // length: dot product with gear
-          length[i] += mju_dot3(vec, gear);
+          length[out] += mju_dot3(vec, gear);
 
           // jacref: global Jacobian of reference site
           mj_jacSite(m, d, jacref, NULL, refid);
@@ -1579,7 +1675,7 @@ void mj_transmission(const mjModel* m, mjData* d) {
           mji_subQuat(vec, quat, refquat);
 
           // add length: dot product with gear
-          length[i] += mju_dot3(vec, gear+3);
+          length[out] += mju_dot3(vec, gear+3);
 
           // jacref: global rotational Jacobian of reference site
           mj_jacSite(m, d, NULL, jacref, refid);
@@ -1616,13 +1712,13 @@ void mj_transmission(const mjModel* m, mjData* d) {
           nnz++;
         }
       }
-      rownnz[i] = nnz;
+      rownnz[out] = nnz;
 
       break;
 
     case mjTRN_BODY:                  // body (adhesive contacts)
       // cannot compute meaningful length, set to 0
-      length[i] = 0;
+      length[out] = 0;
 
       // clear moment
       if (!moment_row) moment_row = mjSTACKALLOC(d, nv, mjtNum);
@@ -1730,7 +1826,7 @@ void mj_transmission(const mjModel* m, mjData* d) {
           nnz++;
         }
       }
-      rownnz[i] = nnz;
+      rownnz[out] = nnz;
 
       break;
 
@@ -1899,24 +1995,43 @@ void mj_factorM(const mjModel* m, mjData* d) {
   }
 
   // factorize
-  mj_factorI(d->qLD, d->qLDiagInv, nv, m->M_rownnz, m->M_rowadr, m->M_colind, index);
+  int clamped = mj_factorI(d->qLD, d->qLDiagInv, nv, m->M_rownnz, m->M_rowadr, m->M_colind,
+                           index);
+
+  // near-singular inertia: a pivot was clamped
+  if (clamped >= 0) {
+    mj_warning(d, mjWARN_INERTIA, clamped);
+  }
 
   TM_ADD(mjTIMER_POS_INERTIA);
 }
 
 
-// sparse L'*D*L factorizaton of inertia-like matrix M, assumed spd (with dof skipping)
-void mj_factorI(mjtNum* mat, mjtNum* diaginv, int nv,
-                const int* rownnz, const int* rowadr, const int* colind,
-                const int* index) {
+// sparse L'*D*L factorizaton of inertia-like matrix M, assumed spd (with dof skipping);
+// clamp non-positive pivots up to mjMINVAL, return first clamped dof index or -1 if none
+int mj_factorI(mjtNum* mat, mjtNum* diaginv, int nv,
+               const int* rownnz, const int* rowadr, const int* colind,
+               const int* index) {
+  int clamped = -1;
+
   // backward loop over rows
   for (int j=nv-1; j >= 0; j--) {
     int k = index ? index[j] : j;
 
-    // get row k's address, diagonal index, inverse diagonal value
+    // get row k's address, diagonal index
     int start = rowadr[k];
     int diag = rownnz[k] - 1;
     int end = start + diag;
+
+    // clamp small or non-positive pivot from below, save first clamped dof
+    if (mat[end] < mjMINVAL) {
+      mat[end] = mjMINVAL;
+      if (clamped < 0) {
+        clamped = k;
+      }
+    }
+
+    // inverse diagonal value
     mjtNum invD = 1 / mat[end];
     if (diaginv) diaginv[k] = invD;
 
@@ -1930,6 +2045,8 @@ void mj_factorI(mjtNum* mat, mjtNum* diaginv, int nv,
     // update row k:  L(k, :) /= L(k, k)
     mju_scl(mat + start, mat + start, invD, diag);
   }
+
+  return clamped;
 }
 
 
@@ -2033,14 +2150,16 @@ void mj_solveM(const mjModel* m, mjData* d, mjtNum* x, const mjtNum* y, int n) {
 // half of sparse backsubstitution:  x = sqrt(inv(D))*inv(L')*y
 void mj_solveM2(const mjModel* m, mjData* d, mjtNum* x, const mjtNum* y,
                 const mjtNum* sqrtInvD, int n) {
-  int nv = m->nv;
+  mj_solveM2_impl(x, y, sqrtInvD, d->qLD, m->nv, n,
+                  m->M_rownnz, m->M_rowadr, m->M_colind, m->dof_simplenum);
+}
 
-  // local copies of key variables
-  const int* rownnz = m->M_rownnz;
-  const int* rowadr = m->M_rowadr;
-  const int* colind = m->M_colind;
-  const int* diagnum = m->dof_simplenum;
-  const mjtNum* qLD = d->qLD;
+
+// implementation of mj_solveM2: backsubstitute against a caller-selected factor (qLD or qH)
+void mj_solveM2_impl(mjtNum* x, const mjtNum* y, const mjtNum* sqrtInvD, const mjtNum* factor,
+                     int nv, int n, const int* rownnz, const int* rowadr, const int* colind,
+                     const int* diagnum) {
+  const mjtNum* qLD = factor;
 
   // x = y
   mju_copy(x, y, n * nv);

@@ -17,6 +17,7 @@
 #include <stddef.h>
 
 #include <mujoco/mjdata.h>
+#include <mujoco/mjmacro.h>
 #include <mujoco/mjmodel.h>
 #include "engine/engine_inline.h"
 #include "engine/engine_memory.h"
@@ -59,8 +60,8 @@ int mj_mergeChain(const mjModel* m, int* chain, int b1, int b2, int flg_skipcomm
   b1 = m->body_weldid[b1];
   b2 = m->body_weldid[b2];
 
-  // neither body is movable: empty chain
-  if (b1 == 0 && b2 == 0) {
+  // neither weld root has dofs: empty chain
+  if (m->body_dofnum[b1] == 0 && m->body_dofnum[b2] == 0) {
     return 0;
   }
 
@@ -143,8 +144,8 @@ int mj_bodyChain(const mjModel* m, int body, int* chain) {
     // skip fixed bodies
     body = m->body_weldid[body];
 
-    // not movable: empty chain
-    if (body == 0) {
+    // weld root has no dofs: empty chain
+    if (m->body_dofnum[body] == 0) {
       return 0;
     }
 
@@ -190,8 +191,8 @@ void mj_jac(const mjModel* m, const mjData* d,
   // skip fixed bodies
   body = m->body_weldid[body];
 
-  // no movable body found: nothing to do
-  if (!body) {
+  // weld root has no dofs: nothing to do
+  if (m->body_dofnum[body] == 0) {
     return;
   }
 
@@ -319,8 +320,8 @@ void mj_jacSparse(const mjModel* m, const mjData* d,
   // skip fixed bodies
   body = m->body_weldid[body];
 
-  // no movable body found: nothing to do
-  if (!body) {
+  // weld root has no dofs: nothing to do
+  if (m->body_dofnum[body] == 0) {
     return;
   }
 
@@ -517,29 +518,29 @@ int mj_jacDifPair(const mjModel* m, const mjData* d, int* chain,
 // dense or sparse weighted sum of multiple body Jacobians at same point
 int mj_jacSum(const mjModel* m, mjData* d, int* chain,
               int n, const int* body, const mjtNum* weight,
-              const mjtNum point[3], mjtNum* jac, int flg_rot) {
+              const mjtNum point[3], mjtNum* jacp, mjtNum* jacr, int flg_rot) {
   int nv = m->nv, NV;
-  mjtNum* jacp = jac;
 
   mj_markStack(d);
   mjtNum* jtmp = mjSTACKALLOC(d, flg_rot ? 6*nv : 3*nv, mjtNum);
-  mjtNum* jp = jtmp;
 
   // sparse
   if (mj_isSparse(m)) {
+    // the sparse merge produces one packed [jacp; jacr] block; split into the outputs at the end
+    mjtNum* jac = mjSTACKALLOC(d, flg_rot ? 6*nv : 3*nv, mjtNum);
     mjtNum* buf = mjSTACKALLOC(d, flg_rot ? 6*nv : 3*nv, mjtNum);
     int* buf_ind = mjSTACKALLOC(d, nv, int);
     int* bodychain = mjSTACKALLOC(d, nv, int);
 
-    // set first
+    // set first (rotational rows packed right after the translational rows, at offset 3*NV)
     NV = mj_bodyChain(m, body[0], chain);
     if (NV) {
       // get Jacobian
-      mjtNum* jacr = flg_rot ? jac + 3*NV : NULL;
+      mjtNum* jr = flg_rot ? jac + 3*NV : NULL;
       if (m->body_simple[body[0]]) {
-        mj_jacSparseSimple(m, d, jacp, jacr, point, body[0], 1, NV, 0);
+        mj_jacSparseSimple(m, d, jac, jr, point, body[0], 1, NV, 0);
       } else {
-        mj_jacSparse(m, d, jacp, jacr, point, body[0], NV, chain, /*flg_skipcommon=*/0);
+        mj_jacSparse(m, d, jac, jr, point, body[0], NV, chain, /*flg_skipcommon=*/0);
       }
 
       // apply weight
@@ -555,30 +556,41 @@ int mj_jacSum(const mjModel* m, mjData* d, int* chain,
       }
       mjtNum* jr = flg_rot ? jtmp + 3*bodyNV : NULL;
       if (m->body_simple[body[i]]) {
-        mj_jacSparseSimple(m, d, jp, jr, point, body[i], 1, bodyNV, 0);
+        mj_jacSparseSimple(m, d, jtmp, jr, point, body[i], 1, bodyNV, 0);
       } else {
-        mj_jacSparse(m, d, jp, jr, point, body[i], bodyNV, bodychain, /*flg_skipcommon=*/0);
+        mj_jacSparse(m, d, jtmp, jr, point, body[i], bodyNV, bodychain, /*flg_skipcommon=*/0);
       }
 
       // combine sparse matrices
       NV = mju_addToSparseMat(jac, jtmp, nv, flg_rot ? 6 : 3, weight[i],
                               NV, bodyNV, chain, bodychain, buf, buf_ind);
     }
+
+    // split the packed block into the separate output buffers (each NV-packed)
+    mju_copy(jacp, jac, 3*NV);
+    if (flg_rot) {
+      mju_copy(jacr, jac + 3*NV, 3*NV);
+    }
   }
 
   // dense
   else {
-    mjtNum* jacr = flg_rot ? jac + 3*nv : NULL;
     mjtNum* jr = flg_rot ? jtmp + 3*nv : NULL;
 
     // set first
-    mj_jac(m, d, jacp, jacr, point, body[0]);
-    mju_scl(jac, jac, weight[0], flg_rot ? 6*nv : 3*nv);
+    mj_jac(m, d, jacp, flg_rot ? jacr : NULL, point, body[0]);
+    mju_scl(jacp, jacp, weight[0], 3*nv);
+    if (flg_rot) {
+      mju_scl(jacr, jacr, weight[0], 3*nv);
+    }
 
     // accumulate remaining
     for (int i=1; i < n; i++) {
-      mj_jac(m, d, jp, jr, point, body[i]);
-      mju_addToScl(jac, jtmp, weight[i], flg_rot ? 6*nv : 3*nv);
+      mj_jac(m, d, jtmp, jr, point, body[i]);
+      mju_addToScl(jacp, jtmp, weight[i], 3*nv);
+      if (flg_rot) {
+        mju_addToScl(jacr, jr, weight[i], 3*nv);
+      }
     }
 
     NV = nv;
@@ -611,8 +623,8 @@ void mj_jacDot(const mjModel* m, const mjData* d,
   // skip fixed bodies
   body = m->body_weldid[body];
 
-  // no movable body found: nothing to do
-  if (!body) {
+  // weld root has no dofs: nothing to do
+  if (m->body_dofnum[body] == 0) {
     return;
   }
 
@@ -684,8 +696,8 @@ void mj_jacDotSparse(const mjModel* m, const mjData* d,
   // skip fixed bodies
   body = m->body_weldid[body];
 
-  // no movable body found: nothing to do
-  if (!body) {
+  // weld root has no dofs: nothing to do
+  if (m->body_dofnum[body] == 0) {
     return;
   }
 
@@ -866,14 +878,31 @@ void mj_objectVelocity(const mjModel* m, const mjData* d,
     mjERROR("invalid object type %d", objtype);
   }
 
-  // static body: quick return
-  if (m->body_weldid[bodyid] == 0) {
+  // dof-less body (static or mocap): quick return
+  if (m->body_dofnum[m->body_weldid[bodyid]] == 0) {
     mju_zero(res, 6);
     return;
   }
 
   // transform velocity
   mju_transformSpatial(res, d->cvel+6*bodyid, 0, pos, d->subtree_com+3*m->body_rootid[bodyid], rot);
+}
+
+
+// compute material surface velocity of a geom at a point, in the world frame
+void mj_geomSurfaceVelocity(const mjModel* m, const mjData* d, int geomid,
+                            const mjtNum point[3], mjtNum linear[3], mjtNum angular[3]) {
+  const mjtNum* sv = m->geom_surfacevel + 6*geomid;
+
+  // rotate local linear and angular surface velocities to the world frame
+  mji_mulMatVec3(linear, d->geom_xmat + 9*geomid, sv);
+  mji_mulMatVec3(angular, d->geom_xmat + 9*geomid, sv + 3);
+
+  // add angular velocity contribution (w x r) at the query point
+  mjtNum arm[3], wxr[3];
+  mji_sub3(arm, point, d->geom_xpos + 3*geomid);
+  mji_cross(wxr, angular, arm);
+  mji_addTo3(linear, wxr);
 }
 
 
@@ -923,8 +952,8 @@ void mj_objectAcceleration(const mjModel* m, const mjData* d,
     mjERROR("invalid object type %d", objtype);
   }
 
-  // static body: quick return
-  if (m->body_weldid[bodyid] == 0) {
+  // dof-less body (static or mocap): quick return
+  if (m->body_dofnum[m->body_weldid[bodyid]] == 0) {
     mju_zero(res, 6);
     return;
   }
@@ -1060,6 +1089,9 @@ void mj_contactForce(const mjModel* m, const mjData* d, int id, mjtNum result[6]
     } else {
       mju_copy(result, d->efc_force + con->efc_address, con->dim);
     }
+
+    // report the net interface force: the solver's cone force minus the adhesive pull
+    result[0] -= con->adhesion;
   }
 }
 
@@ -1102,7 +1134,7 @@ mjtNum mj_actuatorDamping(const mjModel* m, mjtObj type, int id, mjtNum poly[mjN
 
   // single actuator contributes damping
   if (actuatorid >= 0) {
-    mjtNum gear2 = m->actuator_gear[6*actuatorid] * m->actuator_gear[6*actuatorid];
+    mjtNum gear2 = m->actuator_gear[6*m->actuator_outadr[actuatorid]] * m->actuator_gear[6*m->actuator_outadr[actuatorid]];
     damping = m->actuator_damping[actuatorid] * gear2;
     for (int k = 0; k < mjNPOLY; k++) {
       poly[k] += m->actuator_dampingpoly[mjNPOLY*actuatorid+k] * gear2;
@@ -1111,7 +1143,7 @@ mjtNum mj_actuatorDamping(const mjModel* m, mjtObj type, int id, mjtNum poly[mjN
 
   // actuatorid < -1: scan all actuators for contributions
   else {
-    for (int k = 0; k < m->nu; k++) {
+    for (int k = 0; k < m->nactuator; k++) {
       // skip actuators that don't actuate the given joint/tendon
       if (m->actuator_trnid[2*k] != id) {
         continue;
@@ -1126,7 +1158,7 @@ mjtNum mj_actuatorDamping(const mjModel* m, mjtObj type, int id, mjtNum poly[mjN
       }
 
       // accumulate damping contribution
-      mjtNum gear2 = m->actuator_gear[6*k] * m->actuator_gear[6*k];
+      mjtNum gear2 = m->actuator_gear[6*m->actuator_outadr[k]] * m->actuator_gear[6*m->actuator_outadr[k]];
       damping += m->actuator_damping[k] * gear2;
       for (int j = 0; j < mjNPOLY; j++) {
         poly[j] += m->actuator_dampingpoly[mjNPOLY*k+j] * gear2;
@@ -1157,13 +1189,13 @@ mjtNum mj_actuatorArmature(const mjModel* m, mjtObj type, int id) {
 
   // single actuator contributes armature
   if (actuatorid >= 0) {
-    mjtNum gear2 = m->actuator_gear[6*actuatorid] * m->actuator_gear[6*actuatorid];
+    mjtNum gear2 = m->actuator_gear[6*m->actuator_outadr[actuatorid]] * m->actuator_gear[6*m->actuator_outadr[actuatorid]];
     armature = m->actuator_armature[actuatorid] * gear2;
   }
 
   // actuatorid < -1: scan all actuators for contributions
   else {
-    for (int k = 0; k < m->nu; k++) {
+    for (int k = 0; k < m->nactuator; k++) {
       // skip actuators that don't actuate the given joint/tendon
       if (m->actuator_trnid[2*k] != id) {
         continue;
@@ -1178,7 +1210,7 @@ mjtNum mj_actuatorArmature(const mjModel* m, mjtObj type, int id) {
       }
 
       // accumulate armature contribution
-      mjtNum gear2 = m->actuator_gear[6*k] * m->actuator_gear[6*k];
+      mjtNum gear2 = m->actuator_gear[6*m->actuator_outadr[k]] * m->actuator_gear[6*m->actuator_outadr[k]];
       armature += m->actuator_armature[k] * gear2;
     }
   }
@@ -1204,4 +1236,110 @@ void mj_warning(mjData* d, int warning, int info) {
 
   // increase counter
   d->warning[warning].number++;
+}
+
+
+//-------------------------- effective-metric predicates ------------------------------------------
+
+// the selected integrator performs the constraint solve in the effective metric.
+// The option-level gate decision; d->efm_active reports whether the per-step build ran
+int mj_isMetric(const mjModel* m) {
+  return m->opt.integrator == mjINT_DISCRETE;
+}
+
+
+// do the tendon and actuator classes enter the metric. Under solver=PGS -- and only
+// there -- they are excluded and their forces integrate explicitly: the dual assembles
+// its constraint-space AR from the backbone factor, which cannot carry their couplings,
+// and a consistent backbone metric beats a solve whose forces and accelerations disagree.
+// Noslip atop a primal solver keeps the couplings: the main solve runs in the full
+// metric and the post-pass consumes the backbone AR as an approximation. Flex, which is
+// too stiff to exclude, is rejected by mj_checkDiscrete instead
+int mj_effCouplings(const mjModel* m) {
+  return mj_isMetric(m) && m->opt.solver != mjSOL_PGS;
+}
+
+
+// tendon i has a spring: nonzero stiffness or stiffness polynomial
+int mj_tendonHasStiffness(const mjModel* m, int i) {
+  return m->tendon_stiffness[i] != 0 ||
+         !mju_isZero(m->tendon_stiffnesspoly + mjNPOLY*i, mjNPOLY);
+}
+
+
+// tendon i has a damper: nonzero damping, damping polynomial, or an attached actuator
+int mj_tendonHasDamping(const mjModel* m, int i) {
+  return m->tendon_damping[i] != 0 ||
+         !mju_isZero(m->tendon_dampingpoly + mjNPOLY*i, mjNPOLY) ||
+         m->tendon_actuatorid[i] != -1;
+}
+
+
+// does flex f use the passive contact path: metric-carried contacts require a standard
+// (non-interpolated) deformable flex of dim >= 2. This predicate is the single authority,
+// shared by the integrator validation and the constraint-exclusion path
+int mj_effFlexContactPossible(const mjModel* m, int f) {
+  return m->flex_passive[f] && !m->flex_rigid[f] && !m->flex_interp[f] && m->flex_dim[f] >= 2;
+}
+
+
+// does flex f contribute elastic stiffness to the metric. Unlike the assembler gate
+// flexStiff_active (engine_derivative.c), interpolated flexes are included: their
+// stiffness is carried matrix-free
+int mj_effFlexStiffPossible(const mjModel* m, int f) {
+  // rigid or 1D flexes do not contribute stiffness
+  if (m->flex_rigid[f] || m->flex_dim[f] < 2) {
+    return 0;
+  }
+
+  // stretch stiffness present
+  int sadr = m->flex_stiffnessadr[f];
+  if (sadr >= 0 && m->flex_stiffness[sadr] != 0) {
+    return 1;
+  }
+
+  // bending: an allocated block does not imply stiffness
+  // (strain-constrained and zero-elasticity flexes carry an all-zero block)
+  int badr = m->flex_bendingadr[f];
+  if (badr < 0) {
+    return 0;
+  }
+  int end = m->nflexbending;
+  for (int g=f+1; g < m->nflex; g++) {
+    if (m->flex_bendingadr[g] >= 0) {
+      end = m->flex_bendingadr[g];
+      break;
+    }
+  }
+  return !mju_isZero(m->flex_bending + badr, end - badr);
+}
+
+
+// does flex f need the implicit metric treatment: elastic stiffness or passive contact
+int mj_effFlexPossible(const mjModel* m, int f) {
+  return mj_effFlexStiffPossible(m, f) || mj_effFlexContactPossible(m, f);
+}
+
+
+// can this tendon contribute to the metric (model-level; mirrored by island discovery
+// and the sleep wake rule)
+int mj_effTendonPossible(const mjModel* m, int i) {
+  return (!mjDISABLED(mjDSBL_SPRING) && mj_tendonHasStiffness(m, i)) ||
+         (!mjDISABLED(mjDSBL_DAMPER) && mj_tendonHasDamping(m, i));
+}
+
+
+// can this actuator contribute to the metric (model-level type check; mirrored by island discovery)
+int mj_effActuatorPossible(const mjModel* m, int i) {
+  if (mjDISABLED(mjDSBL_ACTUATION)) {
+    return 0;
+  }
+  return m->actuator_biastype[i] == mjBIAS_AFFINE  ||
+         m->actuator_biastype[i] == mjBIAS_SO3     ||
+         m->actuator_biastype[i] == mjBIAS_DCMOTOR ||
+         m->actuator_biastype[i] == mjBIAS_MUSCLE  ||
+         m->actuator_gaintype[i] == mjGAIN_AFFINE  ||
+         m->actuator_gaintype[i] == mjGAIN_SO3     ||
+         m->actuator_gaintype[i] == mjGAIN_MUSCLE  ||
+         m->actuator_gaintype[i] == mjGAIN_DCMOTOR;
 }

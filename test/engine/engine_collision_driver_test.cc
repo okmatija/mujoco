@@ -128,6 +128,44 @@ TEST_F(MjCollisionTest, ContactCount) {
   EXPECT_EQ(d->ncon, 8);
 }
 
+TEST_F(MjCollisionTest, InGapContactsMultiGeomBody) {
+  // In-gap contacts survive mid-phase BVH pruning. Both bodies
+  // have a "far" geom that pulls the BVH root box away, so detecting the A-B
+  // pair requires the descent filter to account for gap (body_margin).
+  constexpr char xml[] = R"(
+  <mujoco>
+    <worldbody>
+      <body pos="0 0 1">
+        <freejoint/>
+        <geom name="A" type="box" size=".005 .01 .3" pos="-.015 0 0" gap=".004"/>
+        <geom name="far1" type="box" size=".005 .01 .3" pos="-.2 0 0"/>
+      </body>
+      <body pos="0 0 1">
+        <freejoint/>
+        <geom name="B" type="box" size=".005 .01 .3" pos="-.0022 0 0" gap=".004"/>
+        <geom name="far2" type="box" size=".005 .01 .3" pos=".1 0 0"/>
+      </body>
+    </worldbody>
+  </mujoco>
+  )";
+  char error[1024];
+  MjModelPtr m = LoadModelFromString(xml, error, sizeof(error));
+  ASSERT_THAT(m.get(), NotNull()) << error;
+  MjDataPtr d = MakeData(m);
+  ASSERT_THAT(d, NotNull());
+
+  mj_forward(m.get(), d.get());
+
+  // geoms A and B are separated by 2.8mm, within the 8mm combined gap:
+  // inactive contacts are expected
+  EXPECT_GT(d->ncon, 0);
+  for (int i = 0; i < d->ncon; i++) {
+    EXPECT_GT(d->contact[i].dist, 0);
+    EXPECT_LT(d->contact[i].dist, 0.008);
+    EXPECT_EQ(d->contact[i].efc_address, -1);
+  }
+}
+
 TEST_F(MjCollisionTest, FilterParent) {
   constexpr char xml[] = R"(
   <mujoco>
@@ -409,7 +447,7 @@ TEST_F(MjCollisionTest, MaxContact) {
   int cylinder = mj_name2id(m.get(), mjOBJ_GEOM, "cylinder");
 
   EXPECT_EQ(mj_maxContact(m.get(), mesh, box, -1), 4);
-  EXPECT_EQ(mj_maxContact(m.get(), mesh, plane, -1), 3);
+  EXPECT_EQ(mj_maxContact(m.get(), mesh, plane, -1), 4);
   EXPECT_EQ(mj_maxContact(m.get(), box, plane, -1), 4);
   EXPECT_EQ(mj_maxContact(m.get(), mesh, mesh, -1), 4);
   EXPECT_EQ(mj_maxContact(m.get(), box, box, -1), 8);
@@ -431,9 +469,9 @@ TEST_F(MjCollisionTest, MaxContact) {
   EXPECT_EQ(mj_maxContact(m.get(), ellipsoid, capsule, -1), 1);
   EXPECT_EQ(mj_maxContact(m.get(), capsule, cylinder, -1), 5);
   EXPECT_EQ(mj_maxContact(m.get(), capsule, mesh, -1), 5);
-  EXPECT_EQ(mj_maxContact(m.get(), cylinder, cylinder, -1), 5);
-  EXPECT_EQ(mj_maxContact(m.get(), cylinder, box, -1), 5);
-  EXPECT_EQ(mj_maxContact(m.get(), cylinder, mesh, -1), 5);
+  EXPECT_EQ(mj_maxContact(m.get(), cylinder, cylinder, -1), 4);
+  EXPECT_EQ(mj_maxContact(m.get(), cylinder, box, -1), 4);
+  EXPECT_EQ(mj_maxContact(m.get(), cylinder, mesh, -1), 4);
 }
 
 }  // namespace

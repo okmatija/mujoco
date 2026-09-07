@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <cstdlib>
 #include <string>
+#include <vector>
 
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
@@ -40,34 +41,36 @@ TEST_F(SolverTest, IslandsEquivalent) {
   char error[1024];
   mjModel* model = mj_loadXML(xml_path.c_str(), nullptr, error, sizeof(error));
   ASSERT_THAT(model, NotNull()) << error;
-  model->opt.solver = mjSOL_CG;                 // use CG solver
-  model->opt.jacobian = mjJAC_SPARSE;           // use sparse
-  model->opt.tolerance = 0;                     // set tolerance to 0
-  model->opt.ls_tolerance = 0;                  // set ls_tolerance to 0
-  model->opt.ccd_tolerance = 0;                 // set ccd_tolerance to 0
-  model->opt.disableflags |= mjDSBL_MULTICCD;   // disable multiccd
+  model->opt.solver = mjSOL_CG;                // use CG solver
+  model->opt.jacobian = mjJAC_SPARSE;          // use sparse
+  model->opt.tolerance = 0;                    // set tolerance to 0
+  model->opt.ls_tolerance = 0;                 // set ls_tolerance to 0
+  model->opt.ccd_tolerance = 0;                // set ccd_tolerance to 0
+  model->opt.disableflags |= mjDSBL_MULTICCD;  // disable multiccd
 
   int nv = model->nv;
 
   int state_size = mj_stateSize(model, mjSTATE_INTEGRATION);
-  mjtNum* state = (mjtNum*) mju_malloc(sizeof(mjtNum)*state_size);
+  mjtNum* state = (mjtNum*)mju_malloc(sizeof(mjtNum) * state_size);
 
   mjData* data_island = mj_makeData(model);
   mjData* data_noisland = mj_makeData(model);
 
   constexpr int kNumTol = 3;
-  mjtNum maxiter[kNumTol] = {30,   40,   60};
+  mjtNum maxiter[kNumTol] = {30, 40, 60};
   // Below are 3 tolerances associated with 3 different iteration counts.
   // Tolerances are set to be ~12x higher than failure thresholds.
   // The point of this test is to show that CG convergence is actually not very
   // precise, simply changing whether islands are used changes the solution by
   // quite a lot, even at high iteration count and zero {ls_}tolerance.
   // Increasing the iteration count higher than 60 does not improve convergence.
+  // clang-format off
   mjtNum rtol[kNumTol] = {
       MjTol(1e-1, 1.2e-1),
       MjTol(3e-2, 2e-2),
       MjTol(1.3e-5, 2.8e-3)
   };
+  // clang-format on
 
   for (int i = 0; i < kNumTol; ++i) {
     model->opt.iterations = maxiter[i];
@@ -179,7 +182,7 @@ TEST_F(SolverTest, IslandsEquivalentForward) {
           mj_forward(model, data_noisland);
 
           // forward with islands enabled
-          model->opt.disableflags &= ~mjDSBL_ISLAND;   // enable islands
+          model->opt.disableflags &= ~mjDSBL_ISLAND;  // enable islands
           mj_forward(model, data_island);
 
           mjtNum max_diff = 0;
@@ -188,8 +191,8 @@ TEST_F(SolverTest, IslandsEquivalentForward) {
           int worst_idx = -1;
           mjtNum scale = 0.5 * (mju_norm(data_noisland->qacc, nv) +
                                 mju_norm(data_island->qacc, nv));
-          mjtNum rtol = solver == mjSOL_CG ? MjTol(1e-8, 1e-4)
-                                           : MjTol(1e-13, 1e-3);
+          mjtNum rtol =
+              solver == mjSOL_CG ? MjTol(1e-8, 1e-4) : MjTol(1e-13, 1e-3);
           mjtNum worst_allowed = scale * rtol;
 
           for (int j = 0; j < nv; j++) {
@@ -239,18 +242,18 @@ TEST_F(SolverTest, SolversEquivalent) {
       {.path = kModelPath,
        .tolerances =
            {
-               .newton        = MjTol(1e-13, 1e-5),
-               .cg            = MjTol(1e-13, 1e-5),
+               .newton = MjTol(1e-13, 1e-5),
+               .cg = MjTol(1e-13, 1e-5),
                .pgs_pyramidal = MjTol(1e-13, 1e-5),
-               .pgs_elliptic  = MjTol(1e-3,  1e-3),
+               .pgs_elliptic = MjTol(1e-3, 1e-3),
            }},
       {.path = kHumanoidPath,
        .tolerances =
            {
-               .newton        = MjTol(1e-13, 1e-5),
-               .cg            = MjTol(1e-12, 1e-5),
+               .newton = MjTol(1e-13, 1e-5),
+               .cg = MjTol(1e-12, 1e-5),
                .pgs_pyramidal = MjTol(1e-12, 1e-5),
-               .pgs_elliptic  = MjTol(1e-8,  1e-4),
+               .pgs_elliptic = MjTol(1e-8, 1e-4),
            }},
   };
 
@@ -344,6 +347,421 @@ TEST_F(SolverTest, SolversEquivalent) {
     mj_deleteData(data_truth);
     mj_deleteData(data);
     mj_deleteModel(model);
+  }
+}
+
+TEST_F(SolverTest, EllipticLineSearchPrecisionDiagnostics) {
+  std::string xml = R"(
+  <mujoco>
+    <option cone="elliptic" solver="Newton"/>
+    <worldbody>
+      <geom name="floor" type="plane" size="10 10 1"/>
+      <body name="box" pos="0 0 0.499">
+        <joint type="free"/>
+        <geom type="box" size="0.5 0.5 0.5" mass="1" friction="0.5"/>
+      </body>
+    </worldbody>
+  </mujoco>
+  )";
+
+  char error[1024];
+  MjModelPtr model = LoadModelFromString(xml, error, sizeof(error));
+  ASSERT_THAT(model, NotNull()) << error;
+  MjDataPtr data = MakeData(model);
+
+  // Set gravity to 0
+  model->opt.gravity[0] = 0;
+  model->opt.gravity[1] = 0;
+  model->opt.gravity[2] = 0;
+
+  for (double fn : {1e2, 1e4, 1e6, 1e8}) {
+    mj_resetData(model.get(), data.get());
+
+    // Apply large downward force
+    data->qfrc_applied[2] = -fn;
+
+    // Apply large lateral force (dynamic friction limit is 0.5 * fn)
+    double ft = fn * 1.5;
+    data->qfrc_applied[0] = ft;
+
+    mj_forward(model.get(), data.get());
+
+    int niter = std::min(data->solver_niter[0], mjNSOLVER);
+    for (int i = 0; i < niter; ++i) {
+      const mjSolverStat& stat = data->solver[i];
+      EXPECT_GE(stat.improvement, -MjTol(1e-5, 100.0));
+    }
+  }
+}
+
+// Newton terminates early when the decrement predicts sub-tolerance improvement
+TEST_F(SolverTest, NewtonDecrementTermination) {
+  const std::string xml_path = GetTestDataFilePath(kHumanoidPath);
+  char error[1024];
+  mjModel* model = mj_loadXML(xml_path.c_str(), nullptr, error, sizeof(error));
+  ASSERT_THAT(model, NotNull()) << error;
+  model->opt.solver = mjSOL_NEWTON;
+  model->opt.disableflags |= mjDSBL_ISLAND;  // monolithic solve
+  model->opt.iterations = 100;
+  const mjtNum tolerance = MjTol(1e-6, 1e-4);
+
+  int state_size = mj_stateSize(model, mjSTATE_FULLPHYSICS);
+  mjtNum* state = (mjtNum*)mju_malloc(sizeof(mjtNum) * state_size);
+
+  mjData* data = mj_makeData(model);
+  mjData* data_test = mj_makeData(model);
+  mjData* data_deep = mj_makeData(model);
+  mj_resetDataKeyframe(model, data, 0);
+
+  int nfired = 0;
+  mjtNum max_leftover = 0;
+  for (int step = 0; step < 200; step++) {
+    model->opt.tolerance = tolerance;
+    mj_step(model, data);
+    mj_getState(model, data, state, mjSTATE_FULLPHYSICS);
+
+    // solve with the test tolerance
+    mj_setState(model, data_test, state, mjSTATE_FULLPHYSICS);
+    mj_forward(model, data_test);
+
+    // reference: tolerance 0 runs until the line search finds no improvement
+    model->opt.tolerance = 0;
+    mj_setState(model, data_deep, state, mjSTATE_FULLPHYSICS);
+    mj_forward(model, data_deep);
+
+    // accuracy: both runs produce identical iterates up to the test run's
+    // stopping point, so the cost improvement forgone by early termination is
+    // the sum of the deep run's remaining (scaled) improvements
+    int niter = data_test->solver_niter[0];
+    int niter_deep = std::min(data_deep->solver_niter[0], mjNSOLVER);
+    mjtNum leftover = 0;
+    for (int i = niter; i < niter_deep; i++) {
+      leftover += max(static_cast<mjtNum>(0), data_deep->solver[i].improvement);
+    }
+    max_leftover = max(max_leftover, leftover);
+
+    // count decrement terminations: the test run stopped while both existing
+    // criteria were above tolerance, and the deep run shows that the next
+    // iteration would have improved the cost by less than tolerance
+    if (niter > 0 && niter < std::min(model->opt.iterations, mjNSOLVER) &&
+        data_deep->solver_niter[0] > niter) {
+      const mjSolverStat& last = data_test->solver[niter - 1];
+      const mjSolverStat& next = data_deep->solver[niter];
+      if (last.improvement >= tolerance && last.gradient >= tolerance &&
+          next.improvement < tolerance) {
+        nfired++;
+      }
+    }
+  }
+
+  EXPECT_LT(max_leftover, 10 * tolerance)
+      << "early termination forgoes more than a small multiple of tolerance";
+  EXPECT_GT(nfired, 0)
+      << "no state exercised the Newton decrement termination criterion";
+
+  mj_deleteData(data_deep);
+  mj_deleteData(data_test);
+  mj_deleteData(data);
+  mju_free(state);
+  mj_deleteModel(model);
+}
+
+// a settled, warmstarted scene certifies convergence and solves in zero
+// iterations
+TEST_F(SolverTest, WarmstartZeroIterations) {
+  std::string xml = R"(
+  <mujoco>
+    <worldbody>
+      <geom type="plane" size="1 1 .1"/>
+      <body pos="0 0 0.1">
+        <freejoint/>
+        <geom type="box" size="0.1 0.1 0.1"/>
+      </body>
+    </worldbody>
+  </mujoco>
+  )";
+
+  char error[1024];
+  MjModelPtr model = LoadModelFromString(xml, error, sizeof(error));
+  ASSERT_THAT(model, NotNull()) << error;
+  MjDataPtr data = MakeData(model);
+  model->opt.disableflags |=
+      mjDSBL_ISLAND;  // monolithic solve: stats in slot 0
+  model->opt.enableflags |= mjENBL_FWDINV;
+
+  int nv = model->nv;
+  int state_size = mj_stateSize(model.get(), mjSTATE_FULLPHYSICS);
+  std::vector<mjtNum> state(state_size);
+  std::vector<mjtNum> qacc(nv), qfrc(nv);
+
+  // float32 cannot resolve the default tolerance: use a resolvable one
+  const mjtNum tolerance = MjTol(1e-8, 1e-6);
+
+  for (mjtSolver solver : {mjSOL_CG, mjSOL_NEWTON}) {
+    for (mjtCone cone : {mjCONE_PYRAMIDAL, mjCONE_ELLIPTIC}) {
+      for (mjtJacobian jacobian : {mjJAC_DENSE, mjJAC_SPARSE}) {
+        std::string config =
+            std::string(solver == mjSOL_CG ? "CG" : "Newton") +
+            (cone == mjCONE_ELLIPTIC ? "/elliptic" : "/pyramidal") +
+            (jacobian == mjJAC_SPARSE ? "/sparse" : "/dense");
+        model->opt.solver = solver;
+        model->opt.cone = cone;
+        model->opt.jacobian = jacobian;
+        model->opt.tolerance = tolerance;
+
+        // settle the box on the plane
+        mj_resetData(model.get(), data.get());
+        for (int i = 0; i < 500; i++) {
+          mj_step(model.get(), data.get());
+        }
+        mj_getState(model.get(), data.get(), state.data(), mjSTATE_FULLPHYSICS);
+
+        // solve once more: certificate fires, forward/inverse stay consistent
+        mj_forward(model.get(), data.get());
+        EXPECT_EQ(data->solver_niter[0], 0) << config;
+
+        // thresholds here and below are ~10x above measured, per precision
+        EXPECT_LT(data->solver_fwdinv[0], MjTol(1e-12, 1e-4)) << config;
+        EXPECT_LT(data->solver_fwdinv[1], MjTol(1e-2, 2e-1)) << config;
+        mju_copy(qacc.data(), data->qacc, nv);
+        mju_copy(qfrc.data(), data->qfrc_constraint, nv);
+
+        // control arm: tolerance = 0 disables the certificate, full solve from
+        // the same state must agree with the skipped solve
+        model->opt.tolerance = 0;
+        mj_setState(model.get(), data.get(), state.data(), mjSTATE_FULLPHYSICS);
+        mj_forward(model.get(), data.get());
+        mjtNum dqacc = 0, dqfrc = 0;
+        for (int j = 0; j < nv; j++) {
+          dqacc = max(dqacc, std::abs(qacc[j] - data->qacc[j]));
+          dqfrc = max(dqfrc, std::abs(qfrc[j] - data->qfrc_constraint[j]));
+        }
+        EXPECT_LT(dqacc, MjTol(2e-4, 1.5e-3)) << config;
+        EXPECT_LT(dqfrc, MjTol(2e-2, 4e-1)) << config;
+
+        // guard: a perturbed scene does not certify
+        model->opt.tolerance = tolerance;
+        mj_setState(model.get(), data.get(), state.data(), mjSTATE_FULLPHYSICS);
+        data->qfrc_applied[0] = 5;
+        mj_forward(model.get(), data.get());
+        EXPECT_GT(data->solver_niter[0], 0) << config;
+        data->qfrc_applied[0] = 0;
+      }
+    }
+  }
+}
+
+// per-island certificates: settled islands solve in zero iterations while
+// islands with new loads solve normally
+TEST_F(SolverTest, WarmstartZeroIterationsIslands) {
+  std::string xml = R"(
+  <mujoco>
+    <worldbody>
+      <geom type="plane" size="2 2 .1"/>
+      <body pos="-0.5 0 0.1">
+        <freejoint/>
+        <geom type="box" size="0.1 0.1 0.1"/>
+      </body>
+      <body pos="0.5 0 0.1">
+        <freejoint/>
+        <geom type="box" size="0.1 0.1 0.1"/>
+      </body>
+    </worldbody>
+  </mujoco>
+  )";
+
+  char error[1024];
+  MjModelPtr model = LoadModelFromString(xml, error, sizeof(error));
+  ASSERT_THAT(model, NotNull()) << error;
+  MjDataPtr data = MakeData(model);
+
+  // float32 cannot resolve the default tolerance: use a resolvable one
+  model->opt.tolerance = MjTol(1e-8, 1e-6);
+
+  // settle both boxes, islands enabled (default)
+  for (int i = 0; i < 500; i++) {
+    mj_step(model.get(), data.get());
+  }
+
+  // both islands certify: zero iterations everywhere
+  mj_forward(model.get(), data.get());
+  ASSERT_EQ(data->nisland, 2);
+  EXPECT_EQ(data->solver_niter[0], 0);
+  EXPECT_EQ(data->solver_niter[1], 0);
+
+  // kick the second box: its island solves, the settled island still certifies
+  data->qfrc_applied[6] = 5;
+  mj_forward(model.get(), data.get());
+  ASSERT_EQ(data->nisland, 2);
+  int island1 = data->dof_island[0];
+  int island2 = data->dof_island[6];
+  ASSERT_GE(island1, 0);
+  ASSERT_GE(island2, 0);
+  ASSERT_NE(island1, island2);
+  EXPECT_EQ(data->solver_niter[island1], 0);
+  EXPECT_GT(data->solver_niter[island2], 0);
+}
+
+// tolerance == 0 disables early termination, including the Newton decrement
+TEST_F(SolverTest, ZeroToleranceDisablesTermination) {
+  const std::string xml_path = GetTestDataFilePath(kHumanoidPath);
+  char error[1024];
+  mjModel* model = mj_loadXML(xml_path.c_str(), nullptr, error, sizeof(error));
+  ASSERT_THAT(model, NotNull()) << error;
+  model->opt.solver = mjSOL_NEWTON;
+  model->opt.disableflags |= mjDSBL_ISLAND | mjDSBL_WARMSTART;
+  model->opt.tolerance = 0;
+  model->opt.iterations = 3;
+
+  mjData* data = mj_makeData(model);
+  for (mjtCone cone : {mjCONE_PYRAMIDAL, mjCONE_ELLIPTIC}) {
+    model->opt.cone = cone;
+    mj_resetDataKeyframe(model, data, 0);
+    mj_forward(model, data);
+    EXPECT_EQ(data->solver_niter[0], 3)
+        << "cone: " << (cone == mjCONE_ELLIPTIC ? "elliptic" : "pyramidal");
+  }
+
+  mj_deleteData(data);
+  mj_deleteModel(model);
+}
+
+// With condim 6 and the default friction (1, 0.005, 0.0001) the local
+// elliptic-cone Hessian spans the friction ratios squared, a condition number
+// around 1e9, which exhausts the single-precision mantissa. Newton factorizes
+// it per contact and folds the factor into the full Hessian with rank-1
+// updates, so a Cholesky that responds to a vanishing pivot by clamping the
+// diagonal and then dividing the rest of the column by it -- scaling that
+// column by 1/sqrt(mindiag) -- injects enormous coupling where there is no
+// curvature. This pose reached rank 4 of 6 one step before qacc went to NaN.
+TEST_F(SolverTest, EllipticConeHessianSurvivesFrictionRatios) {
+  constexpr char xml[] = R"(
+  <mujoco>
+    <default>
+      <geom condim="6"/>
+    </default>
+    <worldbody>
+      <geom name="floor" type="plane" size=".5 1 .01"/>
+      <body name="b1" pos="0 0 .4" euler="5 4 3">
+        <freejoint/>
+        <geom type="box" pos="0 0 .06" size=".15 .15 .03"/>
+        <geom type="box" pos="-.05 0 .005" size=".04 .04 .025" euler="1 1 1"/>
+        <geom size=".05" pos=".1 -.1 .04"/>
+      </body>
+      <body name="b2" pos="0 0 .2">
+        <joint type="ball" springdamper="0.1 1"/>
+        <geom type="box" size=".2 .2 .05"/>
+        <geom size=".05" pos=".1 .1 .05"/>
+        <geom type="box" size=".05 .05 .01" pos=".1 -.1 .06" euler="2 2 2"/>
+      </body>
+    </worldbody>
+  </mujoco>
+  )";
+  char error[1024];
+  MjModelPtr model = LoadModelFromString(xml, error, sizeof(error));
+  ASSERT_THAT(model.get(), NotNull()) << error;
+  model->opt.cone = mjCONE_ELLIPTIC;
+  model->opt.solver = mjSOL_NEWTON;
+
+  // both factorizations reach the same pivot, at different steps
+  for (mjtJacobian jacobian : {mjJAC_DENSE, mjJAC_SPARSE}) {
+    model->opt.jacobian = jacobian;
+    MjDataPtr data = MakeData(model);
+
+    // bounded by step count, not by data->time: a divergence resets mjData and
+    // rewinds the clock, so a time-based loop would never terminate
+    for (int step = 0; step < 200; step++) {
+      mj_step(model.get(), data.get());
+      for (int i = 0; i < mjNWARNING; i++) {
+        ASSERT_EQ(data->warning[i].number, 0)
+            << "warning " << i << " at step " << step << ", jacobian "
+            << jacobian;
+      }
+    }
+  }
+}
+
+// With many sliding contacts, the sparse elliptic Newton solver rebuilds the
+// cone-augmented factor with one refactorization instead of per-contact rank-1
+// updates (cone folding). The folded factor must match the incremental one, so
+// sparse and dense (which always uses rank-1 updates) must agree. The scene is
+// a walled corner where a pile of 29 boxes clumps under diagonal gravity and
+// slides steadily, holding most contacts in cone state; mixed condim exercises
+// contact dim 3, 4 and 6.
+TEST_F(SolverTest, ConeFoldEquivalent) {
+  constexpr char xml[] = R"(
+  <mujoco>
+    <option cone="elliptic" solver="Newton" gravity="-8 -8 -10">
+      <flag island="disable"/>
+    </option>
+    <worldbody>
+      <geom name="floor" type="plane" size="1 1 .01"/>
+      <geom name="wallx" type="box" size=".02 .5 .1" pos="-.5 0 .1"/>
+      <geom name="wally" type="box" size=".5 .02 .1" pos="0 -.5 .1"/>
+      <replicate count="3" offset="0 .11 0">
+        <replicate count="3" offset=".11 0 0">
+          <replicate count="3" offset="0 0 .11">
+            <body pos="-.35 -.35 .06">
+              <freejoint/>
+              <geom type="box" size=".05 .05 .05"/>
+            </body>
+          </replicate>
+        </replicate>
+      </replicate>
+      <body pos="-.1 -.1 .06">
+        <freejoint/>
+        <geom type="box" size=".05 .05 .05" condim="4" friction="1 .01 .01"/>
+      </body>
+      <body pos="-.1 -.25 .06">
+        <freejoint/>
+        <geom type="box" size=".05 .05 .05" condim="6" friction="1 .01 .0001"/>
+      </body>
+    </worldbody>
+  </mujoco>
+  )";
+  char error[1024];
+  MjModelPtr model = LoadModelFromString(xml, error, sizeof(error));
+  ASSERT_THAT(model.get(), NotNull()) << error;
+  model->opt.tolerance = 0;  // run all iterations for tight convergence
+  int nv = model->nv;
+
+  model->opt.jacobian = mjJAC_SPARSE;
+  MjDataPtr data_sparse = MakeData(model);
+  MjDataPtr data_dense = MakeData(model);
+
+  // let the pile fall and clump against the walls (sparse drives the state)
+  for (int step = 0; step < 100; step++) {
+    mj_step(model.get(), data_sparse.get());
+  }
+
+  int state_size = mj_stateSize(model.get(), mjSTATE_PHYSICS);
+  std::vector<mjtNum> state(state_size);
+
+  // compare sparse (folding) and dense (rank-1 updates) accelerations while
+  // the clump slides
+  for (int step = 0; step < 50; step++) {
+    mj_getState(model.get(), data_sparse.get(), state.data(), mjSTATE_PHYSICS);
+
+    model->opt.jacobian = mjJAC_SPARSE;
+    mj_forward(model.get(), data_sparse.get());
+
+    model->opt.jacobian = mjJAC_DENSE;
+    mj_setState(model.get(), data_dense.get(), state.data(), mjSTATE_PHYSICS);
+    mj_forward(model.get(), data_dense.get());
+
+    for (int j = 0; j < nv; j++) {
+      mjtNum scale = max(static_cast<mjtNum>(1), std::abs(data_dense->qacc[j]));
+      EXPECT_NEAR(data_sparse->qacc[j] / scale, data_dense->qacc[j] / scale,
+                  MjTol(1e-6, 1e-3))
+          << "dof " << j << " at step " << step;
+    }
+    for (int i = 0; i < mjNWARNING; i++) {
+      ASSERT_EQ(data_sparse->warning[i].number, 0)
+          << "warning " << i << " at step " << step;
+    }
+
+    model->opt.jacobian = mjJAC_SPARSE;
+    mj_step(model.get(), data_sparse.get());
   }
 }
 

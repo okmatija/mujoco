@@ -380,8 +380,32 @@ dt .at {
   display: none;
 }
 
-.admonition p:not(.admonition-title) {
-  margin-left: 0.5em;
+/* Better Furo Admonition Alignment */
+.admonition {
+    padding: 0.5rem 1rem !important; /* Standardize body padding */
+}
+
+/* Align the title text perfectly with the body text */
+.admonition .admonition-title {
+    display: flex;
+    align-items: center;
+    margin-left: -0.25rem; /* Pulls the title slightly left to balance the icon */
+    padding-bottom: 0.25rem;
+}
+
+/* Align admonition bullets with section-level bullets. The margin is set here
+   rather than inherited from ul.simple, which docutils drops from any list
+   holding a multi-paragraph item. */
+.admonition > ul {
+    margin-left: 24px;
+    padding-left: 0.1em;
+    margin-top: 0;
+    margin-bottom: 0;
+}
+
+/* (Optional) Drop the background color for a cleaner look */
+body {
+    --color-admonition-background: transparent;
 }
 
 /* Reduce top and bottom margins around displayed KaTeX equations */

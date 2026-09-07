@@ -100,8 +100,10 @@ TEST_F(UserModelTest, WeldRootID) {
 
   EXPECT_THAT(AsVector(model->body_rootid, model->nbody),
               ElementsAre(0, 1, 1, 3, 3, 5, 5, 7, 7, 9, 9));
+  // mocap bodies (7, 9) are their own weld roots,
+  // inherited by static children (8)
   EXPECT_THAT(AsVector(model->body_weldid, model->nbody),
-              ElementsAre(0, 1, 2, 3, 3, 0, 0, 0, 0, 0, 10));
+              ElementsAre(0, 1, 2, 3, 3, 0, 0, 7, 7, 9, 10));
 }
 
 TEST_F(UserModelTest, RepeatedNames) {
@@ -350,6 +352,57 @@ TEST_F(UserModelTest, ConvexHullForCollisionMeshes) {
   EXPECT_NE(model->mesh_graphadr[with_hull_conaffinity_id], -1);
 }
 
+TEST_F(UserModelTest, MeshExtremaValidIndices) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <asset>
+      <mesh name="test_mesh" vertex="0 0 0  1 0 0  0 1 0  0 0 1"
+            face="0 2 1  0 1 3  0 3 2  1 2 3"/>
+    </asset>
+    <worldbody>
+      <geom name="test_geom" type="mesh" mesh="test_mesh"/>
+    </worldbody>
+  </mujoco>)";
+
+  std::array<char, 1024> error;
+  MjModelPtr model = LoadModelFromString(xml, error.data(), error.size());
+  ASSERT_THAT(model.get(), NotNull()) << error.data();
+
+  int mesh_id = mj_name2id(model.get(), mjOBJ_MESH, "test_mesh");
+  EXPECT_NE(mesh_id, -1);
+  EXPECT_NE(model->mesh_graphadr[mesh_id], -1);
+
+  const float* verts = model->mesh_vert + 3 * model->mesh_vertadr[mesh_id];
+  const int* graph = model->mesh_graph + model->mesh_graphadr[mesh_id];
+  const int* vert_globalid = graph + 2 + graph[0];
+
+  int k = 0;
+  for (int cx = -1; cx <= 1; cx++) {
+    for (int cy = -1; cy <= 1; cy++) {
+      for (int cz = -1; cz <= 1; cz++) {
+        int v_idx = model->mesh_extrema[mesh_id * 27 + k];
+        EXPECT_GE(v_idx, 0);
+        EXPECT_LT(v_idx, graph[0]);
+
+        int global_id = vert_globalid[v_idx];
+        float max_dot = verts[3 * global_id + 0] * cx +
+                        verts[3 * global_id + 1] * cy +
+                        verts[3 * global_id + 2] * cz;
+
+        // verify no other vertex yields a strictly greater dot product.
+        for (int i = 0; i < graph[0]; i++) {
+          int other_gid = vert_globalid[i];
+          float dot = verts[3 * other_gid + 0] * cx +
+                      verts[3 * other_gid + 1] * cy +
+                      verts[3 * other_gid + 2] * cz;
+          EXPECT_LE(dot, max_dot);
+        }
+        k++;
+      }
+    }
+  }
+}
+
 TEST_F(UserModelTest, ConvexHullForPairCollisionMeshes) {
   static constexpr char xml[] = R"(
   <mujoco>
@@ -404,7 +457,7 @@ TEST_F(UserDataTest, AutoNUserJoint) {
       <body>
         <geom size="1"/>
         <joint user="1 2 3"/>
-        <joint user="2 3"/>
+        <joint user="2 3" axis="1 0 0"/>
       </body>
     </worldbody>
   </mujoco>
@@ -872,6 +925,44 @@ TEST_F(LengthRangeTest, LengthRangeThreading) {
   mj_deleteSpec(spec);
 }
 
+TEST_F(MujocoTest, ResolvePluginMissingInstanceThrowsError) {
+  // Instance name="my_pid_config" dos not match actuator plugin's
+  // instance="pid_config", this should throw an appropriate error
+  static constexpr char xml_mismatch[] = R"(
+  <mujoco>
+    <extension>
+      <plugin plugin="mujoco.pid">
+        <instance name="my_pid_config" />
+      </plugin>
+    </extension>
+    <worldbody>
+      <body name="block" pos="0 0 0.5">
+        <joint name="slide_z" type="slide" axis="0 0 1" />
+        <geom type="box" size="0.1 0.1 0.1" mass="1.0" rgba="0 0.7 0 1"/>
+      </body>
+    </worldbody>
+    <actuator>
+      <plugin name="pid_actuator" joint="slide_z" plugin="mujoco.pid" instance="pid_config" />
+    </actuator>
+  </mujoco>
+  )";
+
+  std::array<char, 1024> error_buffer;
+  mjSpec* spec = mj_parseXMLString(xml_mismatch, 0, error_buffer.data(),
+                                   error_buffer.size());
+  ASSERT_THAT(spec, NotNull()) << error_buffer.data();
+
+  mjModel* model = mj_compile(spec, nullptr);
+  EXPECT_THAT(model, IsNull());
+
+  std::string error_msg = mjs_getError(spec);
+  EXPECT_THAT(error_msg,
+              HasSubstr("unrecognized name 'pid_config' for plugin instance"));
+
+  if (model) mj_deleteModel(model);
+  mj_deleteSpec(spec);
+}
+
 // ----------------------------- test modeldir  --------------------------------
 
 TEST_F(MujocoTest, Modeldir) {
@@ -1039,8 +1130,8 @@ TEST_F(DelayBufferTest, ActuatorDelayBufferSizes) {
       <body>
         <geom size="1"/>
         <joint name="jnt1"/>
-        <joint name="jnt2"/>
-        <joint name="jnt3"/>
+        <joint name="jnt2" axis="1 0 0"/>
+        <joint name="jnt3" axis="0 1 0"/>
       </body>
     </worldbody>
     <actuator>

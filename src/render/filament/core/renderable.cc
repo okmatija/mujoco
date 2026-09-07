@@ -170,8 +170,11 @@ void Renderable::UpdateTransform() {
   filament::TransformManager& tm = GetEngine()->getTransformManager();
   if (geom_type_ == mjGEOM_PLANE && (trs_.size[0] <= 0 || trs_.size[1] <= 0)) {
     infinite_plane_ = true;
+    static constexpr float kInfiniteScale = 0.5f * mjMAXPLANEGRID;
+    const mat4f scaling =
+        mat4f::scaling(float3{kInfiniteScale, kInfiniteScale, 1.0f});
     const mat4f transform =
-        filament::math::mat4f(trs_.rotation, trs_.translation);
+        filament::math::mat4f(trs_.rotation, trs_.translation) * scaling;
     for (Part& part : parts_) {
       tm.setTransform(tm.getInstance(part.entity), transform);
     }
@@ -239,6 +242,9 @@ const mjrfMaterial& Renderable::GetMaterial() const { return material_; }
 
 void Renderable::Prepare(std::span<const mjrfRenderRequest*> requests,
                          ReflectionManager* reflection_mgr) {
+  // Ensure the renderable has no material instances set from the previous
+  // frame. This will allow us to recycle material instances if needed.
+  SetMaterialInstance(0);
   // We assume BindMaterialInstance will be called with the same requests in
   // the same order. As such, we'll just store the draw state in a deque rather
   // than trying to perform any kind of matching with the requests.
@@ -248,6 +254,9 @@ void Renderable::Prepare(std::span<const mjrfRenderRequest*> requests,
   for (const mjrfRenderRequest* request : requests) {
     DrawState draw_state;
     mjrfMaterial material = material_;
+
+    // Selected materials are handled in a separate pass, so clear the value
+    // here to take advantage of shared materials.
     material.selected = false;
 
     draw_state.wireframe = (request->draw_mode == mjDRAW_MODE_WIREFRAME);
@@ -313,16 +322,30 @@ void Renderable::Prepare(std::span<const mjrfRenderRequest*> requests,
       material.orm_texture = nullptr;
     }
 
-    const bool reflective = request->draw_mode == mjDRAW_MODE_DEFAULT &&
-                            request->enable_reflections &&
-                            material.reflectance > 0.0;
+    const bool reflective =
+        request->draw_mode == mjDRAW_MODE_DEFAULT &&
+        request->enable_reflections &&
+        (geom_type_ == mjGEOM_PLANE || geom_type_ == mjGEOM_BOX) &&
+        material.reflectance > 0.0;
     if (reflective) {
       material.reflection_texture = reflection_mgr->Register(
           this, request->viewport.width, request->viewport.height);
-    }
-
-    if (material.selected) {
-      material.emissive += 0.3f;  // vis->global.glow
+      // The mirror plane normal is the geom's local +Z (transform_[2], whose
+      // scale carries the geom size -- normalize it). The reflect shader uses
+      // it to apply the reflection only on the front face, so box mirrors don't
+      // show the reflection on their back/side faces. The shader gates on
+      // getWorldGeometricNormalVector(), which is expressed in filament's Y-up
+      // frame, so rotate this normal out of mujoco's Z-up frame to match
+      const float3 refl_normal =
+          geom_type_ == mjGEOM_PLANE
+              ? float3(0.0f, 0.0f, 0.0f)
+              : ToFilamentFrame(normalize(transform_[2].xyz));
+      material.reflection_normal[0] = refl_normal.x;
+      material.reflection_normal[1] = refl_normal.y;
+      material.reflection_normal[2] = refl_normal.z;
+      const mat4f view_proj = GetReflectionViewProjectionMatrix(
+          request->camera, request->viewport.width, request->viewport.height);
+      WriteMat4(material.reflection_view_proj, view_proj);
     }
 
     const Mesh* mesh = !parts_.empty() ? parts_[0].mesh : nullptr;
@@ -338,43 +361,6 @@ void Renderable::BindMaterialInstance(const mjrfRenderRequest& request) {
     mju_error("No material instances to bind.");
   }
 
-  if (geom_type_ == mjGEOM_PLANE && infinite_plane_) {
-    // Emulate an infinite plane by recentering a large quad in world space
-    // relative to the camera. We use the shared mjMAXPLANEGRID value as the
-    // size of the quad to ensure the texture scaling matches.
-    static constexpr float kInfiniteScale = 0.5f * mjMAXPLANEGRID;
-    const mat4f scaling =
-        mat4f::scaling(float3{kInfiniteScale, kInfiniteScale, 1.0f});
-
-    const float3 camera_pos = ReadFloat3(request.camera.pos);
-    const float3 plane_origin = transform_[3].xyz;
-    const mat3f plane_rotation = transform_.upperLeft();
-
-    const float3 vec = camera_pos - plane_origin;
-    const float3 plane_x = normalize(plane_rotation[0]);
-    const float3 plane_y = normalize(plane_rotation[1]);
-
-    // Project camera position onto the plane's local XY axes.
-    float dx = dot(vec, plane_x);
-    float dy = dot(vec, plane_y);
-
-    // Quantize based on uv_scale.
-    const float tile_size[] = {kInfiniteScale / material_.uv_scale[0],
-                               kInfiniteScale / material_.uv_scale[1]};
-    dx = tile_size[0] * mju_round(dx / tile_size[0]);
-    dy = tile_size[1] * mju_round(dy / tile_size[1]);
-
-    // Calculate the new center quad as a displacement from the plane origin.
-    const float3 displacement = dx * plane_x + dy * plane_y;
-    const float3 center = plane_origin + displacement;
-
-    const mat4f transform = mat4f(plane_rotation, center) * scaling;
-    filament::TransformManager& tm = GetEngine()->getTransformManager();
-    for (Part& part : parts_) {
-      tm.setTransform(tm.getInstance(part.entity), transform);
-    }
-  }
-
   const DrawState& state = draw_queue_.front();
   SetCastShadows(state.cast_shadows);
   SetReceiveShadows(state.receive_shadows);
@@ -388,7 +374,8 @@ MaterialManager::MaterialKey Renderable::SetMaterialInstance(
     MaterialManager::MaterialKey key) {
   MaterialManager::MaterialKey prev = curr_state_.material_key;
   if (key != curr_state_.material_key) {
-    filament::MaterialInstance* instance = material_mgr_->GetInstance(key);
+    const filament::MaterialInstance* instance =
+        material_mgr_->GetInstance(key);
     filament::RenderableManager& rm = GetEngine()->getRenderableManager();
     for (Part& part : parts_) {
       filament::RenderableManager::Instance ri = rm.getInstance(part.entity);
@@ -458,11 +445,22 @@ void Renderable::SetWireframe(bool wireframe) {
     for (Part& part : parts_) {
       filament::VertexBuffer* vertex_buffer =
           part.mesh->GetFilamentVertexBuffer();
-      filament::IndexBuffer* index_buffer = part.mesh->GetFilamentIndexBuffer();
-      rm.setGeometryAt(
-          rm.getInstance(part.entity), 0,
-          wireframe ? kWireframeType : part.mesh->GetPrimitiveType(),
-          vertex_buffer, index_buffer, part.elem_offset, part.elem_count);
+      filament::IndexBuffer* wireframe_index_buffer =
+          part.mesh->GetWireframeIndexBuffer();
+      if (wireframe && wireframe_index_buffer) {
+        // Triangle meshes have a dedicated line index buffer enumerating the
+        // three edges of each triangle, addressed by doubling the range.
+        rm.setGeometryAt(rm.getInstance(part.entity), 0, kWireframeType,
+                         vertex_buffer, wireframe_index_buffer,
+                         2 * part.elem_offset, 2 * part.elem_count);
+      } else {
+        // Line meshes are drawn as-is in both modes.
+        rm.setGeometryAt(rm.getInstance(part.entity), 0,
+                         wireframe ? kWireframeType
+                                   : part.mesh->GetPrimitiveType(),
+                         vertex_buffer, part.mesh->GetFilamentIndexBuffer(),
+                         part.elem_offset, part.elem_count);
+      }
     }
   }
 }
@@ -488,8 +486,8 @@ void Renderable::SetGeomMesh(mjtGeom type, int nstack, int nslice, int nquad) {
     case mjGEOM_CAPSULE:
       // Capsules are a tube with two domes at the ends.
       AppendMesh(builtins->Tube());
-      AppendMesh(builtins->Dome());
-      AppendMesh(builtins->Dome());
+      AppendMesh(builtins->DomeTop());
+      AppendMesh(builtins->DomeBottom());
 
       get_transform_fn_ = [](int index, const Trs& trs) {
         // We apply an inverse scale to the domes to counteract the capsule's

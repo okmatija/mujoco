@@ -1102,6 +1102,26 @@ FUNCTIONS: Mapping[str, FunctionDecl] = dict([
          ),
          doc='Copy mjData, skip large arrays not required for visualization.',
      )),
+    ('mj_resetCtrl',
+     FunctionDecl(
+         name='mj_resetCtrl',
+         return_type=ValueType(name='void'),
+         parameters=(
+             FunctionParameterDecl(
+                 name='m',
+                 type=PointerType(
+                     inner_type=ValueType(name='mjModel', is_const=True),
+                 ),
+             ),
+             FunctionParameterDecl(
+                 name='d',
+                 type=PointerType(
+                     inner_type=ValueType(name='mjData'),
+                 ),
+             ),
+         ),
+         doc='Reset ctrl to neutral values: zero, except quaternion inputs which reset to the identity.',  # pylint: disable=line-too-long
+     )),
     ('mj_resetData',
      FunctionDecl(
          name='mj_resetData',
@@ -3467,6 +3487,30 @@ FUNCTIONS: Mapping[str, FunctionDecl] = dict([
          ),
          doc='Get name of object with the specified mjtObj type and id; return NULL if name not found.',  # pylint: disable=line-too-long
      )),
+    ('mj_actuatorInputName',
+     FunctionDecl(
+         name='mj_actuatorInputName',
+         return_type=PointerType(
+             inner_type=ValueType(name='char', is_const=True),
+         ),
+         parameters=(
+             FunctionParameterDecl(
+                 name='m',
+                 type=PointerType(
+                     inner_type=ValueType(name='mjModel', is_const=True),
+                 ),
+             ),
+             FunctionParameterDecl(
+                 name='id',
+                 type=ValueType(name='int'),
+             ),
+             FunctionParameterDecl(
+                 name='input',
+                 type=ValueType(name='int'),
+             ),
+         ),
+         doc='Get name of actuator input, determined by the actuator type and input signature; return NULL if the actuator type defines no input names.',  # pylint: disable=line-too-long
+     )),
     ('mj_fullM',
      FunctionDecl(
          name='mj_fullM',
@@ -4729,12 +4773,6 @@ FUNCTIONS: Mapping[str, FunctionDecl] = dict([
                  type=ValueType(name='mjtNum'),
              ),
              FunctionParameterDecl(
-                 name='scn',
-                 type=PointerType(
-                     inner_type=ValueType(name='mjvScene', is_const=True),
-                 ),
-             ),
-             FunctionParameterDecl(
                  name='cam',
                  type=PointerType(
                      inner_type=ValueType(name='mjvCamera'),
@@ -4933,6 +4971,32 @@ FUNCTIONS: Mapping[str, FunctionDecl] = dict([
              ),
          ),
          doc='Return the average of two OpenGL cameras.',
+     )),
+    ('mjv_camera2GLCamera',
+     FunctionDecl(
+         name='mjv_camera2GLCamera',
+         return_type=ValueType(name='mjvGLCamera'),
+         parameters=(
+             FunctionParameterDecl(
+                 name='model',
+                 type=PointerType(
+                     inner_type=ValueType(name='mjModel', is_const=True),
+                 ),
+             ),
+             FunctionParameterDecl(
+                 name='data',
+                 type=PointerType(
+                     inner_type=ValueType(name='mjData', is_const=True),
+                 ),
+             ),
+             FunctionParameterDecl(
+                 name='mjv_camera',
+                 type=PointerType(
+                     inner_type=ValueType(name='mjvCamera', is_const=True),
+                 ),
+             ),
+         ),
+         doc='Converts a mjvCamera to a mjvGLCamera.',
      )),
     ('mjv_select',
      FunctionDecl(
@@ -5479,6 +5543,34 @@ FUNCTIONS: Mapping[str, FunctionDecl] = dict([
              ),
          ),
          doc='Set default mjrContext.',
+     )),
+    ('mjr_defaultRendererInfo',
+     FunctionDecl(
+         name='mjr_defaultRendererInfo',
+         return_type=ValueType(name='void'),
+         parameters=(
+             FunctionParameterDecl(
+                 name='info',
+                 type=PointerType(
+                     inner_type=ValueType(name='mjrRendererInfo'),
+                 ),
+             ),
+         ),
+         doc='Set default mjrRendererInfo.',
+     )),
+    ('mjr_getRendererInfo',
+     FunctionDecl(
+         name='mjr_getRendererInfo',
+         return_type=ValueType(name='void'),
+         parameters=(
+             FunctionParameterDecl(
+                 name='info',
+                 type=PointerType(
+                     inner_type=ValueType(name='mjrRendererInfo'),
+                 ),
+             ),
+         ),
+         doc='Get active renderer information.',
      )),
     ('mjr_makeContext',
      FunctionDecl(
@@ -9929,6 +10021,48 @@ FUNCTIONS: Mapping[str, FunctionDecl] = dict([
          ),
          doc='Set buffer to bytes read from the resource and return number of bytes in buffer; return negative value if error.',  # pylint: disable=line-too-long
      )),
+    ('mju_writeResource',
+     FunctionDecl(
+         name='mju_writeResource',
+         return_type=ValueType(name='mjtSize'),
+         parameters=(
+             FunctionParameterDecl(
+                 name='name',
+                 type=PointerType(
+                     inner_type=ValueType(name='char', is_const=True),
+                 ),
+             ),
+             FunctionParameterDecl(
+                 name='buffer',
+                 type=PointerType(
+                     inner_type=ValueType(name='void', is_const=True),
+                 ),
+             ),
+             FunctionParameterDecl(
+                 name='nbytes',
+                 type=ValueType(name='mjtSize'),
+             ),
+             FunctionParameterDecl(
+                 name='vfs',
+                 type=PointerType(
+                     inner_type=ValueType(name='mjVFS', is_const=True),
+                 ),
+                 nullable=True,
+             ),
+             FunctionParameterDecl(
+                 name='error',
+                 type=PointerType(
+                     inner_type=ValueType(name='char'),
+                 ),
+                 nullable=True,
+             ),
+             FunctionParameterDecl(
+                 name='nerror',
+                 type=ValueType(name='size_t'),
+             ),
+         ),
+         doc='Write resource data via its resource provider, return bytes written or -1 on error.',  # pylint: disable=line-too-long
+     )),
     ('mju_getResourceDir',
      FunctionDecl(
          name='mju_getResourceDir',
@@ -10863,6 +10997,107 @@ FUNCTIONS: Mapping[str, FunctionDecl] = dict([
          ),
          doc='Set actuator to velocity servo; return error if any.',
      )),
+    ('mjs_setToOrientation',
+     FunctionDecl(
+         name='mjs_setToOrientation',
+         return_type=PointerType(
+             inner_type=ValueType(name='char', is_const=True),
+         ),
+         parameters=(
+             FunctionParameterDecl(
+                 name='actuator',
+                 type=PointerType(
+                     inner_type=ValueType(name='mjsActuator'),
+                 ),
+             ),
+             FunctionParameterDecl(
+                 name='kp',
+                 type=ValueType(name='double'),
+             ),
+             FunctionParameterDecl(
+                 name='kv',
+                 type=ArrayType(
+                     inner_type=ValueType(name='double'),
+                     extents=(1,),
+                 ),
+             ),
+             FunctionParameterDecl(
+                 name='dampratio',
+                 type=ArrayType(
+                     inner_type=ValueType(name='double'),
+                     extents=(1,),
+                 ),
+             ),
+             FunctionParameterDecl(
+                 name='ctrlspec',
+                 type=ValueType(name='int'),
+             ),
+         ),
+         doc='Set actuator to orientation servo.',
+     )),
+    ('mjs_setToPID',
+     FunctionDecl(
+         name='mjs_setToPID',
+         return_type=PointerType(
+             inner_type=ValueType(name='char', is_const=True),
+         ),
+         parameters=(
+             FunctionParameterDecl(
+                 name='actuator',
+                 type=PointerType(
+                     inner_type=ValueType(name='mjsActuator'),
+                 ),
+             ),
+             FunctionParameterDecl(
+                 name='kp',
+                 type=ValueType(name='double'),
+             ),
+             FunctionParameterDecl(
+                 name='kv',
+                 type=ArrayType(
+                     inner_type=ValueType(name='double'),
+                     extents=(1,),
+                 ),
+             ),
+             FunctionParameterDecl(
+                 name='dampratio',
+                 type=ArrayType(
+                     inner_type=ValueType(name='double'),
+                     extents=(1,),
+                 ),
+             ),
+             FunctionParameterDecl(
+                 name='ki',
+                 type=ArrayType(
+                     inner_type=ValueType(name='double'),
+                     extents=(1,),
+                 ),
+             ),
+             FunctionParameterDecl(
+                 name='imax',
+                 type=ArrayType(
+                     inner_type=ValueType(name='double'),
+                     extents=(1,),
+                 ),
+             ),
+             FunctionParameterDecl(
+                 name='slewmax',
+                 type=ArrayType(
+                     inner_type=ValueType(name='double'),
+                     extents=(1,),
+                 ),
+             ),
+             FunctionParameterDecl(
+                 name='inheritrange',
+                 type=ValueType(name='double'),
+             ),
+             FunctionParameterDecl(
+                 name='ctrlspec',
+                 type=ValueType(name='int'),
+             ),
+         ),
+         doc='Set actuator to PID controller.',
+     )),
     ('mjs_setToDamper',
      FunctionDecl(
          name='mjs_setToDamper',
@@ -11079,7 +11314,7 @@ FUNCTIONS: Mapping[str, FunctionDecl] = dict([
                  nullable=True,
              ),
              FunctionParameterDecl(
-                 name='input_mode',
+                 name='ctrlspec',
                  type=ValueType(name='int'),
              ),
          ),

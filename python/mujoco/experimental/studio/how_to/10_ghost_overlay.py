@@ -41,16 +41,29 @@ import os
 import sys
 
 from absl import app as _app
+from absl import flags as _flags
 import mujoco
 from mujoco.experimental.studio import launch_passive
 from mujoco.experimental.studio import messages
 from mujoco.experimental.studio import parser
-from mujoco.experimental.studio import sim
+from mujoco.experimental.studio import step_control
 from mujoco.experimental.studio import viewer_app
 from mujoco.experimental.studio import viewer_protocol
 import numpy as np
 
 from mujoco.experimental.dear_imgui import dear_imgui as imgui
+
+vp = viewer_protocol
+
+_MODEL = _flags.DEFINE_string('model', None, 'Path to model file.')
+_GFX = _flags.DEFINE_enum(
+    'gfx', None, vp.GFX_MODES, 'Graphics mode ("web" launches Web Viewer).'
+)
+_PORT = _flags.DEFINE_integer(
+    'port', 0, 'Web Viewer port (0 picks first free port >= 8080).'
+)
+_WIDTH = _flags.DEFINE_integer('width', 1200, 'Width of the output image.')
+_HEIGHT = _flags.DEFINE_integer('height', 800, 'Height of the output image')
 
 
 class GhostRenderer:
@@ -125,7 +138,7 @@ class GhostRenderer:
     # (reset), the history is invalid and must be dropped.
     if self._last_time is None or data.time < self._last_time:
       self._history.clear()
-    if not self._history or data.time > self._last_time:
+    if not self._history or data.time > self._last_time:  # pyrefly: ignore[unsupported-operation]
       self._history.append((
           data.time,
           data.geom_xpos.copy(),  # .copy(): data mutates every frame.
@@ -139,7 +152,7 @@ class GhostRenderer:
     while len(self._history) > 1 and self._history[1][0] <= target_time:
       self._history.popleft()
 
-    _, xpos, xmat = self._history[0]
+    _, xpos, xmat = self._history[0]  # pyrefly: ignore[bad-assignment]
     if len(xpos) != model.ngeom or len(xmat) != model.ngeom:
       return  # Stale history from before a model swap; skip this frame.
 
@@ -171,34 +184,46 @@ class GhostRenderer:
 
 
 def main(argv: list[str]) -> None:
-  if len(argv) != 2:
-    raise _app.UsageError('Please provide exactly one MJCF path argument.')
+  model_path = _MODEL.value or (
+      argv[1] if len(argv) > 1 and not argv[1].startswith('--') else None
+  )
+  if not model_path:
+    raise _app.UsageError(
+        'Please provide a model path argument or --model flag.'
+    )
 
   data = None
   try:
-    if (data := parser.parse(argv[1])) is None:
+    if (data := parser.parse(model_path)) is None:
       raise ValueError('parser returned None')
   except Exception as ex:  # pylint: disable=broad-except
-    print(f'Failed to load model from {argv[1]!r}: {ex}')
+    print(f'Failed to load model from {model_path!r}: {ex}')
     sys.exit(1)
   model = data.model
 
   config = viewer_protocol.ViewerConfig(
       title=os.path.basename(sys.argv[0]),
+      width=_WIDTH.value,
+      height=_HEIGHT.value,
+      gfx=_GFX.value or '',
+      http_port=_PORT.value,
   )
 
   # Handlers compose: the full Studio UI and our overlay, side by side.
   # Neither knows about the other; both subscribe to the same events.
   with launch_passive.launch_passive(
       config,
-      viewer_handlers=[viewer_app.ViewerApp(), GhostRenderer()],
+      viewer_plugins=[viewer_app.ViewerApp(), GhostRenderer()],
+      sim_plugins=[step_control.StepControl()],
   ) as handle:
-    handle.send_to_viewer(messages.ModelEvent(model=model, path=argv[1]))
+    handle.send_to_viewer(messages.ModelEvent(model=model, path=model_path))
 
-    step_control = sim.StepControl()
-    while handle.is_running():
-      step_control.advance(model, data)
-      model, data, step_control = handle.sync(model, data, step_control)
+    try:
+      while handle.is_running():
+        model, data = handle.sync(model, data)
+    except KeyboardInterrupt:
+      # Ctrl+C is the documented way to quit; exit cleanly, no traceback.
+      print('\nShutting down.', flush=True)
 
 
 # -----------------------------------------------------------------------------

@@ -54,17 +54,31 @@ import os
 import sys
 
 from absl import app as _app
+from absl import flags as _flags
 import mujoco
 from mujoco.experimental.studio import launch_passive
 from mujoco.experimental.studio import messages
 from mujoco.experimental.studio import parser
-from mujoco.experimental.studio import sim
+from mujoco.experimental.studio import step_control
 from mujoco.experimental.studio import viewer_app
 from mujoco.experimental.studio import viewer_protocol
 import numpy as np
 
 from mujoco.experimental.dear_imgui import dear_imgui as imgui
 from mujoco.experimental.implot import implot
+
+vp = viewer_protocol
+
+_MODEL = _flags.DEFINE_string('model', None, 'Path to model file.')
+_GFX = _flags.DEFINE_enum(
+    'gfx', None, vp.GFX_MODES, 'Graphics mode ("web" launches Web Viewer).'
+)
+_PORT = _flags.DEFINE_integer(
+    'port', 0, 'Web Viewer port (0 picks first free port >= 8080).'
+)
+_WIDTH = _flags.DEFINE_integer('width', 1200, 'Width of the output image.')
+_HEIGHT = _flags.DEFINE_integer('height', 800, 'Height of the output image')
+
 
 _N_HISTORY = 100
 
@@ -249,28 +263,38 @@ class BodyInspector:
 
 
 def main(argv: list[str]) -> None:
-  if len(argv) != 2:
-    raise _app.UsageError('Please provide exactly one MJCF path argument.')
+  model_path = _MODEL.value or (
+      argv[1] if len(argv) > 1 and not argv[1].startswith('--') else None
+  )
+  if not model_path:
+    raise _app.UsageError('Please provide a model path argument or --model flag.')
 
-  if (data := parser.parse(argv[1])) is None:
-    print(f'Error loading model from {argv[1]!r}')
+  if (data := parser.parse(model_path)) is None:
+    print(f'Error loading model from {model_path!r}')
     sys.exit(1)
   model = data.model
 
   config = viewer_protocol.ViewerConfig(
       title=os.path.basename(sys.argv[0]),
+      width=_WIDTH.value,
+      height=_HEIGHT.value,
+      gfx=_GFX.value or '',
+      http_port=_PORT.value,
   )
 
   with launch_passive.launch_passive(
       config,
-      viewer_handlers=[viewer_app.ViewerApp(), BodyInspector()],
+      viewer_plugins=[viewer_app.ViewerApp(), BodyInspector()],
+      sim_plugins=[step_control.StepControl()],
   ) as handle:
-    handle.send_to_viewer(messages.ModelEvent(model=model, path=argv[1]))
+    handle.send_to_viewer(messages.ModelEvent(model=model, path=model_path))
 
-    step_control = sim.StepControl()
-    while handle.is_running():
-      step_control.advance(model, data)
-      model, data, step_control = handle.sync(model, data, step_control)
+    try:
+      while handle.is_running():
+        model, data = handle.sync(model, data)
+    except KeyboardInterrupt:
+      # Ctrl+C is the documented way to quit; exit cleanly, no traceback.
+      print('\nShutting down.', flush=True)
 
 
 # -----------------------------------------------------------------------------

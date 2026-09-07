@@ -20,7 +20,7 @@ add_library(${MUJOCO_FILAMENT_TARGET_NAME} STATIC)
 target_compile_definitions(${MUJOCO_FILAMENT_TARGET_NAME} PRIVATE MJ_STATIC)
 
 target_sources(${MUJOCO_FILAMENT_TARGET_NAME}
-    PUBLIC
+    PRIVATE
         mjrfilament.cc
         mjrfilament_cpp.h
         core/builtins.cc
@@ -55,14 +55,18 @@ target_sources(${MUJOCO_FILAMENT_TARGET_NAME}
         core/types.h
         support/filament_util.h
         support/filament_util.cc
-        support/light_manager.h
-        support/light_manager.cc
+        support/imgui_bridge.h
+        support/imgui_bridge.cc
         support/mesh_util.h
         support/mesh_util.cc
+        support/model_decorations.h
+        support/model_decorations.cc
+        support/model_lights.h
+        support/model_lights.cc
         support/model_objects.h
         support/model_objects.cc
-        support/renderable_manager.h
-        support/renderable_manager.cc
+        support/model_renderables.h
+        support/model_renderables.cc
 )
 
 target_include_directories(${MUJOCO_FILAMENT_TARGET_NAME}
@@ -90,41 +94,18 @@ add_library(mujoco::filament ALIAS ${MUJOCO_FILAMENT_TARGET_NAME})
 set(ASSETS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/assets")
 set(OUTPUT_ASSETS_DIR "${CMAKE_CURRENT_BINARY_DIR}/assets")
 file(MAKE_DIRECTORY ${OUTPUT_ASSETS_DIR})
+
 file(COPY
     "${ASSETS_DIR}/ibl.ktx"
     DESTINATION ${OUTPUT_ASSETS_DIR}
 )
 
 set(MATC_EXECUTABLE matc)
-set(MATERIAL_FILES
-    pbr.mat
-    pbr_transparent.mat
-    pbr_packed.mat
-    pbr_packed_transparent.mat
-    phong_2d_fade.mat
-    phong_2d.mat
-    phong_2d_reflect.mat
-    phong_2d_uv_fade.mat
-    phong_2d_uv.mat
-    phong_2d_uv_reflect.mat
-    phong_color_fade.mat
-    phong_color.mat
-    phong_color_reflect.mat
-    phong_cube_fade.mat
-    phong_cube.mat
-    phong_cube_reflect.mat
-    outline_composite.mat
-    outline_flatten.mat
-    outline_jumpflood.mat
-    decor.mat
-    unlit_depth.mat
-    unlit_segmentation.mat
-    unlit_ui.mat
-)
+file(GLOB MATERIAL_FILES CONFIGURE_DEPENDS "${ASSETS_DIR}/*.mat")
 
-foreach(MATERIAL_FILE ${MATERIAL_FILES})
-    get_filename_component(MATERIAL_NAME ${MATERIAL_FILE} NAME_WE)
-    set(INPUT_FILE "${ASSETS_DIR}/${MATERIAL_FILE}")
+foreach(INPUT_FILE ${MATERIAL_FILES})
+    get_filename_component(MATERIAL_NAME ${INPUT_FILE} NAME_WE)
+    get_filename_component(MATERIAL_FILE ${INPUT_FILE} NAME)
     set(OUTPUT_FILE "${OUTPUT_ASSETS_DIR}/${MATERIAL_NAME}.filamat")
 
     if(CMAKE_SYSTEM_NAME STREQUAL "Emscripten")

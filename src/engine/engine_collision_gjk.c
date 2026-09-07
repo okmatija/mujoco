@@ -43,7 +43,7 @@
   #define mjMINDIST3 mjMINVAL2
   #define mjMINDIST4 mjMINVAL2
   #define mjMINEPATOL mjMINVAL
-#endif
+#endif  // mjUSESINGLE
 
 // align memory size on 8-byte boundary; needed for single precision
 static inline size_t align8(size_t size) {
@@ -129,13 +129,6 @@ static Face* epa(mjCCDStatus* status, Polytope* pt, mjCCDObj* obj1, mjCCDObj* ob
 
 // -------------------------------- inlined  3D vector utils --------------------------------------
 
-// v1 == v2 up to 1e-15
-static inline int equal3(const mjtNum v1[3], const mjtNum v2[3]) {
-  return mju_abs(v1[0] - v2[0]) < mjMINVAL &&
-         mju_abs(v1[1] - v2[1]) < mjMINVAL &&
-         mju_abs(v1[2] - v2[2]) < mjMINVAL;
-}
-
 // res = v1 + v2
 static inline void add3(mjtNum res[3], const mjtNum v1[3], const mjtNum v2[3]) {
   res[0] = v1[0] + v2[0], res[1] = v1[1] + v2[1], res[2] = v1[2] + v2[2];
@@ -164,6 +157,11 @@ static inline void copy3(mjtNum res[3], const mjtNum v[3]) {
 // scalar product: res = s*v
 static inline void scl3(mjtNum res[3], const mjtNum v[3], mjtNum s) {
   res[0] = s*v[0], res[1] = s*v[1], res[2] = s*v[2];
+}
+
+// res = v1 + s*v2
+static inline void addScl3(mjtNum res[3], const mjtNum v1[3], const mjtNum v2[3], mjtNum s) {
+  res[0] = v1[0] + s*v2[0], res[1] = v1[1] + s*v2[1], res[2] = v1[2] + s*v2[2];
 }
 
 // cross product: res = v1 x v2
@@ -208,25 +206,24 @@ static void gjk(mjCCDStatus* status, mjCCDObj* obj1, mjCCDObj* obj2) {
   mjtNum* x2_k = status->x2;               // the kth approximation point for obj2
   mjtNum x_k[3];                           // the kth approximation point in Minkowski difference
   mjtNum lambda[4];                        // barycentric coordinates for x_k
-  mjtNum cutoff2 = status->dist_cutoff * status->dist_cutoff;
   mjtNum tol2 = status->tolerance * status->tolerance;
+  status->separated = 0;
 
   // if both geoms are discrete, finite convergence is guaranteed; set tolerance to 0
   mjtNum epsilon = discreteGeoms(obj1, obj2) ? 0 : 0.5 * tol2;
 
-  // tolerance on squared norm of x_k
-  mjtNum min_norm2 = discreteGeoms(obj1, obj2) ? mjMINVAL2 : tol2;
-  mjtNum x_norm;
+  // tolerance on norm of x_k
+  mjtNum min_norm = discreteGeoms(obj1, obj2) ? mjMINVAL : status->tolerance;
 
   // set initial guess
   sub3(x_k, x1_k, x2_k);
+  mjtNum x_norm = norm3(x_k), x_norm_prev = 0;  // set to 0 for no-op on first iteration
 
   for (; k < kmax; k++) {
-    // in tolerance for geoms to be in contact
-    if ((x_norm = dot3(x_k, x_k)) < min_norm2) {
+    // in tolerance for geoms to be in contact, or x_norm has stagnated
+    if (x_norm < min_norm || mju_abs(x_norm_prev - x_norm) < mjMINVAL) {
       break;
     }
-    x_norm = mju_sqrt(x_norm);
 
     // compute the kth support point
     gjkSupport(simplex + n, obj1, obj2, x_k, x_norm);
@@ -234,29 +231,30 @@ static void gjk(mjCCDStatus* status, mjCCDObj* obj1, mjCCDObj* obj2) {
 
     // stopping criteria using the Frank-Wolfe duality gap given by
     //  |f(x_k) - f(x_min)|^2 <= < grad f(x_k), (x_k - s_k) >
-    mjtNum diff[3];
-    sub3(diff, x_k, s_k);
+    mjtNum diff[3] = {x_k[0] - s_k[0], x_k[1] - s_k[1], x_k[2] - s_k[2]};
     if (dot3(x_k, diff) < epsilon) {
       break;
     }
 
-    // if the hyperplane separates the Minkowski difference and origin, the objects don't collide
-    // if geom distance isn't requested, return early
+    // the lower bound on distance between the two geoms is (lower / x_norm)
+    // if lower > 0, then the geoms are separated
+    mjtNum lower = dot3(x_k, s_k);
     if (!get_dist) {
-      if (dot3(x_k, s_k) > 0) {
+      if (lower > 0) {
+        status->separated = 1;
         status->gjk_iterations = k;
         status->nsimplex = 0;
         status->nx = 0;
-        status->dist = mjMAX_LIMIT;
+        status->dist[0] = mjMAX_LIMIT;
         return;
       }
     } else if (status->dist_cutoff < mjMAX_LIMIT) {
-      mjtNum vs = dot3(x_k, s_k), vv = dot3(x_k, x_k);
-      if (dot3(x_k, s_k) > 0 && (vs*vs / vv) >= cutoff2) {
+      if (lower > 0 && lower >= status->dist_cutoff * x_norm) {
+        status->separated = 1;
         status->gjk_iterations = k;
         status->nsimplex = 0;
         status->nx = 0;
-        status->dist = mjMAX_LIMIT;
+        status->dist[0] = mjMAX_LIMIT;
         return;
       }
     }
@@ -268,7 +266,8 @@ static void gjk(mjCCDStatus* status, mjCCDObj* obj1, mjCCDObj* obj2) {
       int ret = gjkIntersect(status, obj1, obj2);
       if (ret != -1) {
         status->nx = 0;
-        status->dist = ret > 0 ? 0 : mjMAX_LIMIT;
+        status->separated = ret == 0;
+        status->dist[0] = ret > 0 ? 0 : mjMAX_LIMIT;
         return;
       }
       k = status->gjk_iterations;
@@ -292,26 +291,19 @@ static void gjk(mjCCDStatus* status, mjCCDObj* obj1, mjCCDObj* obj2) {
       status->gjk_iterations = k;
       status->nsimplex = 0;
       status->nx = 0;
-      status->dist = mjMAX_LIMIT;
+      status->dist[0] = mjMAX_LIMIT;
+      status->separated = 1;
       return;
     }
 
-    // get the next iteration of x_k
-    mjtNum x_next[3];
-    lincomb(x_next, lambda, n, simplex[0].vert, simplex[1].vert,
+    // get the next iteration of x_k, save previous x_norm
+    lincomb(x_k, lambda, n, simplex[0].vert, simplex[1].vert,
             simplex[2].vert, simplex[3].vert);
+    x_norm_prev = x_norm;
+    x_norm = norm3(x_k);
 
-    // x_k has converged to minimum
-    if (equal3(x_next, x_k)) {
-      break;
-    }
-
-    // copy next iteration into x_k
-    copy3(x_k, x_next);
-
-    // we have a tetrahedron containing the origin so return early
+    // we should have a tetrahedron containing the origin so return early
     if (n == 4) {
-      x_norm = 0;
       break;
     }
   }
@@ -324,10 +316,19 @@ static void gjk(mjCCDStatus* status, mjCCDObj* obj1, mjCCDObj* obj2) {
             simplex[3].vert2);
   }
 
+  // GJK exited early; do a final separation check
+  Vertex tmp;
+  gjkSupport(&tmp, obj1, obj2, x_k, x_norm);
+  if (dot3(x_k, tmp.vert) > 0) {
+    status->separated = 1;
+  }
+
   status->nx = 1;
   status->gjk_iterations = k;
   status->nsimplex = n;
-  status->dist = x_norm;
+
+  // if 3-simplex and not separated, then the origin is contained in the simplex
+  status->dist[0] = (n == 4 && !status->separated) ? 0 : x_norm;
 }
 
 
@@ -677,6 +678,7 @@ static void S3D(mjtNum lambda[4], const mjtNum s1[3], const mjtNum s2[3],
       lambda[0] = lambda_2d[0];
       lambda[1] = lambda_2d[1];
       lambda[2] = lambda_2d[2];
+      lambda[3] = 0;
     }
   }
 }
@@ -1128,7 +1130,7 @@ static int polytope3(Polytope* pt, mjCCDStatus* status, mjCCDObj* obj1, mjCCDObj
   // TODO(kylebayes): It's possible for GJK to return a 2-simplex with the origin not contained in
   // it but within tolerance from it. In that case the hexahedron could possibly be constructed
   // that doesn't contain the origin, but nonetheless there is penetration depth.
-  if (status->dist > 10*mjMINVAL && !testTetra(v1, v2, v3, v4) && !testTetra(v1, v2, v3, v5)) {
+  if (status->dist[0] > 10*mjMINVAL && !testTetra(v1, v2, v3, v4) && !testTetra(v1, v2, v3, v5)) {
     return mjEPA_P3_MISSING_ORIGIN;
   }
 
@@ -1493,11 +1495,11 @@ static Face* epa(mjCCDStatus* status, Polytope* pt, mjCCDObj* obj1, mjCCDObj* ob
 
   status->epa_iterations = k;
   if (face) {
-    status->dist = epaWitness(pt, face, status->x1, status->x2);
+    status->dist[0] = epaWitness(pt, face, status->x1, status->x2);
     status->nx = 1;
   } else {
     status->nx = 0;
-    status->dist = 0;
+    status->dist[0] = 0;
   }
   return face;
 }
@@ -1505,70 +1507,55 @@ static Face* epa(mjCCDStatus* status, Polytope* pt, mjCCDObj* obj1, mjCCDObj* ob
 
 // ------------------------------------- MultiCCD -------------------------------------------------
 
-// compute area of a quadrilateral
-static inline mjtNum area4(const mjtNum a[3], const mjtNum b[3],
-                           const mjtNum c[3], const mjtNum d[3]) {
-  mjtNum ad[3] = {d[0] - a[0], d[1] - a[1], d[2] - a[2]};
-  mjtNum db[3] = {b[0] - d[0], b[1] - d[1], b[2] - d[2]};
-  mjtNum bc[3] = {c[0] - b[0], c[1] - b[1], c[2] - b[2]};
-  mjtNum ca[3] = {a[0] - c[0], a[1] - c[1], a[2] - c[2]};
-  mjtNum e[3], f[3], g[3];
-  cross3(e, ad, db);
-  cross3(f, bc, ca);
-  add3(g, e, f);
-  return 0.5 * norm3(g);
+// compute area of a quadrilateral (helper for hull4)
+static inline mjtNum area4(const mjtNum* hull, int a, int b, int c, int d) {
+  mjtNum ca[3], db[3], cross[3];
+  sub3(ca, hull + 3*a, hull + 3*c);
+  sub3(db, hull + 3*b, hull + 3*d);
+  cross3(cross, ca, db);
+  return 0.5 * norm3(cross);
 }
 
 
-// return pointer to next vertex in a polygon
-static inline mjtNum* next(mjtNum* polygon, int nvert, mjtNum* curr) {
-  if (curr == polygon + 3*(nvert - 1)) {
-    return polygon;
-  }
-  return curr + 3;
-}
-
-
-// prune a polygon to a maximum area convex quadrilateral
-static inline void polygonQuad(mjtNum* res[4], mjtNum* polygon, int nvert) {
-  mjtNum* a = polygon, *b = polygon + 3, *c = polygon + 6, *d = polygon + 9;
-  res[0] = a, res[1] = b, res[2] = c, res[3] = d;
-  mjtNum m = area4(a, b, c, d), m_next;
-  mjtNum* end = polygon + 3 * nvert;
-  for (; a < end; a += 3) {
+// prune a convex hull to a maximum area convex quadrilateral
+static inline void hull4(int res[4], const mjtNum* hull, int nhull) {
+  int a = 0, b = 1, c = 2, d = 3;
+  res[0] = 0, res[1] = 1, res[2] = 2, res[3] = 3;
+  mjtNum m = area4(hull, a, b, c, d), m_next;
+  for (; a < nhull; a++) {
     while (1) {
-      m_next = area4(a, b, c, next(polygon, nvert, d));
+      int d_next = (d + 1) % nhull;
+      m_next = area4(hull, a, b, c, d_next);
       if (m_next <= m) {
         break;
       }
-      m = m_next;
-      d = next(polygon, nvert, d);
+      d = d_next, m = m_next;
       res[0] = a, res[1] = b, res[2] = c, res[3] = d;
       while (1) {
-        m_next = area4(a, b, next(polygon, nvert, c), d);
+        int c_next = (c + 1) % nhull;
+        m_next = area4(hull, a, b, c_next, d);
         if (m_next <= m) {
           break;
         }
-        m = m_next;
-        c = next(polygon, nvert, c);
+        c = c_next, m = m_next;
         res[0] = a, res[1] = b, res[2] = c, res[3] = d;
       }
       while (1) {
-        m_next = area4(a, next(polygon, nvert, b), c, d);
+        int b_next = (b + 1) % nhull;
+        m_next = area4(hull, a, b_next, c, d);
         if (m_next <= m) {
           break;
         }
-        m = m_next;
-        b = next(polygon, nvert, b);
+        b = b_next, m = m_next;
         res[0] = a, res[1] = b, res[2] = c, res[3] = d;
       }
     }
     if (b == a) {
-      b = next(polygon, nvert, b);
+      b = (b + 1) % nhull;
       if (c == b) {
-        c = next(polygon, nvert, c);
+        c = (c + 1) % nhull;
         if (d == c) {
-          d = next(polygon, nvert, d);
+          d = (d + 1) % nhull;
         }
       }
     }
@@ -1599,44 +1586,39 @@ static int halfspace(const mjtNum a[3], const mjtNum n[3], const mjtNum p[3]) {
 }
 
 
-// compute the intersection of a plane with a line segment (a, b)
-static mjtNum planeIntersect(mjtNum res[3], const mjtNum pn[3], mjtNum pd,
-                             const mjtNum a[3], const mjtNum b[3]) {
-  mjtNum ab[3];
-  sub3(ab, b, a);
-  mjtNum temp = dot3(pn, ab);
-  if (temp == 0.0) return mjMAX_LIMIT;  // parallel; no intersection
-  mjtNum t = (pd - dot3(pn, a)) / temp;
-  if (t >= 0.0 && t <= 1.0) {
-    res[0] = a[0] + t*ab[0];
-    res[1] = a[1] + t*ab[1];
-    res[2] = a[2] + t*ab[2];
-  }
-  return t;
+// compute witness points on face (given by point p and normal n) from clipped vertex
+static inline mjtNum witnessOnFace(mjtNum w1[3], mjtNum w2[3], const mjtNum v[3],
+                                   const mjtNum* p, const mjtNum n[3], const mjtNum dir[3]) {
+  mjtNum d[3] = {v[0] - p[0], v[1] - p[1], v[2] - p[2]};
+  mjtNum dist = dot3(d, n);
+  addScl3(w1, v, dir, -mju_abs(dist));
+  copy3(w2, v);
+  return dist;
 }
 
 
 // clip a polygon against another polygon
 static void polygonClip(mjCCDStatus* status, const mjtNum* face1, int nface1,
                         const mjtNum* face2, int nface2, const mjtNum n[3],
-                       const mjtNum dir[3]) {
+                        const mjtNum dir[3], mjtNum* buffer, int npolygonmax) {
   // clipping face needs to be at least a triangle
   if (nface1 < 3) {
     return;
   }
+  mjtNum* dist = status->dist;
+  mjtNum* polygon = buffer;
+  mjtNum* clipped = polygon + 6 * npolygonmax;
+  mjtNum* pn = clipped + 6 * npolygonmax;
+  mjtNum* pd = pn + 3 * npolygonmax;
 
   // compute plane normal and distance to plane for each vertex
-  mjtNum pn[3 * mjMAX_POLYVERT], pd[mjMAX_POLYVERT];
   for (int i = 0; i < nface1 - 1; i++) {
     pd[i] = planeNormal(&pn[3*i], &face1[3*i], &face1[3*i + 3], n);
   }
   pd[nface1 - 1] = planeNormal(&pn[3*(nface1 - 1)], &face1[3*(nface1 - 1)], &face1[0], n);
 
   // reserve 2 * max_sides as max sides for a clipped polygon
-  mjtNum polygon1[6 * mjMAX_POLYVERT], polygon2[6 * mjMAX_POLYVERT], *polygon, *clipped;
   int npolygon = nface2, nclipped = 0;
-  polygon = polygon1;
-  clipped = polygon2;
 
   for (int i = 0; i < nface2; i++) {
     copy3(polygon + 3*i, face2 + 3*i);
@@ -1648,6 +1630,7 @@ static void polygonClip(mjCCDStatus* status, const mjtNum* face1, int nface1,
       // get edge PQ of the polygon
       mjtNum *P = polygon + 3*i;
       mjtNum *Q = (i < npolygon - 1) ? polygon + 3*(i+1) : polygon;
+      mjtNum PQ[3] = {Q[0] - P[0], Q[1] - P[1], Q[2] - P[2]};
 
       // determine if P and Q are in the halfspace of the clipping edge
       int inside1 = halfspace(face1 + e, pn + e, P);
@@ -1665,9 +1648,12 @@ static void polygonClip(mjCCDStatus* status, const mjtNum* face1, int nface1,
       }
 
       // add new vertex to clipped polygon where PQ intersects the clipping edge
-      mjtNum t = planeIntersect(clipped + 3*nclipped++, pn + e, pd[e/3], P, Q);
-      if (t < 0.0 || t > 1.0) {
-        nclipped--;  // no intersection in PQ
+      mjtNum tmp = dot3(pn + e, PQ);
+      if (tmp != 0.0) {
+        mjtNum t = (pd[e/3] - dot3(pn + e, P)) / tmp;
+        if (t >= 0.0 && t <= 1.0) {
+          addScl3(clipped + 3*nclipped++, P, PQ, t);
+        }
       }
 
       // add Q as PQ is now back inside the clipping edge
@@ -1684,6 +1670,20 @@ static void polygonClip(mjCCDStatus* status, const mjtNum* face1, int nface1,
     nclipped = 0;
   }
 
+  // prune out vertices with positive distance from the face
+  int m = npolygon;
+  npolygon = 0;
+  for (int i = 0; i < m; i++) {
+    mjtNum diff[3];
+    sub3(diff, polygon + 3*i, face1);
+    if (dot3(diff, n) <= 0) {
+      if (npolygon != i) {
+        copy3(polygon + 3*npolygon, polygon + 3*i);
+      }
+      npolygon++;
+    }
+  }
+
   if (npolygon < 1) {
     return;
   }
@@ -1691,21 +1691,11 @@ static void polygonClip(mjCCDStatus* status, const mjtNum* face1, int nface1,
   // copy final clipped polygon to status
   if (status->max_contacts < 5 && npolygon > 4) {
     status->nx = 4;
-    mjtNum* rect[4];
-    polygonQuad(rect, polygon, npolygon);
+    int idx[4];
+    hull4(idx, polygon, npolygon);
     for (int i = 0; i < 4; i++) {
-      copy3(status->x2 + 3*i, rect[i]);
-      sub3(status->x1 + 3*i, status->x2 + 3*i, dir);
-    }
-    return;
-  }
-
-  // TODO(kylebayes): Consider using a heristic to prune the polygon.
-  if (npolygon > mjMAXCONPAIR) {
-    status->nx = mjMAXCONPAIR;
-    for (int i = 0; i < 3*mjMAXCONPAIR; i += 3) {
-      copy3(status->x2 + i, polygon + i);
-      sub3(status->x1 + i, status->x2 + i, dir);
+      dist[i] = witnessOnFace(status->x1 + 3*i, status->x2 + 3*i, polygon + 3*idx[i],
+                              face1, n, dir);
     }
     return;
   }
@@ -1727,18 +1717,17 @@ static void polygonClip(mjCCDStatus* status, const mjtNum* face1, int nface1,
         }
       }
     }
-    copy3(status->x2, polygon + 3*best1);
-    sub3(status->x1, status->x2, dir);
-    copy3(status->x2 + 3, polygon + 3*best2);
-    sub3(status->x1 + 3, status->x2 + 3, dir);
+    dist[0] = witnessOnFace(status->x1, status->x2, polygon + 3*best1, face1, n, dir);
+    dist[1] = witnessOnFace(status->x1 + 3, status->x2 + 3, polygon + 3*best2, face1, n, dir);
     status->nx = 2;
     return;
   }
 
-  // no pruning needed
-  for (int i = 0; i < 3*npolygon; i += 3) {
-    copy3(status->x2 + i, polygon + i);
-    sub3(status->x1 + i, status->x2 + i, dir);
+  // no pruning needed (cap to max contacts)
+  int maxcon = sizeof(status->x2) / (3*sizeof(status->x2[0]));
+  npolygon = (npolygon < maxcon) ? npolygon : maxcon;
+  for (int i = 0; i < npolygon; i++) {
+    dist[i] = witnessOnFace(status->x1 + 3*i, status->x2 + 3*i, polygon + 3*i, face1, n, dir);
   }
   status->nx = npolygon;
 }
@@ -1775,8 +1764,8 @@ static int intersect(int res[2], const int* arr1, const int* arr2, int n, int m)
 
 
 // compute possible polygon normals of a mesh given up to 3 vertices
-static int meshNormals(mjtNum* res, int resind[3], int dim, mjCCDObj* obj,
-                      int v1, int v2, int v3) {
+static int meshNormals(mjtNum* res, int resind[3], int dim, mjCCDObj* obj, const int vi[3]) {
+  int v1 = vi[0], v2 = vi[1], v3 = vi[2];
   const int* polymap = obj->data.mesh.polymap;
   const mjtNum* polynormal = obj->data.mesh.polynormal;
 
@@ -1827,7 +1816,6 @@ static int meshNormals(mjtNum* res, int resind[3], int dim, mjCCDObj* obj,
     int v1_num = obj->data.mesh.mpolymapnum[v1];
 
     // cap number of possible faces intersecting at a vertex
-    if (v1_num > mjMAX_POLYVERT) v1_num = mjMAX_POLYVERT;
     for (int i = 0; i < v1_num; i++) {
       int index = polymap[v1_adr + i];
       const mjtNum* normal = polynormal + 3*index;
@@ -1842,7 +1830,9 @@ static int meshNormals(mjtNum* res, int resind[3], int dim, mjCCDObj* obj,
 
 // compute normal directional vectors along possible edges given by up to two vertices
 static int meshEdgeNormals(mjtNum* res, mjtNum* endverts, int dim, mjCCDObj* obj,
-                           const mjtNum v1[3], const mjtNum v2[3], int v1i, int v2i) {
+                           const mjtNum v[9], int v1i) {
+  const mjtNum* v1 = v;
+  const mjtNum* v2 = v + 3;
   // mesh data
   const mjtNum* mat = obj->mat;
   const mjtNum* pos = obj->pos;
@@ -1860,7 +1850,6 @@ static int meshEdgeNormals(mjtNum* res, mjtNum* endverts, int dim, mjCCDObj* obj
   if (dim == 1) {
     int v1_adr = obj->data.mesh.mpolymapadr[v1i];
     int v1_num = obj->data.mesh.mpolymapnum[v1i];
-    if (v1_num > mjMAX_POLYVERT) v1_num = mjMAX_POLYVERT;
 
     // loop through all faces with vertex v1
     for (int i = 0; i < v1_num; i++) {
@@ -1871,8 +1860,8 @@ static int meshEdgeNormals(mjtNum* res, mjtNum* endverts, int dim, mjCCDObj* obj
       for (int j = 0; j < nvert; j++) {
         if (polyvert[adr + j] == v1i) {
           int k = (j == 0) ? nvert - 1 : j - 1;
-          const float* v = vert + 3*polyvert[adr + k];
-          globalcoord(endverts + 3*i, mat, pos, v[0], v[1], v[2]);
+          const float* vert_k = vert + 3*polyvert[adr + k];
+          globalcoord(endverts + 3*i, mat, pos, vert_k[0], vert_k[1], vert_k[2]);
           sub3(res + 3*i, endverts + 3*i, v1);
           mju_normalize3(res + 3*i);
           break;
@@ -1880,6 +1869,18 @@ static int meshEdgeNormals(mjtNum* res, mjtNum* endverts, int dim, mjCCDObj* obj
       }
     }
     return v1_num;
+  }
+  return 0;
+}
+
+
+// try recovering the cylinder normal from vertex index
+static int cylinderNormals(mjtNum res[9], int resind[3], int dim, mjCCDObj* obj,
+                           const int vi[3], const mjtNum dir[3]) {
+  if (dim == 1) {
+    globalcoord(res, obj->mat, NULL, 0, 0, vi[0] ? -1.0 : 1.0);
+    resind[0] = vi[0];
+    return 1;
   }
   return 0;
 }
@@ -1913,7 +1914,8 @@ static int boxNormals2(mjtNum res[9], int resind[3], const mjtNum mat[9], const 
 
 // compute possible face normals of a box given up to 3 vertices
 static int boxNormals(mjtNum res[9], int resind[3], int dim, mjCCDObj* obj,
-                      int v1, int v2, int v3, const mjtNum dir[3]) {
+                      const int vi[3], const mjtNum dir[3]) {
+  int v1 = vi[0], v2 = vi[1], v3 = vi[2];
   const mjtNum* mat = obj->mat;
   if (dim == 3) {
     int c = 0;
@@ -1967,7 +1969,9 @@ static int boxNormals(mjtNum res[9], int resind[3], int dim, mjCCDObj* obj,
 
 // compute possible edge normals for box for edge collisions
 static int boxEdgeNormals(mjtNum res[9], mjtNum endverts[9], int dim, mjCCDObj* obj,
-                          const mjtNum v1[3], const mjtNum v2[3], int v1i, int v2i) {
+                          const mjtNum v[9], int v1i) {
+  const mjtNum* v1 = v;
+  const mjtNum* v2 = v + 3;
   // box data
   const mjtNum* mat = obj->mat;
   const mjtNum* pos = obj->pos;
@@ -1999,6 +2003,49 @@ static int boxEdgeNormals(mjtNum res[9], mjtNum endverts[9], int dim, mjCCDObj* 
     return 3;
   }
   return 0;
+}
+
+
+// recover edge of a cylinder from collision point
+static int cylinderEdgeNormals(mjtNum res[9], mjtNum endverts[9], int dim, mjCCDObj* obj,
+                               const mjtNum v[9], int v1i) {
+  if (dim == 1 || dim == 2) {
+    mjtNum sgn = v1i ? 1.0 : -1.0;
+    res[0] = sgn * obj->mat[2];
+    res[1] = sgn * obj->mat[5];
+    res[2] = sgn * obj->mat[8];
+
+    // compute endverts = v1 + res * 2 * half_length
+    addScl3(endverts, v, res, 2 * obj->size[1]);
+    return 1;
+  }
+  return 0;
+}
+
+
+// recover face of a cylinder (approximated as a 16-gon) from its index
+static int cylinderFace(mjtNum res[48], mjCCDObj* obj, int idx) {
+  static const mjtNum cos_16[16] = {
+    1.000000000000000,  0.923879532511287,  0.707106781186548,  0.382683432365090,
+    0.000000000000000, -0.382683432365090, -0.707106781186547, -0.923879532511287,
+   -1.000000000000000, -0.923879532511287, -0.707106781186548, -0.382683432365090,
+    0.000000000000000,  0.382683432365090,  0.707106781186547,  0.923879532511287
+  };
+  static const mjtNum sin_16[16] = {
+    0.000000000000000,  0.382683432365090,  0.707106781186547,  0.923879532511287,
+    1.000000000000000,  0.923879532511287,  0.707106781186548,  0.382683432365090,
+    0.000000000000000, -0.382683432365090, -0.707106781186547, -0.923879532511287,
+   -1.000000000000000, -0.923879532511287, -0.707106781186548, -0.382683432365090
+  };
+
+  // compute 16-gon cylinder face (size[0]: radius, size[1]: half-length)
+  mjtNum sgn = idx ? -1.0 : 1.0;
+  for (int i = 0; i < 16; i++) {
+    mjtNum x = cos_16[i] * obj->size[0];
+    mjtNum y = -sin_16[i] * obj->size[0] * sgn;  // use sgn for correct orientation
+    globalcoord(res + 3*i, obj->mat, obj->pos, x, y, sgn * obj->size[1]);
+  }
+  return 16;
 }
 
 
@@ -2059,9 +2106,6 @@ static int meshFace(mjtNum* res, mjCCDObj* obj, int idx) {
 
   int adr = obj->data.mesh.polyvertadr[idx], j = 0;
   int nvert = obj->data.mesh.polyvertnum[idx];
-  if (nvert > mjMAX_POLYVERT) {
-    nvert = mjMAX_POLYVERT;
-  }
   const float* vert = obj->data.mesh.vert;
   const int* polyvert = obj->data.mesh.polyvert + adr;
   for (int i = nvert - 1; i >= 0; i--) {
@@ -2090,8 +2134,13 @@ static inline int alignedFaces(int res[2], const mjtNum* v, int nv,
 
 // find two normals that are perpendicular to each other within a tolerance, return 1 if found
 static inline int alignedFaceEdge(int res[2], const mjtNum* edge, int nedge,
-                                  const mjtNum* face, int nface) {
+                                  const mjtNum* face, int nface, const mjtNum dir[3]) {
   for (int i = 0; i < nface; i++) {
+    // ignore faces pointing away from the collision direction (negative dot product)
+    if (dot3(face + 3*i, dir) <= mjMINVAL) {
+      continue;
+    }
+
     for (int j = 0; j < nedge; j++) {
       if (mju_abs(dot3(edge + 3*j, face + 3*i)) < mjEDGE_TOL) {
         res[0] = j;
@@ -2105,55 +2154,62 @@ static inline int alignedFaceEdge(int res[2], const mjtNum* edge, int nedge,
 
 
 // return number (1, 2 or 3) of dimensions of a simplex; reorder vertices if necessary
-static inline int simplexDim(int* v1i, int* v2i, int* v3i, mjtNum** v1, mjtNum** v2, mjtNum** v3) {
-  int val1 = *v1i;
-  int val2 = *v2i;
-  int val3 = *v3i;
-
-  if (val1 != val2) {
-    return (val3 == val1 || val3 == val2) ? 2 : 3;
-  }
-  if (val1 != val3) {
-    *v2i = *v3i;
-    *v2 = *v3;
+static inline int simplexDim(int vi[3], mjtNum v[9]) {
+  if (vi[0] == vi[1]) {
+    if (vi[0] == vi[2]) return 1;
+    vi[1] = vi[2];
+    copy3(v + 3, v + 6);
     return 2;
   }
-  return 1;
+  return (vi[2] == vi[0] || vi[2] == vi[1]) ? 2 : 3;
 }
 
 
 // recover multiple contacts from EPA polytope
-static void multicontact(Polytope* pt, Face* face, mjCCDStatus* status,
-                         mjCCDObj* obj1, mjCCDObj* obj2) {
+static void multicontact(int nmeshdegmax, int npolygonmax, uint8_t* buffer, Polytope* pt,
+                         Face* face, mjCCDStatus* status, mjCCDObj* obj1, mjCCDObj* obj2) {
   if (obj1->geom_type == mjGEOM_MESH && !obj1->data.mesh.mesh_polynum) {
     return;
   }
   if (obj2->geom_type == mjGEOM_MESH && !obj2->data.mesh.mesh_polynum) {
     return;
   }
+  if (obj1->geom_type == mjGEOM_CYLINDER || obj2->geom_type == mjGEOM_CYLINDER) {
+    nmeshdegmax = nmeshdegmax < 2 ? 2 : nmeshdegmax;
+    npolygonmax = npolygonmax < 16 ? 16 : npolygonmax;
+  }
+  if (obj1->geom_type == mjGEOM_BOX || obj2->geom_type == mjGEOM_BOX) {
+    nmeshdegmax = nmeshdegmax < 3 ? 3 : nmeshdegmax;
+    npolygonmax = npolygonmax < 4 ? 4 : npolygonmax;
+  }
 
-  mjtNum face1[mjMAX_POLYVERT * 3], face2[mjMAX_POLYVERT * 3], endverts[mjMAX_POLYVERT * 3];
-  // get vertices of faces from EPA
   int verts[3] = EPA_VERT_EXPAND(face->verts);
-  int v11i = pt->verts[verts[0]].index1;
-  int v12i = pt->verts[verts[1]].index1;
-  int v13i = pt->verts[verts[2]].index1;
-  int v21i = pt->verts[verts[0]].index2;
-  int v22i = pt->verts[verts[1]].index2;
-  int v23i = pt->verts[verts[2]].index2;
-  mjtNum* v11 = pt->verts[verts[0]].vert1;
-  mjtNum* v12 = pt->verts[verts[1]].vert1;
-  mjtNum* v13 = pt->verts[verts[2]].vert1;
-  mjtNum* v21 = pt->verts[verts[0]].vert2;
-  mjtNum* v22 = pt->verts[verts[1]].vert2;
-  mjtNum* v23 = pt->verts[verts[2]].vert2;
+  int v1i[3] = {pt->verts[verts[0]].index1, pt->verts[verts[1]].index1, pt->verts[verts[2]].index1};
+  int v2i[3] = {pt->verts[verts[0]].index2, pt->verts[verts[1]].index2, pt->verts[verts[2]].index2};
+
+  /// save relevant polytope data before overwriting buffer space
+  mjtNum v1[9], v2[9];
+  copy3(v1 + 0, pt->verts[verts[0]].vert1);
+  copy3(v1 + 3, pt->verts[verts[1]].vert1);
+  copy3(v1 + 6, pt->verts[verts[2]].vert1);
+  copy3(v2 + 0, pt->verts[verts[0]].vert2);
+  copy3(v2 + 3, pt->verts[verts[1]].vert2);
+  copy3(v2 + 6, pt->verts[verts[2]].vert2);
+
+  uint8_t* ptr = buffer;
+  int* idx1 = (int*)ptr;           ptr += align8(sizeof(int) * nmeshdegmax);
+  int* idx2 = (int*)ptr;           ptr += align8(sizeof(int) * nmeshdegmax);
+  mjtNum* n1 = (mjtNum*)ptr;       ptr += align8(sizeof(mjtNum) * 3 * nmeshdegmax);
+  mjtNum* n2 = (mjtNum*)ptr;       ptr += align8(sizeof(mjtNum) * 3 * nmeshdegmax);
+  mjtNum* endverts = (mjtNum*)ptr; ptr += align8(sizeof(mjtNum) * 3 * nmeshdegmax);
+  mjtNum* face1 = (mjtNum*)ptr;    ptr += align8(sizeof(mjtNum) * 3 * npolygonmax);
+  mjtNum* face2 = (mjtNum*)ptr;    ptr += align8(sizeof(mjtNum) * 3 * npolygonmax);
+  mjtNum* polygon = (mjtNum*)ptr;  // buffer for polygonClip
 
   // get dimensions of features of geoms 1 and 2
-  int nface1 = simplexDim(&v11i, &v12i, &v13i, &v11, &v12, &v13);
-  int nface2 = simplexDim(&v21i, &v22i, &v23i, &v21, &v22, &v23);
+  int nface1 = simplexDim(v1i, v1);
+  int nface2 = simplexDim(v2i, v2);
   int nnorms1 = 0, nnorms2 = 0;
-  mjtNum n1[3 * mjMAX_POLYVERT], n2[3 * mjMAX_POLYVERT];  // normals of possible face collisions
-  int idx1[mjMAX_POLYVERT], idx2[mjMAX_POLYVERT];         // indices of faces
 
   mjtNum dir[3], dir_neg[3];
   sub3(dir, status->x2, status->x1);
@@ -2161,14 +2217,18 @@ static void multicontact(Polytope* pt, Face* face, mjCCDStatus* status,
 
   // get all possible face normals for each geom
   if (obj1->geom_type == mjGEOM_BOX) {
-    nnorms1 = boxNormals(n1, idx1, nface1, obj1, v11i, v12i, v13i, dir_neg);
+    nnorms1 = boxNormals(n1, idx1, nface1, obj1, v1i, dir_neg);
   } else if (obj1->geom_type == mjGEOM_MESH) {
-    nnorms1 = meshNormals(n1, idx1, nface1, obj1, v11i, v12i, v13i);
+    nnorms1 = meshNormals(n1, idx1, nface1, obj1, v1i);
+  } else if (obj1->geom_type == mjGEOM_CYLINDER) {
+    nnorms1 = cylinderNormals(n1, idx1, nface1, obj1, v1i, dir_neg);
   }
   if (obj2->geom_type == mjGEOM_BOX) {
-    nnorms2 = boxNormals(n2, idx2, nface2, obj2, v21i, v22i, v23i, dir);
+    nnorms2 = boxNormals(n2, idx2, nface2, obj2, v2i, dir);
   } else if (obj2->geom_type == mjGEOM_MESH) {
-    nnorms2 = meshNormals(n2, idx2, nface2, obj2, v21i, v22i, v23i);
+    nnorms2 = meshNormals(n2, idx2, nface2, obj2, v2i);
+  } else if (obj2->geom_type == mjGEOM_CYLINDER) {
+    nnorms2 = cylinderNormals(n2, idx2, nface2, obj2, v2i, dir);
   }
 
   // determine if any two face normals match
@@ -2178,22 +2238,26 @@ static void multicontact(Polytope* pt, Face* face, mjCCDStatus* status,
     if (nface1 < 3 && nface1 <= nface2) {
       nnorms1 = 0;
       if (obj1->geom_type == mjGEOM_BOX) {
-        nnorms1 = boxEdgeNormals(n1, endverts, nface1, obj1, v11, v12, v11i, v12i);
+        nnorms1 = boxEdgeNormals(n1, endverts, nface1, obj1, v1, v1i[0]);
       } else if (obj1->geom_type == mjGEOM_MESH) {
-        nnorms1 = meshEdgeNormals(n1, endverts, nface1, obj1, v11, v12, v11i, v12i);
+        nnorms1 = meshEdgeNormals(n1, endverts, nface1, obj1, v1, v1i[0]);
+      } else if (obj1->geom_type == mjGEOM_CYLINDER) {
+        nnorms1 = cylinderEdgeNormals(n1, endverts, nface1, obj1, v1, v1i[0]);
       }
-      if (!alignedFaceEdge(res, n1, nnorms1, n2, nnorms2)) return;
+      if (!alignedFaceEdge(res, n1, nnorms1, n2, nnorms2, dir)) return;
       edgecon1 = 1;
 
     // check if face-edge collision
     } else if (nface2 < 3) {
       nnorms2 = 0;
       if (obj2->geom_type == mjGEOM_BOX) {
-        nnorms2 = boxEdgeNormals(n2, endverts, nface2, obj2, v21, v22, v21i, v22i);
+        nnorms2 = boxEdgeNormals(n2, endverts, nface2, obj2, v2, v2i[0]);
       } else if (obj2->geom_type == mjGEOM_MESH) {
-        nnorms2 = meshEdgeNormals(n2, endverts, nface2, obj2, v21, v22, v21i, v22i);
+        nnorms2 = meshEdgeNormals(n2, endverts, nface2, obj2, v2, v2i[0]);
+      } else if (obj2->geom_type == mjGEOM_CYLINDER) {
+        nnorms2 = cylinderEdgeNormals(n2, endverts, nface2, obj2, v2, v2i[0]);
       }
-      if (!alignedFaceEdge(res, n2, nnorms2, n1, nnorms1)) return;
+      if (!alignedFaceEdge(res, n2, nnorms2, n1, nnorms1, dir_neg)) return;
       edgecon2 = 1;
     } else {
       // no multi-contact
@@ -2204,7 +2268,7 @@ static void multicontact(Polytope* pt, Face* face, mjCCDStatus* status,
 
   // recover geom1 matching edge or face
   if (edgecon1) {
-    copy3(face1, pt->verts[verts[0]].vert1);
+    copy3(face1, v1);
     copy3(face1 + 3, endverts + 3*i);
     nface1 = 2;
   } else {
@@ -2214,12 +2278,15 @@ static void multicontact(Polytope* pt, Face* face, mjCCDStatus* status,
     } else if (obj1->geom_type == mjGEOM_MESH) {
       int ind = (edgecon2 ? idx1[j] : idx1[i]);
       nface1 = meshFace(face1, obj1, ind);
+    } else if (obj1->geom_type == mjGEOM_CYLINDER) {
+      int ind = (edgecon2 ? idx1[j] : idx1[i]);
+      nface1 = cylinderFace(face1, obj1, ind);
     }
   }
 
   // recover geom2 matching edge or face
   if (edgecon2) {
-    copy3(face2, pt->verts[verts[0]].vert2);
+    copy3(face2, v2);
     copy3(face2 + 3, endverts + 3*i);
     nface2 = 2;
   } else {
@@ -2227,18 +2294,18 @@ static void multicontact(Polytope* pt, Face* face, mjCCDStatus* status,
       nface2 = boxFace(face2, obj2, idx2[j]);
     } else if (obj2->geom_type == mjGEOM_MESH) {
       nface2 = meshFace(face2, obj2, idx2[j]);
+    } else if (obj2->geom_type == mjGEOM_CYLINDER) {
+      nface2 = cylinderFace(face2, obj2, idx2[j]);
     }
   }
 
-  // TODO(kylebayes): this approximates the contact direction, by scaling the face normal by the
-  // single contact direction's magnitude. This is effective, but polygonClip should compute
-  // this for each contact point.
-  mjtNum approx_dir[3];
+  // normal direction for witness recovery
+  mjtNum wit_dir[3];
 
   // face1 is an edge; clip face1 against face2
   if (edgecon1) {
-    scl3(approx_dir, n2 + 3*j, -norm3(dir));
-    polygonClip(status, face2, nface2, face1, nface1, n2 + 3*j, approx_dir);
+    scl3(wit_dir, n2 + 3*j, -1.0);
+    polygonClip(status, face2, nface2, face1, nface1, n2 + 3*j, wit_dir, polygon, npolygonmax);
     // x1 and x2 must be flipped as we flipped the faces in polygonClip
     int nx = status->nx;
     for (int k = 0; k < nx; k++) {
@@ -2252,14 +2319,14 @@ static void multicontact(Polytope* pt, Face* face, mjCCDStatus* status,
 
   // face2 is an edge; clip face2 against face1
   if (edgecon2) {
-    scl3(approx_dir, n1 + 3*j, -norm3(dir));
-    polygonClip(status, face1, nface1, face2, nface2, n1 + 3*j, approx_dir);
+    scl3(wit_dir, n1 + 3*j, -1.0);
+    polygonClip(status, face1, nface1, face2, nface2, n1 + 3*j, wit_dir, polygon, npolygonmax);
     return;
   }
 
   // face-face collision
-  scl3(approx_dir, n2 + 3*j, norm3(dir));
-  polygonClip(status, face1, nface1, face2, nface2, n1 + 3*i, approx_dir);
+  copy3(wit_dir, n2 + 3*j);
+  polygonClip(status, face1, nface1, face2, nface2, n1 + 3*i, wit_dir, polygon, npolygonmax);
 }
 
 
@@ -2279,17 +2346,34 @@ static inline void inflate(mjCCDStatus* status, mjtNum margin1, mjtNum margin2) 
     status->x2[1] -= margin2 * n[1];
     status->x2[2] -= margin2 * n[2];
   }
-  status->dist -= (margin1 + margin2);
+  status->dist[0] -= (margin1 + margin2);
 }
 
 
 // return size in bytes of the buffer needed for mjc_ccd for a given number of iterations
-size_t mjc_ccdSize(int iterations) {
-  return align8(sizeof(Vertex) * (5 + iterations))     // vertices in polytope
-         + align8(sizeof(Face) * 6 * iterations)       // faces in polytope
-         + align8(sizeof(Face*) * 6 * iterations)      // map in polytope
-         + align8(sizeof(int) * 24)                    // horizon indices
-         + align8(sizeof(int) * 24);                   // horizon edges
+size_t mjc_ccdSize(int npolygonmax, int nmeshdegmax, int iterations) {
+  size_t epa_size = align8(sizeof(Vertex) * (5 + iterations))   // vertices in polytope
+                  + align8(sizeof(Face) * 6 * iterations)       // faces in polytope
+                  + align8(sizeof(Face*) * 6 * iterations)      // map in polytope
+                  + align8(sizeof(int) * 24)                    // horizon indices
+                  + align8(sizeof(int) * 24);                   // horizon edges
+
+  // allocate room for primitive geoms (multicontact is hardwired for primitive collisions)
+  npolygonmax = npolygonmax < 16 ? 16 : npolygonmax;
+  nmeshdegmax = nmeshdegmax < 3 ? 3 : nmeshdegmax;
+  size_t multiccd_size = align8(sizeof(mjtNum) * 3 * 2 * npolygonmax)
+                       + align8(sizeof(mjtNum) * 3 * 2 * npolygonmax)
+                       + align8(sizeof(mjtNum) * 3 * npolygonmax)
+                       + align8(sizeof(mjtNum) * npolygonmax)
+                       + align8(sizeof(int) * nmeshdegmax)
+                       + align8(sizeof(int) * nmeshdegmax)
+                       + align8(sizeof(mjtNum) * 3 * nmeshdegmax)
+                       + align8(sizeof(mjtNum) * 3 * nmeshdegmax)
+                       + align8(sizeof(mjtNum) * 3 * nmeshdegmax)
+                       + align8(sizeof(mjtNum) * 3 * npolygonmax)
+                       + align8(sizeof(mjtNum) * 3 * npolygonmax);
+
+  return epa_size > multiccd_size ? epa_size : multiccd_size;
 }
 
 
@@ -2345,18 +2429,18 @@ mjtNum mjc_ccd(const mjCCDConfig* config, mjCCDStatus* status, mjCCDObj* obj1, m
     obj2->support = support2;
 
     // shallow penetration, inflate contact
-    if (status->dist > status->tolerance) {
+    if (status->dist[0] > status->tolerance) {
       inflate(status, full_margin1, full_margin2);
-      if (status->dist > status->dist_cutoff) {
-        status->dist = mjMAX_LIMIT;
+      if (status->dist[0] > status->dist_cutoff) {
+        status->dist[0] = mjMAX_LIMIT;
       }
-      return status->dist;
+      return status->dist[0];
     }
 
     // contact not needed
     if (!config->max_contacts) {
       status->nx = 0;
-      status->dist = 0;
+      status->dist[0] = 0;
       return 0;
     }
 
@@ -2369,11 +2453,12 @@ mjtNum mjc_ccd(const mjCCDConfig* config, mjCCDStatus* status, mjCCDObj* obj1, m
 
   // penetration recovery for contacts not needed
   if (!config->max_contacts) {
-    return status->dist;
+    return status->dist[0];
   }
 
-  if (status->dist <= config->tolerance && status->nsimplex > 1 && config->buffer) {
-    status->dist = 0;  // assume touching
+  if (status->dist[0] <= config->tolerance && status->nsimplex > 1
+      && config->buffer && !status->separated) {
+    status->dist[0] = 0;  // assume touching
     Polytope pt;
     pt.nfaces = pt.nmap = pt.nverts = pt.horizon.nedges = 0;
 
@@ -2405,11 +2490,18 @@ mjtNum mjc_ccd(const mjCCDConfig* config, mjCCDStatus* status, mjCCDObj* obj1, m
     if (!ret) {
       Face* face = epa(status, &pt, obj1, obj2);
       if (config->max_contacts > 1 && face) {
-        multicontact(&pt, face, status, obj1, obj2);
+        multicontact(config->nmeshdegmax, config->npolygonmax, config->buffer, &pt, face, status,
+                     obj1, obj2);
       }
     }
   }
-  return status->dist;
+  mjtNum min_dist = status->dist[0];
+  for (int i = 1; i < status->nx; i++) {
+    if (status->dist[i] < min_dist) {
+      min_dist = status->dist[i];
+    }
+  }
+  return min_dist;
 }
 
 #undef EPA_VERT_EXPAND

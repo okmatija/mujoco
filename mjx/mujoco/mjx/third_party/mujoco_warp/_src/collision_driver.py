@@ -13,13 +13,15 @@
 # limitations under the License.
 # ==============================================================================
 
-from typing import Any, Optional
+from typing import Optional
 
 import warp as wp
 
 from mujoco.mjx.third_party.mujoco_warp._src.collision_convex import convex_narrowphase
 from mujoco.mjx.third_party.mujoco_warp._src.collision_core import CollisionContext
 from mujoco.mjx.third_party.mujoco_warp._src.collision_core import create_collision_context
+from mujoco.mjx.third_party.mujoco_warp._src.collision_core import sap_binary_search
+from mujoco.mjx.third_party.mujoco_warp._src.collision_core import sap_range
 from mujoco.mjx.third_party.mujoco_warp._src.collision_flex import flex_collision
 from mujoco.mjx.third_party.mujoco_warp._src.collision_primitive import primitive_narrowphase
 from mujoco.mjx.third_party.mujoco_warp._src.collision_sdf import sdf_narrowphase
@@ -39,7 +41,7 @@ from mujoco.mjx.third_party.mujoco_warp._src.types import mat63
 from mujoco.mjx.third_party.mujoco_warp._src.warp_util import cache_kernel
 from mujoco.mjx.third_party.mujoco_warp._src.warp_util import event_scope
 
-wp.set_module_options({"enable_backward": False})
+wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 
 # Corresponding table to MuJoCo's mjCOLLISIONFUNC table in engine_collision_driver.c
 MJ_COLLISION_TABLE = {
@@ -81,7 +83,6 @@ MJ_COLLISION_TABLE = {
 
 # TODO(team): Implement narrowphase flex collision support for:
 #             - HFIELD
-#             - ELLIPSOID
 #             - SDF
 MJ_FLEX_COLLISION_TABLE = {
   (GeomType.PLANE, GeomType.FLEX): CollisionType.PRIMITIVE,
@@ -90,6 +91,7 @@ MJ_FLEX_COLLISION_TABLE = {
   (GeomType.BOX, GeomType.FLEX): CollisionType.PRIMITIVE,
   (GeomType.CYLINDER, GeomType.FLEX): CollisionType.PRIMITIVE,
   (GeomType.MESH, GeomType.FLEX): CollisionType.CONVEX,
+  (GeomType.ELLIPSOID, GeomType.FLEX): CollisionType.CONVEX,
 }
 
 
@@ -369,21 +371,9 @@ def _add_geom_pair(
   collision_worldid_out[pairid] = worldid
 
 
-@wp.func
-def _binary_search(values: wp.array[Any], value: Any, lower: int, upper: int) -> int:
-  while lower < upper:
-    mid = (lower + upper) >> 1
-    if values[mid] > value:
-      upper = mid
-    else:
-      lower = mid + 1
-
-  return upper
-
-
 @cache_kernel
 def _sap_project(opt_broadphase: int):
-  @wp.kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def sap_project(
     # Model:
     ngeom: int,
@@ -430,31 +420,6 @@ def _sap_project(opt_broadphase: int):
   return sap_project
 
 
-@wp.kernel
-def _sap_range(
-  # Model:
-  ngeom: int,
-  # In:
-  projection_lower_in: wp.array2d[float],
-  projection_upper_in: wp.array2d[float],
-  sort_index_in: wp.array2d[int],
-  # Out:
-  range_out: wp.array2d[int],
-):
-  worldid, geomid = wp.tid()
-
-  # current bounding geom
-  idx = sort_index_in[worldid, geomid]
-
-  upper = projection_upper_in[worldid, idx]
-
-  limit = _binary_search(projection_lower_in[worldid], upper, geomid + 1, ngeom)
-  limit = wp.min(ngeom - 1, limit)
-
-  # range of geoms for the sweep and prune process
-  range_out[worldid, geomid] = limit - geomid
-
-
 @cache_kernel
 def _sap_broadphase(
   opt_broadphase_filter: int,
@@ -465,7 +430,7 @@ def _sap_broadphase(
   enable_sleep: bool = False,
   incremental: bool = False,
 ):
-  @wp.kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def kernel(
     # Model:
     ngeom: int,
@@ -501,7 +466,7 @@ def _sap_broadphase(
 
     while worldgeomid < nworkpackages:
       # binary search to find current and next geom pair indices
-      i = _binary_search(cumulative_sum_in, worldgeomid, 0, nworldgeom)
+      i = sap_binary_search(cumulative_sum_in, worldgeomid, 0, nworldgeom)
       j = i + worldgeomid + 1
 
       if i > 0:
@@ -573,7 +538,7 @@ def _sap_broadphase(
 
 @cache_kernel
 def _segmented_sort(tile_size: int):
-  @wp.kernel(module="unique")
+  @wp.kernel(module="unique", grid_stride=False)
   def segmented_sort(
     # In:
     projection_lower_in: wp.array2d[float],
@@ -670,7 +635,7 @@ def sap_broadphase(
     )
 
   wp.launch(
-    kernel=_sap_range,
+    kernel=sap_range,
     dim=(d.nworld, m.ngeom),
     inputs=[m.ngeom, projection_lower.reshape((-1, m.ngeom)), projection_upper, sort_index.reshape((-1, m.ngeom))],
     outputs=[range_],
@@ -726,7 +691,7 @@ def _nxn_broadphase(
   enable_sleep: bool = False,
   incremental: bool = False,
 ):
-  @wp.kernel(module="unique", enable_backward=False)
+  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
   def kernel(
     # Model:
     geom_type: wp.array[int],

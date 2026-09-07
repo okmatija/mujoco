@@ -29,10 +29,9 @@ from mujoco.mjx.third_party.mujoco_warp._src.types import GainType
 from mujoco.mjx.third_party.mujoco_warp._src.types import IntegratorType
 from mujoco.mjx.third_party.mujoco_warp._src.types import Model
 from mujoco.mjx.third_party.mujoco_warp._src.types import vec10
-from mujoco.mjx.third_party.mujoco_warp._src.types import vec10f
 from mujoco.mjx.third_party.mujoco_warp._src.warp_util import event_scope
 
-wp.set_module_options({"enable_backward": False})
+wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 
 
 @wp.kernel
@@ -42,16 +41,17 @@ def _qderiv_actuator_passive_vel(
   actuator_dyntype: wp.array[int],
   actuator_gaintype: wp.array[int],
   actuator_biastype: wp.array[int],
+  actuator_ctrlspec: wp.array[int],
   actuator_actadr: wp.array[int],
   actuator_actnum: wp.array[int],
-  actuator_forcelimited: wp.array[bool],
+  actuator_dynprm: wp.array2d[vec10],
+  actuator_gainprm: wp.array2d[vec10],
+  actuator_biasprm: wp.array2d[vec10],
   actuator_actlimited: wp.array[bool],
-  actuator_dynprm: wp.array2d[vec10f],
-  actuator_gainprm: wp.array2d[vec10f],
-  actuator_biasprm: wp.array2d[vec10f],
-  actuator_actearly: wp.array[bool],
-  actuator_forcerange: wp.array2d[wp.vec2],
   actuator_actrange: wp.array2d[wp.vec2],
+  actuator_actearly: wp.array[bool],
+  actuator_forcelimited: wp.array[bool],
+  actuator_forcerange: wp.array2d[wp.vec2],
   # Data in:
   act_in: wp.array2d[float],
   ctrl_in: wp.array2d[float],
@@ -76,12 +76,11 @@ def _qderiv_actuator_passive_vel(
     te = dynprm[0]
 
     # controller velocity derivative: dV/dω
-    input_mode = int(gainprm[8])
     dVdw = 0.0
-    if input_mode == 1:
-      dVdw = -gainprm[6]  # position: -kd
-    elif input_mode == 2:
-      dVdw = -gainprm[4]  # velocity: -kp
+    if (actuator_ctrlspec[actid] & 7) != 0:
+      R = wp.max(MJ_MINVAL, gainprm[0])
+      K = gainprm[1]
+      dVdw = -gainprm[6] * R / K + K
 
     if te > 0.0:
       # stateful current with actearly: d(K*next_act)/dω
@@ -1129,26 +1128,27 @@ def deriv_smooth_vel(m: Model, d: Data, out: wp.array2d[float]):
   if ~(m.opt.disableflags & (DisableBit.ACTUATION | DisableBit.DAMPER)):
     # TODO(team): only clear elements not set by _qderiv_actuator_passive
     out.zero_()
-    if m.nu > 0 and not (m.opt.disableflags & DisableBit.ACTUATION):
-      vel = wp.empty((d.nworld, m.nu), dtype=float)
+    if m.nactuator > 0 and not (m.opt.disableflags & DisableBit.ACTUATION):
+      vel = wp.empty((d.nworld, m.nactuator), dtype=float)
       wp.launch(
         _qderiv_actuator_passive_vel,
-        dim=(d.nworld, m.nu),
+        dim=(d.nworld, m.nactuator),
         inputs=[
           m.opt.timestep,
           m.actuator_dyntype,
           m.actuator_gaintype,
           m.actuator_biastype,
+          m.actuator_ctrlspec,
           m.actuator_actadr,
           m.actuator_actnum,
-          m.actuator_forcelimited,
-          m.actuator_actlimited,
           m.actuator_dynprm,
           m.actuator_gainprm,
           m.actuator_biasprm,
-          m.actuator_actearly,
-          m.actuator_forcerange,
+          m.actuator_actlimited,
           m.actuator_actrange,
+          m.actuator_actearly,
+          m.actuator_forcelimited,
+          m.actuator_forcerange,
           d.act,
           d.ctrl,
           d.act_dot,
@@ -1159,7 +1159,7 @@ def deriv_smooth_vel(m: Model, d: Data, out: wp.array2d[float]):
       # out (qDeriv) is in M-structure.
       wp.launch(
         _qderiv_actuator_passive_actuation_sparse,
-        dim=(d.nworld, m.nu),
+        dim=(d.nworld, m.nactuator),
         inputs=[
           m.M_elemid,
           d.moment_rownnz,

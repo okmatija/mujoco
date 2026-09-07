@@ -43,7 +43,8 @@ int mju_cholFactor(mjtNum* mat, int n, mjtNum mindiag) {
     }
 
     // correct diagonal values below threshold
-    if (tmp < mindiag) {
+    int deficient = tmp < mindiag;
+    if (deficient) {
       tmp = mindiag;
       rank--;
     }
@@ -52,9 +53,16 @@ int mju_cholFactor(mjtNum* mat, int n, mjtNum mindiag) {
     mat[j*(n+1)] = mju_sqrt(tmp);
 
     // process off-diagonal entries
-    tmp = 1/mat[j*(n+1)];
-    for (int i=j+1; i < n; i++) {
-      mat[i*n+j] = (mat[i*n+j] - mju_dot(mat+i*n, mat+j*n, j)) * tmp;
+    if (deficient) {
+      // clear off-diagonals if deficient
+      for (int i=j+1; i < n; i++) {
+        mat[i*n+j] = 0;
+      }
+    } else {
+      tmp = 1/mat[j*(n+1)];
+      for (int i=j+1; i < n; i++) {
+        mat[i*n+j] = (mat[i*n+j] - mju_dot(mat+i*n, mat+j*n, j)) * tmp;
+      }
     }
   }
 
@@ -192,16 +200,19 @@ int mju_cholFactorSymbolic(int* restrict L_colind, int* restrict L_rownnz, int* 
                            int* restrict LT_rowadr, int* restrict LT_map,
                            const int* rownnz, const int* rowadr, const int* colind, int n,
                            mjData* d) {
-  mj_markStack(d);
-  int* restrict parent = mjSTACKALLOC(d, n, int);
-  int* restrict flag = mjSTACKALLOC(d, n, int);
+  // d supplies stack scratch; if NULL, scratch is heap-allocated
+  if (d) {
+    mj_markStack(d);
+  }
+  int* restrict parent = d ? mjSTACKALLOC(d, n, int) : (int*) mju_malloc(sizeof(int)*n);
+  int* restrict flag = d ? mjSTACKALLOC(d, n, int) : (int*) mju_malloc(sizeof(int)*n);
   int* restrict cursor = NULL;
   int* LT_write = NULL;
 
   // filling phase: initialize write positions
   if (L_colind) {
-    cursor = mjSTACKALLOC(d, n, int);
-    LT_write = mjSTACKALLOC(d, n, int);
+    cursor = d ? mjSTACKALLOC(d, n, int) : (int*) mju_malloc(sizeof(int)*n);
+    LT_write = d ? mjSTACKALLOC(d, n, int) : (int*) mju_malloc(sizeof(int)*n);
     for (int r = 0; r < n; r++) {
       cursor[r] = L_rowadr[r] + L_rownnz[r] - 2;  // end of row r (before diagonal)
       LT_write[r] = LT_rowadr[r];                 // start of LT row r
@@ -270,7 +281,14 @@ int mju_cholFactorSymbolic(int* restrict L_colind, int* restrict L_rownnz, int* 
     }
   }
 
-  mj_freeStack(d);
+  if (d) {
+    mj_freeStack(d);
+  } else {
+    mju_free(parent);
+    mju_free(flag);
+    mju_free(cursor);
+    mju_free(LT_write);
+  }
 
   // counting phase: compute row addresses, add up total non-zeros
   int nnz = 0;
@@ -296,13 +314,10 @@ int mju_cholFactorNumeric(mjtNum* restrict L, int n, mjtNum mindiag,
                           const int* LT_rownnz, const int* LT_rowadr, const int* LT_colind,
                           const int* LT_map, const mjtNum* H,
                           const int* H_rownnz, const int* H_rowadr, const int* H_colind,
-                          mjData* d) {
+                          mjtNum* scratch) {
   int rank = n;
 
-  // single-row dense accumulator
-  mj_markStack(d);
-  mjtNum* restrict dense = mjSTACKALLOC(d, n, mjtNum);
-  mju_zero(dense, n);
+  mjtNum* restrict dense = scratch;
 
   // backpass over rows
   for (int r = n - 1; r >= 0; r--) {
@@ -361,7 +376,6 @@ int mju_cholFactorNumeric(mjtNum* restrict L, int n, mjtNum mindiag,
     }
   }
 
-  mj_freeStack(d);
   return rank;
 }
 
@@ -413,7 +427,7 @@ void mju_cholSolveSparse(mjtNum* res, const mjtNum* mat, const mjtNum* vec, int 
 int mju_cholUpdateSparse(mjtNum* restrict mat, const mjtNum* restrict x, int n, int flg_plus,
                          const int* restrict rownnz, const int* restrict rowadr,
                          const int* restrict colind, int x_nnz, const int* restrict x_ind,
-                         mjData* d) {
+                         mjtNum* scratch) {
   // early return if x is empty
   if (x_nnz == 0) {
     return n;
@@ -422,9 +436,8 @@ int mju_cholUpdateSparse(mjtNum* restrict mat, const mjtNum* restrict x, int n, 
   // get starting row: last non-zero entry in x
   int start = x_ind[x_nnz - 1];
 
-  // allocate dense accumulator for x
-  mj_markStack(d);
-  mjtNum* restrict dense = mjSTACKALLOC(d, start + 1, mjtNum);
+  // dense accumulator for x, cleared over the range the backpass touches
+  mjtNum* restrict dense = scratch;
   mju_zero(dense, start + 1);
 
   // scatter x into dense
@@ -468,7 +481,6 @@ int mju_cholUpdateSparse(mjtNum* restrict mat, const mjtNum* restrict x, int n, 
     }
   }
 
-  mj_freeStack(d);
   return rank;
 }
 
@@ -830,6 +842,85 @@ void mju_solveLU(mjtNum* restrict x, const mjtNum* LU, const mjtNum* b, const in
       x[i] -= LU[i*n+j] * x[j];
     }
     x[i] /= LU[i*n+i];
+  }
+}
+
+
+// 6x6 specialization of mju_factorLU: same algorithm with compile-time size,
+// allowing full unrolling; produces identical results
+int mju_factorLU6(mjtNum A[36], int pivot[6]) {
+  for (int k=0; k < 6; k++) {
+    // initialize pivot
+    pivot[k] = k;
+
+    // find pivot: max absolute value in column k, rows k..n-1
+    mjtNum maxval = mju_abs(A[k*6+k]);
+    int maxrow = k;
+    for (int i=k+1; i < 6; i++) {
+      mjtNum val = mju_abs(A[i*6+k]);
+      if (val > maxval) {
+        maxval = val;
+        maxrow = i;
+      }
+    }
+
+    // check singularity
+    if (maxval < mjMINVAL) {
+      return 0;
+    }
+
+    // swap rows k and maxrow
+    if (maxrow != k) {
+      pivot[k] = maxrow;
+      for (int j=0; j < 6; j++) {
+        mjtNum tmp = A[k*6+j];
+        A[k*6+j] = A[maxrow*6+j];
+        A[maxrow*6+j] = tmp;
+      }
+    }
+
+    // compute multipliers and update trailing submatrix
+    mjtNum diaginv = 1.0 / A[k*6+k];
+    for (int i=k+1; i < 6; i++) {
+      A[i*6+k] *= diaginv;
+      mjtNum Aik = A[i*6+k];
+      for (int j=k+1; j < 6; j++) {
+        A[i*6+j] -= Aik * A[k*6+j];
+      }
+    }
+  }
+
+  return 1;
+}
+
+
+// solve A*x = b given 6x6 LU factorization from mju_factorLU6
+void mju_solveLU6(mjtNum x[6], const mjtNum LU[36], const mjtNum b[6], const int pivot[6]) {
+  for (int i=0; i < 6; i++) {
+    x[i] = b[i];
+  }
+
+  // apply row permutation and forward substitution: solve L*y = P*b
+  for (int i=0; i < 6; i++) {
+    // apply pivot swap
+    if (pivot[i] != i) {
+      mjtNum tmp = x[i];
+      x[i] = x[pivot[i]];
+      x[pivot[i]] = tmp;
+    }
+
+    // subtract known terms
+    for (int j=0; j < i; j++) {
+      x[i] -= LU[i*6+j] * x[j];
+    }
+  }
+
+  // back substitution: solve U*x = y
+  for (int i=6-1; i >= 0; i--) {
+    for (int j=i+1; j < 6; j++) {
+      x[i] -= LU[i*6+j] * x[j];
+    }
+    x[i] /= LU[i*6+i];
   }
 }
 

@@ -64,6 +64,15 @@
   #define mjUNLIKELY(x) (x)
 #endif
 
+// Thread-local storage.
+#if !defined(mjTHREADLOCAL)
+  #ifdef _MSC_VER
+    #define mjTHREADLOCAL __declspec(thread)
+  #else
+    #define mjTHREADLOCAL _Thread_local
+  #endif
+#endif
+
 // Define ADDRESS_SANITIZER if implied by other macros.
 #if !defined(ADDRESS_SANITIZER)
   #if defined(__SANITIZE_ADDRESS__)
@@ -73,6 +82,10 @@
       #define ADDRESS_SANITIZER
     #endif
   #endif
+#endif
+
+#if defined(ADDRESS_SANITIZER) && !defined(_MSC_VER)
+  #define mjUSEASAN
 #endif
 
 // Atomics helper for size_t.
@@ -103,7 +116,7 @@
 extern "C" {
 #endif
 
-#ifdef ADDRESS_SANITIZER
+#ifdef mjUSEASAN
 int mj__comparePcFuncName(void* pc1, void* pc2);
 const char* mj__getPcDebugInfo(void* pc);
 #endif

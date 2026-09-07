@@ -43,7 +43,7 @@ from mujoco.mjx.third_party.mujoco_warp._src.types import JointType
 from mujoco.mjx.third_party.mujoco_warp._src.types import Model
 from mujoco.mjx.third_party.mujoco_warp._src.types import OverflowType
 from mujoco.mjx.third_party.mujoco_warp._src.types import TrnType
-from mujoco.mjx.third_party.mujoco_warp._src.types import vec10f
+from mujoco.mjx.third_party.mujoco_warp._src.types import vec10
 from mujoco.mjx.third_party.mujoco_warp._src.warp_util import cache_kernel
 from mujoco.mjx.third_party.mujoco_warp._src.warp_util import event_scope
 
@@ -138,10 +138,10 @@ def _next_activation(
   actuator_dyntype: wp.array[int],
   actuator_actadr: wp.array[int],
   actuator_actnum: wp.array[int],
+  actuator_dynprm: wp.array2d[vec10],
+  actuator_gainprm: wp.array2d[vec10],
+  actuator_biasprm: wp.array2d[vec10],
   actuator_actlimited: wp.array[bool],
-  actuator_dynprm: wp.array2d[vec10f],
-  actuator_gainprm: wp.array2d[vec10f],
-  actuator_biasprm: wp.array2d[vec10f],
   actuator_actrange: wp.array2d[wp.vec2],
   # Data in:
   act_in: wp.array2d[float],
@@ -219,7 +219,7 @@ def _next_activation(
 
 
 @cache_kernel
-def _next_time_builder(warn_overflow: bool):
+def _next_time_builder(warn_overflow: int):
   @wp.kernel(module="unique", enable_backward=False)
   def _next_time(
     # Model:
@@ -245,29 +245,45 @@ def _next_time_builder(warn_overflow: bool):
     nefc = nefc_in[worldid]
 
     if nefc > njmax_in:
-      if wp.static(warn_overflow):
-        wp.printf("nefc overflow - please increase njmax to %u\n", nefc)
+      if wp.static(bool(warn_overflow & OverflowType.NEFC)):
+        wp.printf(
+          "nefc overflow - please increase njmax beyond %u\n"
+          "To disable the print warning: m.opt.warn_overflow &= ~mjw.OverflowType.NEFC (or = 0 for all)\n",
+          njmax_in,
+        )
       overflow_out[worldid] = overflow_out[worldid] | OverflowType.NEFC
     elif nefc > 0 and is_sparse:
       efcid = wp.min(nefc, njmax_in) - 1
       efc_nnz = efc_J_rowadr_in[worldid, efcid] + efc_J_rownnz_in[worldid, efcid]
       if efc_nnz > njmax_nnz_in:
-        if wp.static(warn_overflow):
-          wp.printf("njmax_nnz overflow - please increase njmax_nnz to %u\n", efc_nnz)
+        if wp.static(bool(warn_overflow & OverflowType.NJMAX_NNZ)):
+          wp.printf(
+            "njmax_nnz overflow - please increase njmax_nnz beyond %u\n"
+            "To disable the print warning: m.opt.warn_overflow &= ~mjw.OverflowType.NJMAX_NNZ (or = 0 for all)\n",
+            njmax_nnz_in,
+          )
         overflow_out[worldid] = overflow_out[worldid] | OverflowType.NJMAX_NNZ
 
     ncollision = ncollision_in[0]
     if ncollision > naconmax_in:
-      if worldid == 0 and wp.static(warn_overflow):
-        nconmax = int(wp.ceil(float(ncollision) / float(nworld_in)))
-        wp.printf("broadphase overflow - please increase nconmax to %u or naconmax to %u\n", nconmax, ncollision)
+      if worldid == 0 and wp.static(bool(warn_overflow & OverflowType.BROADPHASE)):
+        wp.printf(
+          "broadphase overflow - please increase nconmax beyond %u or naconmax beyond %u\n"
+          "To disable the print warning: m.opt.warn_overflow &= ~mjw.OverflowType.BROADPHASE (or = 0 for all)\n",
+          naconmax_in // nworld_in,
+          naconmax_in,
+        )
       overflow_out[worldid] = overflow_out[worldid] | OverflowType.BROADPHASE
 
     nacon = nacon_in[0]
     if nacon > naconmax_in:
-      if worldid == 0 and wp.static(warn_overflow):
-        nconmax = int(wp.ceil(float(nacon) / float(nworld_in)))
-        wp.printf("narrowphase overflow - please increase nconmax to %u or naconmax to %u\n", nconmax, nacon)
+      if worldid == 0 and wp.static(bool(warn_overflow & OverflowType.NARROWPHASE)):
+        wp.printf(
+          "narrowphase overflow - please increase nconmax beyond %u or naconmax beyond %u\n"
+          "To disable the print warning: m.opt.warn_overflow &= ~mjw.OverflowType.NARROWPHASE (or = 0 for all)\n",
+          naconmax_in // nworld_in,
+          naconmax_in,
+        )
       overflow_out[worldid] = overflow_out[worldid] | OverflowType.NARROWPHASE
 
   return _next_time
@@ -286,10 +302,10 @@ def _advance(m: Model, d: Data, qacc: wp.array, qvel: Optional[wp.array] = None)
       m.actuator_dyntype,
       m.actuator_actadr,
       m.actuator_actnum,
-      m.actuator_actlimited,
       m.actuator_dynprm,
       m.actuator_gainprm,
       m.actuator_biasprm,
+      m.actuator_actlimited,
       m.actuator_actrange,
       d.act,
       d.act_dot,
@@ -321,7 +337,7 @@ def _advance(m: Model, d: Data, qacc: wp.array, qvel: Optional[wp.array] = None)
   history.insert_ctrl_history(m, d)
 
   wp.launch(
-    _next_time_builder(bool(m.opt.warn_overflow)),
+    _next_time_builder(int(m.opt.warn_overflow)),
     dim=d.nworld,
     inputs=[
       m.opt.timestep,
@@ -451,10 +467,10 @@ def _rk_perturb_state(
         m.actuator_dyntype,
         m.actuator_actadr,
         m.actuator_actnum,
-        m.actuator_actlimited,
         m.actuator_dynprm,
         m.actuator_gainprm,
         m.actuator_biasprm,
+        m.actuator_actlimited,
         m.actuator_actrange,
         act_t0,
         d.act_dot,
@@ -613,13 +629,12 @@ def implicit(m: Model, d: Data):
 
 
 @event_scope
-def fwd_position(m: Model, d: Data, factorize: bool = True):
-  """Position-dependent computations.
+def fwd_kinematics(m: Model, d: Data):
+  """Kinematics-dependent computations.
 
   Args:
     m: The model containing kinematic and dynamic information.
     d: The data object containing the current state and output arrays.
-    factorize: Flag to factorize interia matrix.
   """
   smooth.kinematics(m, d)
   smooth.com_pos(m, d)
@@ -628,10 +643,23 @@ def fwd_position(m: Model, d: Data, factorize: bool = True):
   smooth.tendon(m, d)
 
   sleep_enabled = bool(m.opt.enableflags & EnableBit.SLEEP) and not bool(m.opt.disableflags & DisableBit.ISLAND)
-
   if sleep_enabled and m.ntendon > 0:
     sleep.wake_tendon(m, d)
     sleep.update_sleep_trees(m, d)
+
+
+@event_scope
+def fwd_position(m: Model, d: Data, factorize: bool = True):
+  """Position-dependent computations.
+
+  Args:
+    m: The model containing kinematic and dynamic information.
+    d: The data object containing the current state and output arrays.
+    factorize: Flag to factorize inertia matrix.
+  """
+  fwd_kinematics(m, d)
+
+  sleep_enabled = bool(m.opt.enableflags & EnableBit.SLEEP) and not bool(m.opt.disableflags & DisableBit.ISLAND)
 
   smooth.crb(m, d)
   smooth.tendon_armature(m, d)
@@ -722,7 +750,7 @@ def fwd_velocity(m: Model, d: Data):
   """Velocity-dependent computations."""
   wp.launch(
     _actuator_velocity,
-    dim=(d.nworld, m.nu),
+    dim=(d.nworld, m.nactuator),
     inputs=[d.qvel, d.moment_rownnz, d.moment_rowadr, d.moment_colind, d.actuator_moment],
     outputs=[d.actuator_velocity],
     block_dim=m.block_dim.actuator_velocity,
@@ -749,18 +777,21 @@ def _actuator_force(
   actuator_dyntype: wp.array[int],
   actuator_gaintype: wp.array[int],
   actuator_biastype: wp.array[int],
+  actuator_ctrladr: wp.array[int],
+  actuator_ctrlnum: wp.array[int],
+  actuator_ctrlspec: wp.array[int],
   actuator_actadr: wp.array[int],
   actuator_actnum: wp.array[int],
-  actuator_ctrllimited: wp.array[bool],
-  actuator_forcelimited: wp.array[bool],
+  actuator_dynprm: wp.array2d[vec10],
+  actuator_gainprm: wp.array2d[vec10],
+  actuator_biasprm: wp.array2d[vec10],
   actuator_actlimited: wp.array[bool],
-  actuator_dynprm: wp.array2d[vec10f],
-  actuator_gainprm: wp.array2d[vec10f],
-  actuator_biasprm: wp.array2d[vec10f],
-  actuator_actearly: wp.array[bool],
-  actuator_ctrlrange: wp.array2d[wp.vec2],
-  actuator_forcerange: wp.array2d[wp.vec2],
   actuator_actrange: wp.array2d[wp.vec2],
+  actuator_actearly: wp.array[bool],
+  actuator_forcelimited: wp.array[bool],
+  actuator_forcerange: wp.array2d[wp.vec2],
+  actuator_ctrllimited: wp.array[bool],
+  actuator_ctrlrange: wp.array2d[wp.vec2],
   actuator_acc0: wp.array2d[float],
   actuator_lengthrange: wp.array2d[wp.vec2],
   # Data in:
@@ -778,12 +809,16 @@ def _actuator_force(
 
   actuator_ctrlrange_id = worldid % actuator_ctrlrange.shape[0]
 
-  ctrl = ctrl_in[worldid, uid]
-
-  if actuator_ctrllimited[uid] and not dsbl_clampctrl:
-    ctrlrange = actuator_ctrlrange[actuator_ctrlrange_id, uid]
-    ctrl = wp.clamp(ctrl, ctrlrange[0], ctrlrange[1])
+  uadr = actuator_ctrladr[uid]
+  ctrlnum = actuator_ctrlnum[uid]
+  ctrl = 0.0
+  if ctrlnum > 0:
+    ctrl = ctrl_in[worldid, uadr]
+    if actuator_ctrllimited[uadr] and not dsbl_clampctrl:
+      ctrlrange = actuator_ctrlrange[actuator_ctrlrange_id, uadr]
+      ctrl = wp.clamp(ctrl, ctrlrange[0], ctrlrange[1])
   ctrl_act = ctrl
+  u_first = ctrl
 
   act_first = actuator_actadr[uid]
   if na and act_first >= 0:
@@ -812,20 +847,18 @@ def _actuator_force(
         u_prev = act_in[worldid, adr]
         slew_s = dynprm[7]
         slew = slew_s * opt_timestep[worldid % opt_timestep.shape[0]]
-        u_eff = wp.clamp(ctrl, u_prev - slew, u_prev + slew)
+        u_eff = wp.clamp(u_first, u_prev - slew, u_prev + slew)
         act_dot = (u_eff - u_prev) / opt_timestep[worldid % opt_timestep.shape[0]]
         act_dot_out[worldid, adr] = act_dot
-        ctrl = u_eff
+        u_first = u_eff
         adr += 1
 
       # integral
+      x_I = 0.0
       if slots[1] >= 0:
         x_I = act_in[worldid, adr]
-        input_mode = int(gainprm[8])
         Imax = dynprm[8]
-        act_dot = ctrl
-        if input_mode == 1:
-          act_dot = ctrl - actuator_length_in[worldid, uid]
+        act_dot = u_first - actuator_length_in[worldid, uid]
 
         if Imax > 0.0:
           if x_I >= Imax:
@@ -837,13 +870,19 @@ def _actuator_force(
         adr += 1
 
       # voltage
-      V = util_misc.dcmotor_voltage(
-        ctrl,
-        actuator_length_in[worldid, uid],
-        actuator_velocity_in[worldid, uid],
-        x_I,
-        gainprm,
-      )
+      V = 0.0
+      if ctrlnum > 0:
+        V = util_misc.dcmotor_voltage(
+          ctrl_in,
+          worldid,
+          uadr,
+          actuator_ctrlspec[uid],
+          u_first,
+          actuator_length_in[worldid, uid],
+          actuator_velocity_in[worldid, uid],
+          x_I,
+          gainprm,
+        )
 
       # temperature
       R = gainprm[0]
@@ -955,6 +994,7 @@ def _actuator_force(
   # gain
   gaintype = actuator_gaintype[uid]
   gainprm = actuator_gainprm[worldid % actuator_gainprm.shape[0], uid]
+  dynprm = actuator_dynprm[worldid % actuator_dynprm.shape[0], uid]
 
   gain = 0.0
   if gaintype == GainType.FIXED:
@@ -970,27 +1010,40 @@ def _actuator_force(
     K = gainprm[1]
     te = dynprm[0]
 
-    slots = util_misc.dcmotor_slots(dynprm, gainprm)
-    adr = act_first
-
-    if slots[2] >= 0:
-      T = act_in[worldid, adr + slots[2]]
-      alpha = gainprm[2]
-      T0 = gainprm[3]
-      Ta = dynprm[4]
-      R *= 1.0 + alpha * (T + Ta - T0)
+    if na and act_first >= 0:
+      slots = util_misc.dcmotor_slots(dynprm, gainprm)
+      adr = act_first
+      if slots[2] >= 0:
+        T = act_in[worldid, adr + slots[2]]
+        alpha = gainprm[2]
+        T0 = gainprm[3]
+        Ta = dynprm[4]
+        R *= 1.0 + alpha * (T + Ta - T0)
 
     gain = K if te > 0.0 else K / wp.max(MJ_MINVAL, R)
 
     if te <= 0.0:
-      input_mode = int(gainprm[8])
-      if input_mode > 0:
+      if ctrlnum == 0:
+        ctrl_act = 0.0
+      elif (actuator_ctrlspec[uid] & 7) != 0:
         x_I = 0.0
-        if slots[1] >= 0:
-          x_I = act_in[worldid, adr + slots[1]]
-        ctrl_act = util_misc.dcmotor_voltage(ctrl, length, velocity, x_I, gainprm)
+        if na and act_first >= 0:
+          slots = util_misc.dcmotor_slots(dynprm, gainprm)
+          if slots[1] >= 0:
+            x_I = act_in[worldid, act_first + slots[1]]
+        ctrl_act = util_misc.dcmotor_voltage(
+          ctrl_in,
+          worldid,
+          uadr,
+          actuator_ctrlspec[uid],
+          u_first,
+          length,
+          velocity,
+          x_I,
+          gainprm,
+        )
       else:
-        ctrl_act = ctrl
+        ctrl_act = u_first
   # GainType.USER: gain stays 0, modified by act_gain_callback
 
   # bias
@@ -1139,7 +1192,7 @@ def _qfrc_actuator_gravcomp_limits(
 @event_scope
 def fwd_actuation(m: Model, d: Data):
   """Actuation-dependent computations."""
-  if not m.nu or (m.opt.disableflags & DisableBit.ACTUATION):
+  if not m.nactuator or (m.opt.disableflags & DisableBit.ACTUATION):
     d.act_dot.zero_()
     d.qfrc_actuator.zero_()
     d.actuator_force.zero_()
@@ -1154,25 +1207,28 @@ def fwd_actuation(m: Model, d: Data):
 
   wp.launch(
     _actuator_force,
-    dim=(d.nworld, m.nu),
+    dim=(d.nworld, m.nactuator),
     inputs=[
       m.na,
       m.opt.timestep,
       m.actuator_dyntype,
       m.actuator_gaintype,
       m.actuator_biastype,
+      m.actuator_ctrladr,
+      m.actuator_ctrlnum,
+      m.actuator_ctrlspec,
       m.actuator_actadr,
       m.actuator_actnum,
-      m.actuator_ctrllimited,
-      m.actuator_forcelimited,
-      m.actuator_actlimited,
       m.actuator_dynprm,
       m.actuator_gainprm,
       m.actuator_biasprm,
-      m.actuator_actearly,
-      m.actuator_ctrlrange,
-      m.actuator_forcerange,
+      m.actuator_actlimited,
       m.actuator_actrange,
+      m.actuator_actearly,
+      m.actuator_forcelimited,
+      m.actuator_forcerange,
+      m.actuator_ctrllimited,
+      m.actuator_ctrlrange,
       m.actuator_acc0,
       m.actuator_lengthrange,
       d.act,
@@ -1196,14 +1252,14 @@ def fwd_actuation(m: Model, d: Data):
     ten_actfrc = wp.zeros((d.nworld, m.ntendon), dtype=float)
     wp.launch(
       _tendon_actuator_force,
-      dim=(d.nworld, m.nu),
+      dim=(d.nworld, m.nactuator),
       inputs=[m.actuator_trntype, m.actuator_trnid, d.actuator_force],
       outputs=[ten_actfrc],
     )
 
     wp.launch(
       _tendon_actuator_force_clamp,
-      dim=(d.nworld, m.nu),
+      dim=(d.nworld, m.nactuator),
       inputs=[m.tendon_actfrclimited, m.tendon_actfrcrange, m.actuator_trntype, m.actuator_trnid, ten_actfrc],
       outputs=[d.actuator_force],
     )
@@ -1212,7 +1268,7 @@ def fwd_actuation(m: Model, d: Data):
   d.qfrc_actuator.zero_()
   wp.launch(
     _qfrc_actuator,
-    dim=(d.nworld, m.nu),
+    dim=(d.nworld, m.nactuator),
     inputs=[
       d.moment_rownnz,
       d.moment_rowadr,
@@ -1311,6 +1367,20 @@ def fwd_acceleration(m: Model, d: Data, factorize: bool = False):
     smooth.solve_m(m, d, d.qacc_smooth, d.qfrc_smooth)
 
 
+def _energy_pos(m: Model, d: Data):
+  if m.opt.enableflags & EnableBit.ENERGY:
+    if m.sensor_e_potential == 0:  # not computed by sensor
+      sensor.energy_pos(m, d)
+  else:
+    d.energy.zero_()
+
+
+def _energy_vel(m: Model, d: Data):
+  if m.opt.enableflags & EnableBit.ENERGY:
+    if m.sensor_e_kinetic == 0:  # not computed by sensor
+      sensor.energy_vel(m, d)
+
+
 @event_scope
 def forward(m: Model, d: Data):
   """Forward dynamics."""
@@ -1319,23 +1389,14 @@ def forward(m: Model, d: Data):
     sleep.wake(m, d)
     sleep.update_sleep(m, d)
 
-  energy = m.opt.enableflags & EnableBit.ENERGY
-
   fwd_position(m, d, factorize=False)
   d.sensordata.zero_()
   sensor.sensor_pos(m, d)
-  if energy:
-    if m.sensor_e_potential == 0:  # not computed by sensor
-      sensor.energy_pos(m, d)
-  else:
-    d.energy.zero_()
+  _energy_pos(m, d)
 
   fwd_velocity(m, d)
   sensor.sensor_vel(m, d)
-
-  if energy:
-    if m.sensor_e_kinetic == 0:  # not computed by sensor
-      sensor.energy_vel(m, d)
+  _energy_vel(m, d)
 
   if not (m.opt.disableflags & DisableBit.ACTUATION):
     if m.callback.control:
@@ -1365,23 +1426,16 @@ def step(m: Model, d: Data):
 @event_scope
 def step1(m: Model, d: Data):
   """Advance simulation in two phases: before input is set by user."""
-  energy = m.opt.enableflags & EnableBit.ENERGY
   fwd_position(m, d)
   d.sensordata.zero_()
   sensor.sensor_pos(m, d)
 
-  if energy:
-    if m.sensor_e_potential == 0:  # not computed by sensor
-      sensor.energy_pos(m, d)
-  else:
-    d.energy.zero_()
+  _energy_pos(m, d)
 
   fwd_velocity(m, d)
   sensor.sensor_vel(m, d)
 
-  if energy:
-    if m.sensor_e_kinetic == 0:  # not computed by sensor
-      sensor.energy_vel(m, d)
+  _energy_vel(m, d)
 
   if not (m.opt.disableflags & DisableBit.ACTUATION):
     if m.callback.control:

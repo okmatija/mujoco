@@ -87,8 +87,10 @@ TEST_P(RecompileCompareTest, RecompileCompare) {
   mjModel* m_old = mj_compile(s, nullptr);
 
   if (!m_old) {
+    std::string error_message = mjs_getError(s);
+    mj_deleteSpec(s_copy);
     mj_deleteSpec(s);
-    GTEST_SKIP() << "Failed to compile " << xml << ": " << mjs_getError(s);
+    GTEST_SKIP() << "Failed to compile " << xml << ": " << error_message;
   }
 
   mjModel* m_new = mj_compile(s, nullptr);
@@ -142,8 +144,8 @@ INSTANTIATE_TEST_SUITE_P(
     [](const ::testing::TestParamInfo<std::string>& info) {
       std::string name = std::filesystem::path(info.param).filename().string();
       std::replace_if(
-          name.begin(), name.end(),
-          [](char c) { return !std::isalnum(c); }, '_');
+          name.begin(), name.end(), [](char c) { return !std::isalnum(c); },
+          '_');
       return name + "_" + std::to_string(info.index);
     });
 

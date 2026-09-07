@@ -30,6 +30,8 @@ typedef struct mjResource_ {
   mjVFS* vfs;                                   // pointer to the VFS
   char timestamp[512];                          // timestamp of the resource
   const struct mjpResourceProvider* provider;   // pointer to the provider
+  const char* args;  // resource arguments/hints, URI query format key=val&...
+                     // (optional)
 } mjResource;
 
 // callback for opening a resource, returns zero on failure.
@@ -58,6 +60,10 @@ typedef int (*mjfUnmountResource)(mjResource* resource);
 // returns < 0 if the resource is older than the given timestamp
 typedef int (*mjfResourceModified)(const mjResource* resource, const char* timestamp);
 
+// callback for writing bytes to a resource
+// return number of bytes written, return -1 if error
+typedef mjtSize (*mjfWriteResource)(mjResource* resource, const void* buffer, mjtSize nbytes);
+
 // struct describing a single resource provider
 typedef struct mjpResourceProvider {
   const char* prefix;               // prefix for match against a resource name
@@ -67,6 +73,7 @@ typedef struct mjpResourceProvider {
   mjfMountResource mount;           // mounting callback (optional)
   mjfUnmountResource unmount;       // unmounting callback (optional)
   mjfResourceModified modified;     // resource modified callback (optional)
+  mjfWriteResource write;           // writing callback (optional)
   void* data;                       // opaque data pointer (resource invariant)
 } mjpResourceProvider;
 

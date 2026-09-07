@@ -16,7 +16,7 @@
 #define MUJOCO_MUJOCO_H_
 
 // header version; should match the library version as returned by mj_version()
-#define mjVERSION_HEADER 3010001
+#define mjVERSION_HEADER 3012001
 
 // needed to define size_t, fabs and log10
 #include <stdlib.h>
@@ -255,6 +255,9 @@ MJAPI mjData* mj_copyData(mjData* dest, const mjModel* m, const mjData* src);
 // Copy mjData, skip large arrays not required for visualization.
 MJAPI mjData* mjv_copyData(mjData* dest, const mjModel* m, const mjData* src);
 
+// Reset ctrl to neutral values: zero, except quaternion inputs which reset to the identity.
+MJAPI void mj_resetCtrl(const mjModel* m, mjData* d);
+
 // Reset data to defaults.
 MJAPI void mj_resetData(const mjModel* m, mjData* d);
 
@@ -264,7 +267,7 @@ MJAPI void mj_resetDataDebug(const mjModel* m, mjData* d, unsigned char debug_va
 // Reset data. If 0 <= key < nkey, set fields from specified keyframe.
 MJAPI void mj_resetDataKeyframe(const mjModel* m, mjData* d, int key);
 
-#ifndef ADDRESS_SANITIZER  // Stack management functions declared in mjsan.h if ASAN is active.
+#ifndef mjUSEASAN  // Stack management functions declared in mjsan.h if ASAN is active.
 
 // Mark a new frame on the mjData stack.
 MJAPI void mj_markStack(mjData* d);
@@ -601,6 +604,10 @@ MJAPI int mj_name2id(const mjModel* m, int type, const char* name);
 // Get name of object with the specified mjtObj type and id; return NULL if name not found.
 MJAPI const char* mj_id2name(const mjModel* m, int type, int id);
 
+// Get name of actuator input, determined by the actuator type and input signature;
+// return NULL if the actuator type defines no input names.
+MJAPI const char* mj_actuatorInputName(const mjModel* m, int id, int input);
+
 // Convert sparse inertia matrix into full (i.e. dense) matrix.
 MJAPI void mj_fullM(const mjModel* m, const mjData* d, mjtNum* dst);
 
@@ -757,8 +764,7 @@ MJAPI mjtNum mjv_frustumHeight(const mjvScene* scn);
 MJAPI void mjv_alignToCamera(mjtNum res[3], const mjtNum vec[3], const mjtNum forward[3]);
 
 // Move camera with mouse; action is mjtMouse.
-MJAPI void mjv_moveCamera(const mjModel* m, int action, mjtNum reldx, mjtNum reldy,
-                          const mjvScene* scn, mjvCamera* cam);
+MJAPI void mjv_moveCamera(const mjModel* m, int action, mjtNum reldx, mjtNum reldy, mjvCamera* cam);
 
 // Move perturb object with mouse; action is mjtMouse.
 MJAPI void mjv_movePerturb(const mjModel* m, const mjData* d, int action, mjtNum reldx,
@@ -781,6 +787,10 @@ MJAPI void mjv_applyPerturbForce(const mjModel* m, mjData* d, const mjvPerturb* 
 
 // Return the average of two OpenGL cameras.
 MJAPI mjvGLCamera mjv_averageCamera(const mjvGLCamera* cam1, const mjvGLCamera* cam2);
+
+// Converts a mjvCamera to a mjvGLCamera.
+MJAPI mjvGLCamera mjv_camera2GLCamera(const mjModel* model, const mjData* data,
+                                      const mjvCamera* mjv_camera);
 
 // Select geom, flex or skin with mouse; return bodyid; -1: none selected.
 // Nullable: geomid, flexid, skinid
@@ -854,6 +864,12 @@ MJAPI void mjv_cameraFrustum(float zver[2], float zhor[2], float zclip[2],  cons
 
 // Set default mjrContext.
 MJAPI void mjr_defaultContext(mjrContext* con);
+
+// Set default mjrRendererInfo.
+MJAPI void mjr_defaultRendererInfo(mjrRendererInfo* info);
+
+// Get active renderer information.
+MJAPI void mjr_getRendererInfo(mjrRendererInfo* info);
 
 // Allocate resources in custom OpenGL context; fontscale is mjtFontScale.
 MJAPI void mjr_makeContext(const mjModel* m, mjrContext* con, int fontscale);
@@ -1588,6 +1604,11 @@ MJAPI void mju_closeResource(mjResource* resource);
 // return negative value if error.
 MJAPI int mju_readResource(mjResource* resource, const void** buffer);
 
+// Write resource data via its resource provider, return bytes written or -1 on error.
+// Nullable: vfs, error
+MJAPI mjtSize mju_writeResource(const char* name, const void* buffer, mjtSize nbytes,
+                                const mjVFS* vfs, char* error, size_t nerror);
+
 // For a resource with a name partitioned as {dir}{filename}, get the dir and ndir pointers.
 MJAPI void mju_getResourceDir(mjResource* resource, const char** dir, int* ndir);
 
@@ -1735,6 +1756,15 @@ MJAPI const char* mjs_setToIntVelocity(mjsActuator* actuator, double kp, double 
 // Set actuator to velocity servo; return error if any.
 MJAPI const char* mjs_setToVelocity(mjsActuator* actuator, double kv);
 
+// Set actuator to orientation servo.
+MJAPI const char* mjs_setToOrientation(mjsActuator* actuator, double kp, double kv[1],
+                                       double dampratio[1], int ctrlspec);
+
+// Set actuator to PID controller.
+MJAPI const char* mjs_setToPID(mjsActuator* actuator, double kp, double kv[1], double dampratio[1],
+                               double ki[1], double imax[1], double slewmax[1], double inheritrange,
+                               int ctrlspec);
+
 // Set actuator to activate damper; return error if any.
 MJAPI const char* mjs_setToDamper(mjsActuator* actuator, double kv);
 
@@ -1755,7 +1785,7 @@ MJAPI const char* mjs_setToAdhesion(mjsActuator* actuator, double gain);
 MJAPI const char* mjs_setToDCMotor(mjsActuator* actuator, double motorconst[2], double resistance,
                                    double nominal[3], double saturation[3], double inductance[2],
                                    double cogging[3], double controller[6], double thermal[6],
-                                   double lugre[5], int input_mode);
+                                   double lugre[5], int ctrlspec);
 
 
 //---------------------------------- Assets --------------------------------------------------------

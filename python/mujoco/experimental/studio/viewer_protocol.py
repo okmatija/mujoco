@@ -20,8 +20,8 @@ import enum
 from typing import Any
 import mujoco
 from mujoco.experimental.studio import endpoints
-from mujoco.experimental.studio import handler_registry
 from mujoco.experimental.studio import messages
+from mujoco.experimental.studio import plugin_registry
 from mujoco.experimental.studio import ux
 import numpy as np
 
@@ -33,15 +33,9 @@ GFX_MODES = (
     'opengl_software',
     'vulkan',
     'vulkan_software',
+    'web',
     'webgl',
 )
-
-
-class ViewerMode(enum.StrEnum):
-  """Determines where the viewer is rendered."""
-
-  NATIVE = 'native'
-  WEB = 'web'
 
 
 # -----------------------------------------------------------------------------
@@ -56,8 +50,8 @@ class ViewerConfig:
   title: str = ''
   width: int = 1200
   height: int = 800
-  gfx: str = ''
-  viewer_mode: ViewerMode = ViewerMode.NATIVE
+  gfx: str = ''  # Graphics mode ('web' launches Web Viewer).
+  http_port: int = 0  # Web Viewer port (0 picks first free port >= 8080).
 
 
 # Legacy message types kept for backward compatibility.
@@ -94,7 +88,7 @@ class ViewToSim:
 class ViewerInitEvent(messages.Event):
   """Lifecycle event dispatched once when the concrete Viewer is initialized.
 
-  Handlers that need access to the Viewer should handle this event
+  Plugins that need access to the Viewer should handle this event
   and cache the reference.
   """
 
@@ -104,7 +98,7 @@ class ViewerInitEvent(messages.Event):
 class Viewer(abc.ABC):
   """Base class for any viewer.
 
-  Owns the communication endpoint, handler registry and core visualization
+  Owns the communication endpoint, plugin registry and core visualization
   objects. The application is rendered by calling ``sync()``.
   """
 
@@ -115,7 +109,7 @@ class Viewer(abc.ABC):
       *,
       model: mujoco.MjModel | None = None,
       model_path: str = '',
-      handlers: list[Any] | None = None,
+      plugins: list[Any] | None = None,
       camera: mujoco.MjvCamera | None = None,
       vis_options: mujoco.MjvOption | None = None,
       perturb: mujoco.MjvPerturb | None = None,
@@ -131,7 +125,7 @@ class Viewer(abc.ABC):
         an empty MjSpec. The Viewer deep-copies this model and creates its own
         MjData.
       model_path: Optional path to the model file.
-      handlers: Optional list of handler instances for viewer-side processing.
+      plugins: Optional list of plugin instances for viewer-side processing.
       camera: Camera parameters. Internal object is created if None.
       vis_options: Visualization options. Internal object is created if None.
       perturb: Perturbation parameters. Internal object is created if None.
@@ -141,6 +135,7 @@ class Viewer(abc.ABC):
     self.config = config
     self._endpoint = endpoint
     self._is_running = True
+    self._closed = False
 
     # Viewer-owned model and data.
     if model is None:
@@ -163,19 +158,27 @@ class Viewer(abc.ABC):
       # Initted to match mujoco/src/engine/engine_vis_init.c
       self.render_flags.flags = [1, 0, 1, 0, 1, 0, 1, 0, 0, 0, 1]
 
-    # Handler infrastructure.
-    all_handlers = [self] + list(handlers or [])
-    self.handlers = handler_registry.HandlerRegistry(all_handlers)
+    # Plugin infrastructure.
+    all_plugins = [self] + list(plugins or [])
+    self.plugins = plugin_registry.PluginRegistry(all_plugins)
 
   def close(self) -> None:
     """Closes the viewer, sends an exit event and shuts down the endpoint."""
-    if self._is_running:
-      self._is_running = False
-      try:
-        self.send_to_sim(messages.ExitEvent())
-      except Exception:  # pylint: disable=broad-exception-caught
-        pass  # Ignore exceptions, the sim may have already closed.
-      self._endpoint.close()
+    if self._closed:
+      return
+    self._closed = True
+    self._is_running = False
+    try:
+      self.send_to_sim(messages.ExitEvent())
+    except Exception:  # pylint: disable=broad-exception-caught
+      pass  # Ignore exceptions, the sim may have already closed.
+    self._endpoint.close()
+
+  @messages.handler(priority=messages.Priority.CRITICAL)
+  def _on_exit(self, _: messages.ExitEvent) -> bool:
+    """Stops the viewer loop when the sim side requests an exit."""
+    self._is_running = False
+    return False  # Do not consume; app handlers may want cleanup too.
 
   def is_running(self) -> bool:
     """Returns True while the viewer has not been closed."""
@@ -195,7 +198,7 @@ class Viewer(abc.ABC):
 
   def dispatch(self, message: messages.Message) -> None:
     """Dispatches a message to registered handlers in priority order."""
-    self.handlers.dispatch(message)
+    self.plugins.dispatch(message)
 
   def load_model(self, model: mujoco.MjModel, model_path: str = '') -> None:
     """Deep-copies a model and creates fresh data for the viewer."""
@@ -220,6 +223,11 @@ class Viewer(abc.ABC):
       mujoco.mj_setState(self.model, self.data, event.state, event.state_sig)
       mujoco.mj_forward(self.model, self.data)
     return False  # Do not consume; let other handlers see the event.
+
+  @abc.abstractmethod
+  def prepare_next_frame(self) -> bool:
+    """Advances to the next frame; returns whether one is ready to render."""
+    ...
 
   @abc.abstractmethod
   def sync(self) -> None:
@@ -249,20 +257,32 @@ def run_viewer_loop(viewer: Viewer) -> None:
   On exit, closes the viewer (which sends an ExitEvent to the sim side).
 
   Args:
-    viewer: A Viewer that owns the endpoint and handler registry.
+    viewer: A Viewer that owns the endpoint and plugin registry.
   """
-  while viewer.is_running():
-    # Process incoming messages.
+  while True:
+    # Get the next frame; this also gets the frame's mouse/keyboard events.
+    frame = viewer.prepare_next_frame()
+
+    # Process incoming simulation events.
     for event in viewer.get_sim_events():
       viewer.dispatch(event)
+
+    # Stop the loop if the viewer is not running (endpoint will be closed).
+    if not viewer.is_running():
+      break
+
+    # Process incoming simulation snapshots.
     for snapshot in viewer.get_sim_snapshots():
       viewer.dispatch(snapshot)
 
-    # Dispatch lifecycle events.
-    viewer.dispatch(messages.UpdateEvent())
-    viewer.dispatch(messages.BuildGuiEvent())
+    # Skip rendering when prepare_next_frame returned no active frame.
+    # e.g., no browser is connected to the web viewer.
+    if frame:
+      # Dispatch lifecycle events.
+      viewer.dispatch(messages.UpdateEvent())
+      viewer.dispatch(messages.BuildGuiEvent())
 
-    # Render the scene.
-    viewer.sync()
+      # Render the scene.
+      viewer.sync()
 
   viewer.close()

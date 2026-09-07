@@ -151,15 +151,15 @@ def _resolve_impl_and_device(
   if (has_impl, has_device) == (True, True):
     pass
   elif (has_impl, has_device) == (True, False):
-    device = _resolve_device(impl)
+    device = _resolve_device(impl)  # pyrefly: ignore[bad-argument-type]
   elif (has_impl, has_device) == (False, True):
-    impl = _resolve_impl(device)
+    impl = _resolve_impl(device)  # pyrefly: ignore[bad-argument-type]
   else:
     device = jax.devices()[0]
     logging.info('Using JAX default device: %s.', device)
     impl = _resolve_impl(device)
 
-  _check_impl_device_compatibility(impl, device)
+  _check_impl_device_compatibility(impl, device)  # pyrefly: ignore[bad-argument-type]
   return impl, device  # pytype: disable=bad-return-type
 
 
@@ -358,8 +358,8 @@ def _put_model_jax(
       t1, t2 = mujoco.mjtGeom(t1), mujoco.mjtGeom(t2)
       raise NotImplementedError(f'({t1}, {t2}) collisions not implemented.')
     # margin/gap not supported for meshes and height fields
-    no_margin = {mujoco.mjtGeom.mjGEOM_MESH, mujoco.mjtGeom.mjGEOM_HFIELD}
-    if no_margin.intersection({t1, t2}):
+    no_margin = {int(mujoco.mjtGeom.mjGEOM_MESH), int(mujoco.mjtGeom.mjGEOM_HFIELD)}
+    if no_margin.intersection({int(t1), int(t2)}):
       if ip != -1:
         margin = m.pair_margin[ip]
       else:
@@ -368,7 +368,7 @@ def _put_model_jax(
         t1, t2 = mujoco.mjtGeom(t1), mujoco.mjtGeom(t2)
         raise NotImplementedError(f'({t1}, {t2}) margin/gap not implemented.')
     for t, g in [(t1, g1), (t2, g2)]:
-      if t == mujoco.mjtGeom.mjGEOM_MESH:
+      if int(t) == int(mujoco.mjtGeom.mjGEOM_MESH):
         mesh_geomid.add(g)
 
   for enum_field, enum_type, mj_type in (
@@ -442,11 +442,13 @@ def _put_model_warp(
     m: mujoco.MjModel,
     graph_mode: mjxw.types.GraphMode,
     device: Optional[jax.Device] = None,
+    batch_sizes: Optional[Dict[str, int]] = None,
 ) -> types.Model:
   """Puts mujoco.MjModel onto a device, resulting in mjx.Model."""
   with wp.ScopedDevice('cpu'):  # pylint: disable=undefined-variable
-    mw = mjwp.put_model(m)  # pylint: disable=undefined-variable
+    mw = mjwp.put_model(m, batch_sizes=batch_sizes)  # pylint: disable=undefined-variable
 
+  batch_sizes = batch_sizes or {}
   fields = {f.name for f in types.Model.fields() if f.name != '_impl'}
   fields = {f: getattr(m, f) for f in fields}
   # Grab MJW private Option fields, and assume that public MjOption fields are
@@ -467,7 +469,9 @@ def _put_model_warp(
     if not hasattr(mw, k) or k in ('stat', 'opt'):
       continue
     field = _wp_to_np_type(getattr(mw, k), k)
-    if mjxw.types._BATCH_DIM['Model'].get(k, False):  # pylint: disable=protected-access
+    if (  # pylint: disable=protected-access
+        k not in batch_sizes and mjxw.types._BATCH_DIM['Model'].get(k, False)
+    ):
       field = field.reshape(field.shape[1:])
     if k == 'geom_dataid' and field.ndim > 1:
       # Batched geom_dataid is not supported in MJX.
@@ -477,7 +481,9 @@ def _put_model_warp(
   impl_fields = {}
   for k in mjxw.types.ModelWarp.__annotations__.keys():
     field = _wp_to_np_type(getattr(mw, k), k)
-    if mjxw.types._BATCH_DIM['Model'].get(k, False):  # pylint: disable=protected-access
+    if (  # pylint: disable=protected-access
+        k not in batch_sizes and mjxw.types._BATCH_DIM['Model'].get(k, False)
+    ):
       field = field.reshape(field.shape[1:])
     impl_fields[k] = field
 
@@ -534,6 +540,7 @@ def put_model(
     impl: Optional[Union[str, types.Impl]] = None,
     graph_mode: Optional[mjxw.types.GraphMode] = None,
     keepalive_refs: Optional[Dict[int, Any]] = None,
+    batch_sizes: Optional[Dict[str, int]] = None,
 ) -> types.Model:
   """Puts mujoco.MjModel onto a device, resulting in mjx.Model.
 
@@ -546,6 +553,7 @@ def put_model(
     keepalive_refs: optional dict to store references to underlying MuJoCo
       objects, preventing them from being garbage collected. Required for CPP
       impl to keep the model alive.
+    batch_sizes: optional per-field leading batch sizes for Warp model fields.
 
   Returns:
     an mjx.Model placed on device
@@ -560,8 +568,12 @@ def put_model(
     return _put_model_jax(m, device)
   elif impl == types.Impl.WARP:
     _check_warp_installed()
-    graph_mode = graph_mode or getattr(mjxw.types.GraphMode, 'WARP')
-    return _put_model_warp(m, graph_mode, device)
+    if graph_mode is None:
+      if device.platform == 'cpu':
+        graph_mode = getattr(mjxw.types.GraphMode, 'JAX')
+      else:
+        graph_mode = getattr(mjxw.types.GraphMode, 'WARP')
+    return _put_model_warp(m, graph_mode, device, batch_sizes=batch_sizes)
   elif impl == types.Impl.CPP:
     return _put_model_cpp(m, device, keepalive_refs=keepalive_refs)
   else:
@@ -716,7 +728,7 @@ def _make_data_jax(
       qpos=jp.array(m.qpos0, dtype=float_),
       eq_active=m.eq_active0,
       _impl=impl,
-      **_make_data_public_fields(m),
+      **_make_data_public_fields(m),  # pyrefly: ignore[bad-argument-type]
   )
 
   if m.nmocap:
@@ -765,7 +777,7 @@ def _make_data_warp(
         nvmax=nvmax,
     )  # pylint: disable=undefined-variable
 
-  fields = _make_data_public_fields(m)
+  fields = _make_data_public_fields(m)  # pyrefly: ignore[bad-argument-type]
   for k in fields:
     if k in {'userdata', 'plugin_state', 'history'}:
       continue
@@ -778,6 +790,8 @@ def _make_data_warp(
 
   impl_fields = {}
   for k in mjxw.types.DataWarp.__annotations__.keys():
+    if k == '_jax_token':  # custom token to force sequential calls in JAX
+      continue
     field = _get_nested_attr(dw, k, split='__')
     field = _wp_to_np_type(field)
     if mjxw.types._BATCH_DIM['Data'][k]:  # pylint: disable=protected-access
@@ -870,7 +884,7 @@ def make_data(
       worlds. Since the number of worlds is **not** pre-defined in JAX, we use the
       `naccdmax` argument to set the upper bound for the number of contacts
       across all worlds, rather than the `nccdmax` argument from MuJoCo Warp.
-    njmax: maximum number of constraints to allocate for warp across all worlds
+    njmax: maximum number of constraints to allocate per world
     nvmax: capacity for compacted active DOFs per world
     keepalive_refs: optional dict to store references to underlying MuJoCo
       objects, preventing them from being garbage collected. Required for CPP
@@ -1159,6 +1173,7 @@ def _put_data_warp(
     d: mujoco.MjData,
     device: Optional[jax.Device] = None,
     naconmax: Optional[int] = None,
+    naccdmax: Optional[int] = None,
     njmax: Optional[int] = None,
     nvmax: Optional[int] = None,
 ) -> types.Data:
@@ -1166,7 +1181,13 @@ def _put_data_warp(
 
   with wp.ScopedDevice('cpu'):  # pylint: disable=undefined-variable
     dw = mjwp.put_data(
-        m, d, nworld=1, naconmax=naconmax, njmax=njmax, nvmax=nvmax
+        m,
+        d,
+        nworld=1,
+        naconmax=naconmax,
+        naccdmax=naccdmax,
+        njmax=njmax,
+        nvmax=nvmax,
     )  # pylint: disable=undefined-variable
 
   fields = _put_data_public_fields(d)
@@ -1180,6 +1201,8 @@ def _put_data_warp(
 
   impl_fields = {}
   for k in mjxw.types.DataWarp.__annotations__.keys():
+    if k == '_jax_token':  # custom token to force sequential calls in JAX
+      continue
     field = _get_nested_attr(dw, k, split='__')
     field = _wp_to_np_type(field)
     if mjxw.types._BATCH_DIM['Data'][k]:  # pylint: disable=protected-access
@@ -1201,6 +1224,7 @@ def put_data(
     device: Optional[jax.Device] = None,
     impl: Optional[Union[str, types.Impl]] = None,
     naconmax: Optional[int] = None,
+    naccdmax: Optional[int] = None,
     njmax: Optional[int] = None,
     nvmax: Optional[int] = None,
     dummy_arg_for_batching: Optional[jax.Array] = None,
@@ -1217,7 +1241,11 @@ def put_data(
       Since the number of worlds is **not** pre-defined in JAX, we use the
       `naconmax` argument to set the upper bound for the number of contacts
       across all worlds.
-    njmax: maximum number of constraints to allocate for warp
+    naccdmax: maximum number of contacts for GJK collision detection across all
+      worlds. Since the number of worlds is **not** pre-defined in JAX, we use the
+      `naccdmax` argument to set the upper bound for the number of contacts
+      across all worlds, rather than the `nccdmax` argument from MuJoCo Warp.
+    njmax: maximum number of constraints per world
     nvmax: capacity for compacted active DOFs per world
     dummy_arg_for_batching: dummy argument to use for batching in cpp
       implementation
@@ -1241,7 +1269,15 @@ def put_data(
     )
   elif impl == types.Impl.WARP:
     _check_warp_installed()
-    return _put_data_warp(m, d, device, naconmax, njmax, nvmax)
+    return _put_data_warp(
+        m,
+        d,
+        device=device,
+        naconmax=naconmax,
+        naccdmax=naccdmax,
+        njmax=njmax,
+        nvmax=nvmax,
+    )
 
   raise NotImplementedError(
       f'put_data for implementation "{impl}" not implemented yet.'
@@ -1279,14 +1315,14 @@ def _get_data_into_warp(
         if batched
         else d
     )
-    result_i = result[i] if batched else result
+    result_i = result[i] if batched else result  # pyrefly: ignore[bad-index]
     ncon = d_i._impl.nacon[0]
     nefc = int(d_i._impl.nefc)
     # nj = int(d_i._impl.nj[0])
     nj = 0  # TODO(btaba): add nj back
 
-    if ncon != result_i.ncon or nefc != result_i.nefc or nj != result_i.nJ:
-      mujoco._functions._realloc_con_efc(result_i, ncon=ncon, nefc=nefc, nJ=nj)  # pylint: disable=protected-access
+    if ncon != result_i.ncon or nefc != result_i.nefc or nj != result_i.nJ:  # pyrefly: ignore[missing-attribute]
+      mujoco._functions._realloc_con_efc(result_i, ncon=ncon, nefc=nefc, nJ=nj)  # pylint: disable=protected-access  # pyrefly: ignore[bad-argument-type]
 
     all_fields = types.Data.fields() + mjxw.types.DataWarp.fields()
     for field in all_fields:
@@ -1360,14 +1396,14 @@ def _get_data_into(
 
   for i in range(batch_size):
     d_i = jax.tree_util.tree_map(lambda x, i=i: x[i], d) if batched else d
-    result_i = result[i] if batched else result
+    result_i = result[i] if batched else result  # pyrefly: ignore[bad-index]
     ncon = (d_i._impl.contact.dist <= 0).sum()
     efc_active = (d_i._impl.efc_J != 0).any(axis=1)
     nefc = int(efc_active.sum())
     nj = (d_i._impl.efc_J != 0).sum() if support.is_sparse(m) else nefc * m.nv
 
-    if ncon != result_i.ncon or nefc != result_i.nefc or nj != result_i.nJ:
-      mujoco._functions._realloc_con_efc(result_i, ncon=ncon, nefc=nefc, nJ=nj)  # pylint: disable=protected-access
+    if ncon != result_i.ncon or nefc != result_i.nefc or nj != result_i.nJ:  # pyrefly: ignore[missing-attribute]
+      mujoco._functions._realloc_con_efc(result_i, ncon=ncon, nefc=nefc, nJ=nj)  # pylint: disable=protected-access  # pyrefly: ignore[bad-argument-type]
 
     if d.impl == types.Impl.JAX:
       all_fields = types.Data.fields() + types.DataJAX.fields()
@@ -1381,10 +1417,10 @@ def _get_data_into(
         continue
 
       if field.name == 'contact':
-        _get_contact(result_i.contact, d_i._impl.contact)
+        _get_contact(result_i.contact, d_i._impl.contact)  # pyrefly: ignore[missing-attribute]
         # efc_address must be updated because rows were deleted above:
         efc_map = np.cumsum(efc_active) - 1
-        result_i.contact.efc_address[:] = efc_map[result_i.contact.efc_address]
+        result_i.contact.efc_address[:] = efc_map[result_i.contact.efc_address]  # pyrefly: ignore[missing-attribute]
         continue
 
       # MuJoCo actuator_moment is sparse, MJX uses a dense representation.
@@ -1404,10 +1440,10 @@ def _get_data_into(
             )
           else:
             actuator_moment = d_i._impl.actuator_moment
-        result_i.moment_rownnz[:] = moment_rownnz
-        result_i.moment_rowadr[:] = moment_rowadr
-        result_i.moment_colind[:] = moment_colind
-        result_i.actuator_moment[:] = actuator_moment
+        result_i.moment_rownnz[:] = moment_rownnz  # pyrefly: ignore[missing-attribute]
+        result_i.moment_rowadr[:] = moment_rowadr  # pyrefly: ignore[missing-attribute]
+        result_i.moment_colind[:] = moment_colind  # pyrefly: ignore[missing-attribute]
+        result_i.actuator_moment[:] = actuator_moment  # pyrefly: ignore[missing-attribute]
         continue
 
       # MuJoCo ten_J is sparse, MJX uses a dense representation.
@@ -1427,7 +1463,7 @@ def _get_data_into(
             )
           else:
             ten_j = d_i._impl.ten_J
-        result_i.ten_J[:] = ten_j
+        result_i.ten_J[:] = ten_j  # pyrefly: ignore[missing-attribute]
         continue
 
       if hasattr(d_i._impl, field.name):
@@ -1453,9 +1489,9 @@ def _get_data_into(
               efc_J_rowadr,
               efc_J_colind,
           )
-          result_i.efc_J_rownnz[:] = efc_J_rownnz
-          result_i.efc_J_rowadr[:] = efc_J_rowadr
-          result_i.efc_J_colind[:] = efc_J_colind
+          result_i.efc_J_rownnz[:] = efc_J_rownnz  # pyrefly: ignore[missing-attribute]
+          result_i.efc_J_rowadr[:] = efc_J_rowadr  # pyrefly: ignore[missing-attribute]
+          result_i.efc_J_colind[:] = efc_J_colind  # pyrefly: ignore[missing-attribute]
           value = efc_J
         else:
           value = value.reshape(-1)
@@ -1488,7 +1524,7 @@ def _get_data_into(
 
     # recalculate qLD and qLDiagInv as MJX and MuJoCo have different
     # representations of the Cholesky decomposition.
-    mujoco.mj_factorM(m, result_i)
+    mujoco.mj_factorM(m, result_i)  # pyrefly: ignore[bad-argument-type]
 
 
 # TODO(josechenf): Iterate on the keepalive implementation to make it easier to
@@ -1525,7 +1561,7 @@ def _get_data_into_cpp(
     d_i: types.Data = (
         jax.tree_util.tree_map(lambda x, i=i: x[i], d) if batched else d
     )
-    result_i = result[i] if batched else result
+    result_i = result[i] if batched else result  # pyrefly: ignore[bad-index]
 
     if batched:
       addr_i = int(d_impl.pointer_lo[i]) | (int(d_impl.pointer_hi[i]) << 32)
@@ -1554,7 +1590,7 @@ def _get_data_into_cpp(
       src_data.mocap_quat[:] = d_i.mocap_quat
       mujoco.mj_kinematics(m, src_data)
 
-    mujoco.mj_copyData(result_i, m, src_data)
+    mujoco.mj_copyData(result_i, m, src_data)  # pyrefly: ignore[bad-argument-type]
 
 
 def get_data_into(
@@ -1802,5 +1838,5 @@ def create_render_context(
   _check_warp_installed()
   from mujoco.mjx.warp import io as mjxw_io  # pylint: disable=g-import-not-at-top  # pytype: disable=import-error
   return mjxw_io.create_render_context(
-      mjm, nworld=nworld, devices=devices, **kwargs
+      mjm, nworld=nworld, devices=devices, **kwargs  # pyrefly: ignore[bad-argument-type]
   )

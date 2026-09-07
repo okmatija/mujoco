@@ -31,20 +31,18 @@ extern "C" {
 // numerical limits
 #ifdef mjUSESINGLE
   #define mjMAX_LIMIT FLT_MAX
-  // tolerance for normal alignment of two faces (cosine of 1.6e-3)
-  #define mjFACE_TOL 0.99999872f
-  // tolerance for edge-face alignment (sine of 1.6e-3)
-  #define mjEDGE_TOL 0.00159999931f
+  // tolerance for normal alignment of two faces (~5.1 deg)
+  #define mjFACE_TOL 0.996f
+  // tolerance for edge-face alignment (~5.1 deg)
+  #define mjEDGE_TOL 0.0888f
 #else
   #define mjMAX_LIMIT DBL_MAX
-  // tolerance for normal alignment of two faces (cosine of 1.6e-3)
-  #define mjFACE_TOL 0.99999872
-  // tolerance for edge-face alignment (sine of 1.6e-3)
-  #define mjEDGE_TOL 0.00159999931
+  // tolerance for normal alignment of two faces (~5.1 deg)
+  #define mjFACE_TOL 0.996
+  // tolerance for edge-face alignment (~5.1 deg)
+  #define mjEDGE_TOL 0.0888
 #endif
 
-// max number of supported vertices in a polygon face of a mesh
-#define mjMAX_POLYVERT 150
 
 // Status of an EPA run
 typedef enum {
@@ -77,12 +75,15 @@ typedef struct {
   int max_contacts;    // set to max number of contact points to recover
   mjtNum dist_cutoff;  // set to max geom distance to recover
   void* buffer;        // buffer memory for polytope (should be sized given by mjc_ccdSize)
+  int npolygonmax;     // max number of vertices in a mesh polygon
+  int nmeshdegmax;     // max number of edges adjacent to a mesh vertex
 } mjCCDConfig;
 
 // data produced from running GJK and EPA
 typedef struct {
   // geom distance information
-  mjtNum dist;                  // distance between geoms
+  int separated;                // set to true if geoms are verified to be separated
+  mjtNum dist[mjMAXCONPAIR];    // distance between witness points
   mjtNum x1[3 * mjMAXCONPAIR];  // witness points for geom 1
   mjtNum x2[3 * mjMAXCONPAIR];  // witness points for geom 2
   int nx;                       // number of witness points
@@ -102,10 +103,11 @@ typedef struct {
 } mjCCDStatus;
 
 // return size in bytes of the buffer needed for mjc_ccd for a given number of iterations
-MJAPI size_t mjc_ccdSize(int iterations);
+MJAPI size_t mjc_ccdSize(int npolygonmax, int nmeshdegmax, int iterations);
 
 // run general convex collision detection, returns positive for distance, negative for penetration
 MJAPI mjtNum mjc_ccd(const mjCCDConfig* config, mjCCDStatus* status, mjCCDObj* obj1, mjCCDObj* obj2);
+
 #ifdef __cplusplus
 }
 #endif
