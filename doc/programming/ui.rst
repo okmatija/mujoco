@@ -9,9 +9,6 @@ cross-platform, and integrated with the native MuJoCo renderer. In order to achi
 many features and customization options that are available in other UI frameworks, and instead focused on efficiency and
 automation.
 
-This page describes the classic UI framework used by ``simulate``. :ref:`MuJoCo Studio<Studio>`, the next iteration of
-``simulate``, instead uses `Dear ImGui <https://github.com/ocornut/imgui>`__ and is documented in its own chapter.
-
 
 
 .. _uiDesign:
